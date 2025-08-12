@@ -1,6 +1,6 @@
 [package]
 name = "orion-sdr"
-version = "0.0.3"
+version = "0.0.4"
 edition = "2024"
 description = "DSP/SDR block library targeting HF-to-UHF, satellites, and Python bindings. Roadmap inside."
 license = "MIT OR Apache-2.0"
