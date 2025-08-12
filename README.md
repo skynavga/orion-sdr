@@ -1,8 +1,10 @@
 # orion-sdr
 
-Early scaffold for a composable SDR/DSP library in Rust with Python bindings.
+A composable SDR/DSP library in Rust with Python bindings.
 
-## Status
+## Change Log
+- 0.0.3: update description
+- 0.0.2: add API implementation and basic test
 - 0.0.1: placeholder API (`version()`), project structure, roadmap.
 
 ## Roadmap
