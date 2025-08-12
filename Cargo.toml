@@ -8,3 +8,25 @@ repository = "https://github.com/skynavga/orion-sdr"
 readme = "README.md"
 keywords = ["sdr", "dsp", "radio", "satellite"]
 categories = ["science", "embedded", "no-std::no-alloc"]
+
+[lib]
+name = "sdr"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Enable SIMD or other accelerations later
+simd = []
+
+[dependencies]
+num-complex = "0.4"
+thiserror = "1"
+# FIR windowing helpers
+realfft = "3"
+rustfft = "6"
+
+[dependencies.pyo3]
+version = "0.22"
+features = ["extension-module"]
+
+[dependencies.numpy]
+version = "0.22"
