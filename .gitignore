@@ -1,0 +1,8 @@
+
+# files
+.DS_Store
+*~
+*.bak
+
+# directories
+/target
