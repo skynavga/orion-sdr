@@ -4,6 +4,7 @@ A composable SDR/DSP library in Rust with Python bindings.
 
 ## Change Log
 
+- v0.0.6: add FM and PM demods; more tests
 - v0.0.5: add graph scheduler; AGC, FIR decimator; CW and AM demods; more tests
 - v0.0.4: update roadmap
 - v0.0.3: update description
