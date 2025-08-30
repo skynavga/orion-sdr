@@ -535,6 +535,178 @@ pub mod demod {
 
     }
 
+    /// Narrowband FM discriminator (quadrature/phase-difference method).
+    /// - Works on complex baseband IQ (centered at 0 Hz).
+    /// - Optional limiter for amplitude normalization.
+    /// - Optional de-emphasis (single-pole RC) via `set_deemph_tau_us`.
+    /// - Audio is scaled so that +/- `deviation_hz` -> approx +/-1.0.
+    pub struct FmDemod {
+        fs: f32,
+        deviation_hz: f32,
+        limiter: bool,
+        // de-emphasis
+        use_deemph: bool,
+        deemph_alpha: f32,
+        deemph_y1: f32,
+        // post processing
+        lp: FirLowpass,
+        dc: DcBlocker,
+        gain: f32,
+        // state
+        prev: C32,
+        scratch: Vec<f32>,
+    }
+
+    impl FmDemod {
+        /// `audio_bw_hz` e.g. 3–5 kHz for NBFM voice; `deviation_hz` e.g. 2.5k/5k.
+        pub fn new(sample_rate: f32, deviation_hz: f32, audio_bw_hz: f32) -> Self {
+            Self {
+                fs: sample_rate,
+                deviation_hz: deviation_hz.max(1.0),
+                limiter: true,
+                use_deemph: false,
+                deemph_alpha: 0.0,
+                deemph_y1: 0.0,
+                lp: FirLowpass::design(sample_rate, audio_bw_hz, audio_bw_hz * 0.5),
+                dc: DcBlocker::new(0.995),
+                gain: 1.0,
+                prev: C32::new(1.0, 0.0),
+                scratch: Vec::new(),
+            }
+        }
+        pub fn set_gain(&mut self, g: f32) { self.gain = g; }
+        pub fn set_deviation_hz(&mut self, hz: f32) { self.deviation_hz = hz.max(1.0); }
+        pub fn set_limiter(&mut self, on: bool) { self.limiter = on; }
+
+        /// Enable de-emphasis with time constant `tau_us` (e.g., 300–750 for NBFM, 75 for WBFM US, 50 EU).
+        pub fn set_deemph_tau_us(&mut self, tau_us: f32) {
+            if tau_us <= 0.0 { self.use_deemph = false; return; }
+            let dt = 1.0 / self.fs;
+            let tau = tau_us * 1e-6;
+            self.deemph_alpha = dt / (tau + dt);
+            self.use_deemph = true;
+        }
+    }
+
+    impl Block for FmDemod {
+        type In = C32;
+        type Out = f32;
+
+        fn process(&mut self, input: &[Self::In], output: &mut [Self::Out]) -> WorkReport {
+            let n = input.len().min(output.len());
+            if self.scratch.len() < n { self.scratch.resize(n, 0.0); }
+            let tmp = &mut self.scratch[..n];
+
+            // Scale so +/- deviation -> +/-1.0
+            let k = self.fs / (std::f32::consts::TAU * self.deviation_hz.max(1.0));
+
+            for i in 0..n {
+                let mut z = input[i];
+                if self.limiter {
+                    let m2 = z.re * z.re + z.im * z.im;
+                    if m2 > 0.0 { let inv = m2.sqrt().recip(); z.re *= inv; z.im *= inv; }
+                }
+                // angle(curr * conj(prev)) = instantaneous phase increment
+                let prod = C32::new(
+                    z.re * self.prev.re + z.im * self.prev.im,
+                    z.im * self.prev.re - z.re * self.prev.im,
+                );
+                let dphi = prod.im.atan2(prod.re);
+                tmp[i] = dphi * k * self.gain; // normalized audio
+                self.prev = z;
+            }
+
+            // Optional de-emphasis (one-pole LP)
+            if self.use_deemph {
+                let a = self.deemph_alpha;
+                let mut y1 = self.deemph_y1;
+                for x in &mut tmp.iter_mut() {
+                    let y = y1 + a * (*x - y1);
+                    y1 = y;
+                    *x = y;
+                }
+                self.deemph_y1 = y1;
+            }
+
+            // LP -> output
+            self.lp.process_block(&tmp[..], &mut output[..n]);
+            // DC block with separate buffer
+            self.dc.process_block(&output[..n], &mut tmp[..]);
+            output[..n].copy_from_slice(&tmp[..]);
+
+            WorkReport { in_read: n, out_written: n }
+        }
+    }
+
+    /// Phase modulation demodulator (PM): returns (unwrapped) instantaneous phase scaled to ~+/-1.
+    /// - Works on complex baseband IQ.
+    /// - Optional limiter.
+    /// - Audio is `phase / pm_sense_rad`, where `pm_sense_rad` is the phase deviation that maps to +/-1.
+    pub struct PmDemod {
+        limiter: bool,
+        pm_sense_rad: f32,
+        // post processing
+        lp: FirLowpass,
+        dc: DcBlocker,
+        gain: f32,
+        // state
+        prev_phase: f32,
+        scratch: Vec<f32>,
+    }
+
+    impl PmDemod {
+        /// `pm_sense_rad`: set to your phase deviation so +/-pm_sense -> +/-1.0 audio (e.g., 0.5–1.0 rad).
+        /// `audio_bw_hz`: audio lowpass bandwidth.
+        pub fn new(pm_sense_rad: f32, audio_bw_hz: f32, sample_rate: f32) -> Self {
+            Self {
+                limiter: true,
+                pm_sense_rad: pm_sense_rad.max(1e-3),
+                lp: FirLowpass::design(sample_rate, audio_bw_hz, audio_bw_hz * 0.5),
+                dc: DcBlocker::new(0.995),
+                gain: 1.0,
+                prev_phase: 0.0,
+                scratch: Vec::new(),
+            }
+        }
+        pub fn set_gain(&mut self, g: f32) { self.gain = g; }
+        pub fn set_limiter(&mut self, on: bool) { self.limiter = on; }
+        pub fn set_pm_sense_rad(&mut self, rad: f32) { self.pm_sense_rad = rad.max(1e-3); }
+    }
+
+    impl Block for PmDemod {
+        type In = C32;
+        type Out = f32;
+
+        fn process(&mut self, input: &[Self::In], output: &mut [Self::Out]) -> WorkReport {
+            let n = input.len().min(output.len());
+            if self.scratch.len() < n { self.scratch.resize(n, 0.0); }
+            let tmp = &mut self.scratch[..n];
+
+            for i in 0..n {
+                let mut z = input[i];
+                if self.limiter {
+                    let m2 = z.re * z.re + z.im * z.im;
+                    if m2 > 0.0 { let inv = m2.sqrt().recip(); z.re *= inv; z.im *= inv; }
+                }
+                // instantaneous phase
+                let mut phi = z.im.atan2(z.re);
+                // unwrap relative to previous
+                let d = phi - self.prev_phase;
+                if d > std::f32::consts::PI { phi -= std::f32::consts::TAU; }
+                else if d < -std::f32::consts::PI { phi += std::f32::consts::TAU; }
+                self.prev_phase = phi;
+                tmp[i] = (phi / self.pm_sense_rad) * self.gain;
+            }
+
+            // Post: LP and DC block
+            self.lp.process_block(&tmp[..], &mut output[..n]);
+            self.dc.process_block(&output[..n], &mut tmp[..]);
+            output[..n].copy_from_slice(&tmp[..]);
+
+            WorkReport { in_read: n, out_written: n }
+        }
+    }
+
 }
 
 // =============================
@@ -581,7 +753,9 @@ fn sdr(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::demod::SsbProductDetector;
+    use crate::core::*;
+    use crate::dsp::*;
+    use crate::demod::*;
     use num_complex::Complex32 as C32;
 
     /// Tiny single-bin DFT; good enough for power at a specific frequency.
@@ -642,7 +816,6 @@ mod tests {
 
     #[test]
     fn agc_rms_converges_on_iq() {
-        use crate::dsp::AgcRms;
         let fs = 48_000.0;
         let mut agc = AgcRms::new(fs, 0.2, 5.0, 200.0);
         let n = 8_000;
@@ -669,7 +842,6 @@ mod tests {
 
     #[test]
     fn decimator_reduces_length_and_preserves_tone() {
-        use crate::dsp::{FirDecimator, Nco, mix_with_nco};
         let fs = 96_000.0;
         let m = 4;
         let cutoff = fs / (m as f32) * 0.45;
@@ -687,10 +859,6 @@ mod tests {
 
     #[test]
     fn chain_runs_ssb_cw_and_am() {
-        use crate::core::IqToAudioChain;
-        use crate::demod::{CwDemod, AmEnvelope, SsbProductDetector};
-        use crate::dsp::{Nco, mix_with_nco};
-
         let fs = 48_000.0;
         let n = 4096;
         let mut tone = Vec::with_capacity(n);
@@ -714,6 +882,67 @@ mod tests {
         let mut ssb = IqToAudioChain::new(SsbProductDetector::new(fs, 0.0, 2_800.0));
         let y_ssb = ssb.process(tone);
         assert_eq!(y_ssb.len(), n);
+    }
+
+    fn snr_db_at(freq_hz: f32, fs: f32, x: &[f32]) -> f32 {
+        // single-bin DFT power vs an off-bin
+        let n = x.len();
+        let w = -2.0 * std::f32::consts::PI * freq_hz / fs;
+        let (mut re, mut im) = (0.0f32, 0.0f32);
+        for (k, &s) in x.iter().enumerate() {
+            let t = w * (k as f32);
+            re += s * t.cos();
+            im += s * t.sin();
+        }
+        let p_sig = (re*re + im*im) / (n as f32 * n as f32);
+        // off-tone
+        let f2 = freq_hz * 0.7;
+        let w2 = -2.0 * std::f32::consts::PI * f2 / fs;
+        let (mut r2, mut i2) = (0.0f32, 0.0f32);
+        for (k, &s) in x.iter().enumerate() { let t = w2 * (k as f32); r2 += s*t.cos(); i2 += s*t.sin(); }
+        let p_off = (r2*r2 + i2*i2) / (n as f32 * n as f32);
+        10.0 * (p_sig / (p_off + 1e-20)).log10()
+    }
+
+    #[test]
+    fn fm_demod_recovers_tone() {
+        let fs = 48_000.0;
+        let n = 16_384;
+        let f_mod = 1_000.0;
+        let dev = 2_500.0; // Hz
+        // Generate narrowband FM at baseband: phi[n] = sum( 2π * (dev*sin(2π f_mod t))/fs )
+        let mut phi = 0.0f32;
+        let mut iq = Vec::with_capacity(n);
+        for k in 0..n {
+            let t = k as f32 / fs;
+            let f_inst = dev * (2.0*std::f32::consts::PI * f_mod * t).sin();
+            phi += 2.0*std::f32::consts::PI * f_inst / fs;
+            iq.push(C32::new(phi.cos(), phi.sin()));
+        }
+        let mut dem = FmDemod::new(fs, dev, 5_000.0);
+        let mut y = vec![0.0f32; n];
+        let _ = dem.process(&iq, &mut y);
+        let snr = snr_db_at(f_mod, fs, &y);
+        assert!(snr > 20.0, "FM SNR too low: {:.1} dB", snr);
+    }
+
+    #[test]
+    fn pm_demod_recovers_tone() {
+        let fs = 48_000.0;
+        let n = 16_384;
+        let f_mod = 1_000.0;
+        let beta = 0.8; // rad peak phase deviation
+        let mut iq = Vec::with_capacity(n);
+        for k in 0..n {
+            let t = k as f32 / fs;
+            let phi = beta * (2.0*std::f32::consts::PI * f_mod * t).sin();
+            iq.push(C32::new(phi.cos(), phi.sin()));
+        }
+        let mut dem = PmDemod::new(beta, 5_000.0, fs);
+        let mut y = vec![0.0f32; n];
+        let _ = dem.process(&iq, &mut y);
+        let snr = snr_db_at(f_mod, fs, &y);
+        assert!(snr > 20.0, "PM SNR too low: {:.1} dB", snr);
     }
 
 }
