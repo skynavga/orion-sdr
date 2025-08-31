@@ -59,6 +59,62 @@ pub mod core {
 
     }
 
+    // Audio->IQ chain: audio stages (f32→f32) → modulator (f32→C32) → iq stages (C32→C32)
+    pub struct AudioToIqChain {
+        audio_stages: Vec<Box<dyn Block<In = f32, Out = f32>>>,
+        modulator: Box<dyn Block<In = f32, Out = num_complex::Complex32>>,
+        iq_stages: Vec<Box<dyn Block<In = num_complex::Complex32, Out = num_complex::Complex32>>>,
+    }
+
+    impl AudioToIqChain {
+        pub fn new<M>(modulator: M) -> Self
+        where
+            M: Block<In = f32, Out = num_complex::Complex32> + 'static,
+        {
+            Self {
+                audio_stages: Vec::new(),
+                modulator: Box::new(modulator),
+                iq_stages: Vec::new(),
+            }
+        }
+
+        pub fn push_audio<B>(&mut self, b: B)
+        where
+            B: Block<In = f32, Out = f32> + 'static,
+        {
+            self.audio_stages.push(Box::new(b));
+        }
+
+        pub fn push_iq<B>(&mut self, b: B)
+        where
+            B: Block<In = num_complex::Complex32, Out = num_complex::Complex32> + 'static,
+        {
+            self.iq_stages.push(Box::new(b));
+        }
+
+        /// Process one block of audio → IQ. Output length matches input length.
+        pub fn process(&mut self, mut audio: Vec<f32>) -> Vec<num_complex::Complex32> {
+            // audio-domain stages
+            for st in self.audio_stages.iter_mut() {
+                let mut next = vec![0.0f32; audio.len()];
+                let _ = st.process(&audio, &mut next);
+                audio = next;
+            }
+
+            // modulate to IQ
+            let mut iq = vec![num_complex::Complex32::new(0.0, 0.0); audio.len()];
+            let _ = self.modulator.process(&audio, &mut iq);
+
+            // iq-domain stages
+            for st in self.iq_stages.iter_mut() {
+                let mut next = vec![num_complex::Complex32::new(0.0, 0.0); iq.len()];
+                let _ = st.process(&iq, &mut next);
+                iq = next;
+            }
+            iq
+        }
+    }
+
     /// IQ->Audio chain: IQ stages -> one demod (IQ->f32) -> audio stages (f32->f32).
     pub struct IqToAudioChain {
         iq_stages: Vec<Box<dyn Block<In = C32, Out = C32>>>,
@@ -135,6 +191,75 @@ pub mod dsp {
     pub fn mix_with_nco(x: C32, nco: &mut Nco) -> C32 {
         let w = nco.next();
         C32::new(x.re * w.re - x.im * w.im, x.re * w.im + x.im * w.re)
+    }
+
+    /// Generate successive samples of a tone (real sine and/or complex exponential).
+    #[derive(Debug, Clone)]
+    pub struct ToneGen {
+        fs: f32,
+        f_hz: f32,
+        amp: f32,
+        phase0_rad: f32,
+        k: usize,
+    }
+
+    impl ToneGen {
+        /// `amp` scales both real and complex outputs. `phase0_rad` is initial phase offset.
+        pub fn new(fs: f32, f_hz: f32, amp: f32, phase0_rad: f32) -> Self {
+            Self { fs, f_hz, amp, phase0_rad, k: 0 }
+        }
+
+        #[inline]
+        fn phase_at(&self, k: usize) -> f32 {
+            // φ[k] = 2π f k / fs + phase0
+            std::f32::consts::TAU * self.f_hz * (k as f32) / self.fs + self.phase0_rad
+        }
+
+        /// Next complex sample: amp * e^{j φ[k]}
+        pub fn next_complex(&mut self) -> C32 {
+            let ph = self.phase_at(self.k);
+            self.k += 1;
+            C32::new(self.amp * ph.cos(), self.amp * ph.sin())
+        }
+
+        /// Next real sine sample: amp * sin(φ[k])
+        pub fn next_real(&mut self) -> f32 {
+            let ph = self.phase_at(self.k);
+            self.k += 1;
+            self.amp * ph.sin()
+        }
+
+        /// Take `n` complex samples.
+        pub fn take_complex(&mut self, n: usize) -> Vec<C32> {
+            (0..n).map(|_| self.next_complex()).collect()
+        }
+
+        /// Take `n` real samples.
+        pub fn take_real(&mut self, n: usize) -> Vec<f32> {
+            (0..n).map(|_| self.next_real()).collect()
+        }
+    }
+
+    /// Generate one complex tone sample (convenience).
+    #[inline]
+    pub fn gen_tone(fs: f32, f_hz: f32) -> C32 {
+        let mut tg = ToneGen::new(fs, f_hz, 1.0, 0.0);
+        tg.next_complex()
+        // Note: this allocates a small struct; for tight loops, keep a ToneGen in scope.
+    }
+
+    /// Generate a complex tone sequence of length `n` (convenience).
+    #[inline]
+    pub fn gen_tone_sequence(fs: f32, f_hz: f32, n: usize) -> Vec<C32> {
+        let mut tg = ToneGen::new(fs, f_hz, 1.0, 0.0);
+        tg.take_complex(n)
+    }
+
+    /// Generate a real (audio-domain) sine wave.
+    #[inline]
+    pub fn gen_real_tone(fs: f32, f_hz: f32, n: usize, amp: f32) -> Vec<f32> {
+        let mut tg = ToneGen::new(fs, f_hz, amp, 0.0);
+        tg.take_real(n)
     }
 
     /// Simple windowed-sinc lowpass FIR builder and stateful filter
@@ -359,14 +484,67 @@ pub mod dsp {
 
 }
 
+/// Simple modulators (TX-side) — currently AM/DSB(+carrier) and DSB-SC.
+pub mod modulate {
+    use crate::core::*;
+    use crate::dsp::*;
+    use num_complex::Complex32 as C32;
+ 
+    /// AM (DSB) modulator (baseband or RF-shift via NCO).
+    /// Output is complex IQ: s[n] = (carrier_level + m * x[n]) * e^{jφ[n]}
+    /// - `carrier_level` = 0.0 → DSB-SC; >0 adds a carrier (conventional AM)
+    /// - `modulation_index` m: recommended 0.0..1.0 to avoid overmodulation
+    pub struct AmDsbMod {
+        nco: Nco,
+        modulation_index: f32,
+        carrier_level: f32,
+        clamp: bool,
+        gain: f32,
+    }
+
+    impl AmDsbMod {
+        /// `carrier_hz` may be 0.0 for complex baseband.
+        pub fn new(sample_rate: f32, carrier_hz: f32, modulation_index: f32, carrier_level: f32) -> Self {
+            Self {
+                nco: Nco::new(carrier_hz, sample_rate),
+                modulation_index,
+                carrier_level,
+                clamp: true,
+                gain: 1.0,
+            }
+        }
+        pub fn set_gain(&mut self, g: f32) { self.gain = g; }
+        pub fn set_modulation_index(&mut self, m: f32) { self.modulation_index = m; }
+        pub fn set_carrier_level(&mut self, c: f32) { self.carrier_level = c; }
+        pub fn set_limiter(&mut self, on: bool) { self.clamp = on; }
+    }
+
+    impl Block for AmDsbMod {
+        type In  = f32;  // mono audio (−1..+1 recommended)
+        type Out = C32;  // complex IQ
+
+        fn process(&mut self, input: &[Self::In], output: &mut [Self::Out]) -> WorkReport {
+            let n = input.len().min(output.len());
+            for i in 0..n {
+                let m = self.carrier_level + self.modulation_index * input[i];
+                let a = if self.clamp { m.clamp(-1.0, 1.0) } else { m };
+                // Treat amplitude as real part, then frequency shift with NCO
+                let base = C32::new(a * self.gain, 0.0);
+                output[i] = mix_with_nco(base, &mut self.nco);
+            }
+            WorkReport { in_read: n, out_written: n }
+        }
+    }
+}
+
 pub mod demod {
 
     use super::core::{Block, WorkReport};
     use super::dsp::{mix_with_nco, DcBlocker, FirLowpass, Nco};
     use num_complex::Complex32 as C32;
 
-    /// CW demod: product detector with BFO at desired pitch, then narrow audio LP and DC block.
-    pub struct CwDemod {
+    /// CW envelope demod: product detector with BFO at desired pitch, then narrow audio LP and DC block.
+    pub struct CwEnvelopeDemod {
         fs: f32,
         nco: Nco,
         lp: FirLowpass,
@@ -375,7 +553,7 @@ pub mod demod {
         scratch: Vec<f32>, // reusable
     }
 
-    impl CwDemod {
+    impl CwEnvelopeDemod {
 
         /// `pitch_hz` e.g. 600–800; `audio_bw_hz` e.g. 200–500.
         pub fn new(sample_rate: f32, pitch_hz: f32, audio_bw_hz: f32) -> Self {
@@ -395,7 +573,7 @@ pub mod demod {
 
     }
 
-    impl Block for CwDemod {
+    impl Block for CwEnvelopeDemod {
 
         type In = C32;
         type Out = f32;
@@ -424,14 +602,14 @@ pub mod demod {
     }
 
     /// AM envelope detector: |IQ| -> DC block -> audio LP.
-    pub struct AmEnvelope {
+    pub struct AmEnvelopeDemod {
         lp: FirLowpass,
         dc: DcBlocker,
         gain: f32,
         scratch: Vec<f32>,
     }
 
-    impl AmEnvelope {
+    impl AmEnvelopeDemod {
 
         /// `audio_bw_hz` e.g. 5–8 kHz for AM broadcast
         pub fn new(sample_rate: f32, audio_bw_hz: f32) -> Self {
@@ -447,7 +625,7 @@ pub mod demod {
 
     }
 
-    impl Block for AmEnvelope {
+    impl Block for AmEnvelopeDemod {
 
         type In = C32;
         type Out = f32;
@@ -477,7 +655,7 @@ pub mod demod {
 
     /// SSB product detector: complex baseband -> real audio
     /// Mode USB/LSB is expressed by BFO sign.
-    pub struct SsbProductDetector {
+    pub struct SsbProductDemod {
         sample_rate: f32,
         nco: Nco,
         lp: FirLowpass,
@@ -486,7 +664,7 @@ pub mod demod {
         scratch: Vec<f32>,
     }
 
-    impl SsbProductDetector {
+    impl SsbProductDemod {
 
         pub fn new(sample_rate: f32, bfo_hz: f32, audio_bw_hz: f32) -> Self {
             Self {
@@ -507,7 +685,7 @@ pub mod demod {
 
     }
 
-    impl Block for SsbProductDetector {
+    impl Block for SsbProductDemod {
 
         type In = C32;
         type Out = f32;
@@ -540,7 +718,7 @@ pub mod demod {
     /// - Optional limiter for amplitude normalization.
     /// - Optional de-emphasis (single-pole RC) via `set_deemph_tau_us`.
     /// - Audio is scaled so that +/- `deviation_hz` -> approx +/-1.0.
-    pub struct FmDemod {
+    pub struct FmQuadratureDemod {
         fs: f32,
         deviation_hz: f32,
         limiter: bool,
@@ -557,7 +735,7 @@ pub mod demod {
         scratch: Vec<f32>,
     }
 
-    impl FmDemod {
+    impl FmQuadratureDemod {
         /// `audio_bw_hz` e.g. 3–5 kHz for NBFM voice; `deviation_hz` e.g. 2.5k/5k.
         pub fn new(sample_rate: f32, deviation_hz: f32, audio_bw_hz: f32) -> Self {
             Self {
@@ -588,7 +766,7 @@ pub mod demod {
         }
     }
 
-    impl Block for FmDemod {
+    impl Block for FmQuadratureDemod {
         type In = C32;
         type Out = f32;
 
@@ -642,7 +820,7 @@ pub mod demod {
     /// - Works on complex baseband IQ.
     /// - Optional limiter.
     /// - Audio is `phase / pm_sense_rad`, where `pm_sense_rad` is the phase deviation that maps to +/-1.
-    pub struct PmDemod {
+    pub struct PmQuadratureDemod {
         limiter: bool,
         pm_sense_rad: f32,
         // post processing
@@ -654,7 +832,7 @@ pub mod demod {
         scratch: Vec<f32>,
     }
 
-    impl PmDemod {
+    impl PmQuadratureDemod {
         /// `pm_sense_rad`: set to your phase deviation so +/-pm_sense -> +/-1.0 audio (e.g., 0.5–1.0 rad).
         /// `audio_bw_hz`: audio lowpass bandwidth.
         pub fn new(pm_sense_rad: f32, audio_bw_hz: f32, sample_rate: f32) -> Self {
@@ -673,7 +851,7 @@ pub mod demod {
         pub fn set_pm_sense_rad(&mut self, rad: f32) { self.pm_sense_rad = rad.max(1e-3); }
     }
 
-    impl Block for PmDemod {
+    impl Block for PmQuadratureDemod {
         type In = C32;
         type Out = f32;
 
@@ -713,17 +891,17 @@ pub mod demod {
 // PyO3 bindings
 // =============================
 #[pyclass]
-struct PySsbDetector {
-    inner: demod::SsbProductDetector,
+struct PySsbProductDemod {
+    inner: demod::SsbProductDemod,
 }
 
 #[pymethods]
-impl PySsbDetector {
+impl PySsbProductDemod {
     #[new]
     fn new(sample_rate: f32, mode: &str, audio_bw_hz: f32, bfo_pitch_hz: f32) -> PyResult<Self> {
         // Convention: for USB, positive BFO pitch; for LSB, negative
         let sign = match mode.to_ascii_uppercase().as_str() { "USB" => 1.0, "LSB" => -1.0, _ => 1.0 };
-        let inner = demod::SsbProductDetector::new(sample_rate, sign * bfo_pitch_hz, audio_bw_hz);
+        let inner = demod::SsbProductDemod::new(sample_rate, sign * bfo_pitch_hz, audio_bw_hz);
         Ok(Self { inner })
     }
 
@@ -747,15 +925,20 @@ impl PySsbDetector {
 
 #[pymodule]
 fn sdr(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<PySsbDetector>()?;
+    m.add_class::<PySsbProductDemod>()?;
     Ok(())
 }
 
+
+// =============================
+// tests
+// =============================
 #[cfg(test)]
 mod tests {
     use crate::core::*;
     use crate::dsp::*;
     use crate::demod::*;
+    use crate::modulate::*;
     use num_complex::Complex32 as C32;
 
     /// Tiny single-bin DFT; good enough for power at a specific frequency.
@@ -774,25 +957,35 @@ mod tests {
         mag2
     }
 
-    /// Generate a complex baseband tone: e^{j 2π f t}
-    fn gen_complex_tone(fs: f32, f_hz: f32, n: usize) -> Vec<C32> {
-        (0..n)
-            .map(|k| {
-                let phase = 2.0 * std::f32::consts::PI * f_hz * (k as f32) / fs;
-                C32::new(phase.cos(), phase.sin())
-            })
-            .collect()
+    fn snr_db_at(freq_hz: f32, fs: f32, x: &[f32]) -> f32 {
+        // single-bin DFT power vs an off-bin
+        let n = x.len();
+        let w = -2.0 * std::f32::consts::PI * freq_hz / fs;
+        let (mut re, mut im) = (0.0f32, 0.0f32);
+        for (k, &s) in x.iter().enumerate() {
+            let t = w * (k as f32);
+            re += s * t.cos();
+            im += s * t.sin();
+        }
+        let p_sig = (re*re + im*im) / (n as f32 * n as f32);
+        // off-tone
+        let f2 = freq_hz * 0.7;
+        let w2 = -2.0 * std::f32::consts::PI * f2 / fs;
+        let (mut r2, mut i2) = (0.0f32, 0.0f32);
+        for (k, &s) in x.iter().enumerate() { let t = w2 * (k as f32); r2 += s*t.cos(); i2 += s*t.sin(); }
+        let p_off = (r2*r2 + i2*i2) / (n as f32 * n as f32);
+        10.0 * (p_sig / (p_off + 1e-20)).log10()
     }
 
     #[test]
-    fn ssb_product_detector_yields_strong_tone_and_low_dc() {
+    fn ssb_product_demod_yields_strong_tone_and_low_dc() {
         let fs = 48_000.0;
         let n = 16_384; // ~0.34 s
         let f_tone = 1_000.0; // 1 kHz audio
-        let iq = gen_complex_tone(fs, f_tone, n);
+        let iq = gen_tone_sequence(fs, f_tone, n);
 
         // BFO at 0 Hz, audio BW 2.8 kHz
-        let mut det = SsbProductDetector::new(fs, 0.0, 2_800.0);
+        let mut det = SsbProductDemod::new(fs, 0.0, 2_800.0);
         let mut audio = vec![0.0f32; n];
         let _rep = crate::core::run_block(&mut det, &iq, &mut audio);
 
@@ -869,43 +1062,23 @@ mod tests {
         }
 
         // CW chain
-        let mut cw = IqToAudioChain::new(CwDemod::new(fs, 700.0, 300.0));
+        let mut cw = IqToAudioChain::new(CwEnvelopeDemod::new(fs, 700.0, 300.0));
         let y_cw = cw.process(tone.clone());
         assert_eq!(y_cw.len(), n);
 
         // AM chain
-        let mut am = IqToAudioChain::new(AmEnvelope::new(fs, 5_000.0));
+        let mut am = IqToAudioChain::new(AmEnvelopeDemod::new(fs, 5_000.0));
         let y_am = am.process(tone.clone());
         assert_eq!(y_am.len(), n);
 
         // SSB chain (existing)
-        let mut ssb = IqToAudioChain::new(SsbProductDetector::new(fs, 0.0, 2_800.0));
+        let mut ssb = IqToAudioChain::new(SsbProductDemod::new(fs, 0.0, 2_800.0));
         let y_ssb = ssb.process(tone);
         assert_eq!(y_ssb.len(), n);
     }
 
-    fn snr_db_at(freq_hz: f32, fs: f32, x: &[f32]) -> f32 {
-        // single-bin DFT power vs an off-bin
-        let n = x.len();
-        let w = -2.0 * std::f32::consts::PI * freq_hz / fs;
-        let (mut re, mut im) = (0.0f32, 0.0f32);
-        for (k, &s) in x.iter().enumerate() {
-            let t = w * (k as f32);
-            re += s * t.cos();
-            im += s * t.sin();
-        }
-        let p_sig = (re*re + im*im) / (n as f32 * n as f32);
-        // off-tone
-        let f2 = freq_hz * 0.7;
-        let w2 = -2.0 * std::f32::consts::PI * f2 / fs;
-        let (mut r2, mut i2) = (0.0f32, 0.0f32);
-        for (k, &s) in x.iter().enumerate() { let t = w2 * (k as f32); r2 += s*t.cos(); i2 += s*t.sin(); }
-        let p_off = (r2*r2 + i2*i2) / (n as f32 * n as f32);
-        10.0 * (p_sig / (p_off + 1e-20)).log10()
-    }
-
     #[test]
-    fn fm_demod_recovers_tone() {
+    fn fm_quadrature_demod_recovers_tone() {
         let fs = 48_000.0;
         let n = 16_384;
         let f_mod = 1_000.0;
@@ -919,7 +1092,7 @@ mod tests {
             phi += 2.0*std::f32::consts::PI * f_inst / fs;
             iq.push(C32::new(phi.cos(), phi.sin()));
         }
-        let mut dem = FmDemod::new(fs, dev, 5_000.0);
+        let mut dem = FmQuadratureDemod::new(fs, dev, 5_000.0);
         let mut y = vec![0.0f32; n];
         let _ = dem.process(&iq, &mut y);
         let snr = snr_db_at(f_mod, fs, &y);
@@ -927,7 +1100,7 @@ mod tests {
     }
 
     #[test]
-    fn pm_demod_recovers_tone() {
+    fn pm_quadrature_demod_recovers_tone() {
         let fs = 48_000.0;
         let n = 16_384;
         let f_mod = 1_000.0;
@@ -938,11 +1111,53 @@ mod tests {
             let phi = beta * (2.0*std::f32::consts::PI * f_mod * t).sin();
             iq.push(C32::new(phi.cos(), phi.sin()));
         }
-        let mut dem = PmDemod::new(beta, 5_000.0, fs);
+        let mut dem = PmQuadratureDemod::new(beta, 5_000.0, fs);
         let mut y = vec![0.0f32; n];
         let _ = dem.process(&iq, &mut y);
         let snr = snr_db_at(f_mod, fs, &y);
         assert!(snr > 20.0, "PM SNR too low: {:.1} dB", snr);
+    }
+
+    #[test]
+    fn audio_to_iq_chain_runs_and_lengths_match() {
+        let fs = 48_000.0;
+        let n = 4096;
+        let audio = gen_real_tone(fs, 1000.0, n, 0.5);
+
+        // Baseband AM (carrier_hz=0): DSB-SC if carrier_level=0.0, AM if >0
+        let am = AmDsbMod::new(fs, 0.0, 0.8, 0.5);
+        let mut chain = AudioToIqChain::new(am);
+
+        let iq = chain.process(audio);
+        assert_eq!(iq.len(), n);
+        // sanity: not all zeros
+        let power: f32 = iq.iter().map(|z| z.norm_sqr()).sum::<f32>() / (n as f32);
+        assert!(power > 1e-6, "IQ power too small");
+    }
+
+    #[test]
+    fn am_roundtrip_modulate_then_demod() {
+        let fs = 48_000.0;
+        let n = 16384;
+        let f_mod = 1000.0;
+        let audio_in = gen_real_tone(fs, f_mod, n, 0.5); // input audio tone
+
+        // Modulate to baseband AM with a carrier (so envelope ~= carrier + m*x).
+        let am = AmDsbMod::new(fs, 0.0, 0.8, 0.5);
+        let mut tx = AudioToIqChain::new(am);
+        let iq = tx.process(audio_in.clone());
+
+        // Demod envelope back to audio band
+        let mut dem = AmEnvelopeDemod::new(fs, 5_000.0);
+        let mut audio_out = vec![0.0f32; n];
+        let _ = dem.process(&iq, &mut audio_out);
+
+        // Remove initial transient for fairness
+        let tail = &audio_out[n/2..];
+
+        // Expect a strong 1 kHz tone in the demodulated audio
+        let snr = snr_db_at(fs, f_mod, tail);
+        assert!(snr > 20.0, "AM roundtrip SNR too low: {:.1} dB", snr);
     }
 
 }
