@@ -4,6 +4,7 @@ A composable SDR/DSP library in Rust with Python bindings.
 
 ## Change Log
 
+- v0.0.8: add CW, SSB, FM, PM modulators; reorganize source into module tree
 - v0.0.7: use {Mode}{Approach}{Demod|Mod} name convention; add Audio to IQ chain, AM modulator with tests
 - v0.0.6: add FM and PM demodulators with tests; update changelog, readme
 - v0.0.5: add graph scheduler; AGC, FIR decimator; CW and AM demodulators with tests
@@ -12,19 +13,21 @@ A composable SDR/DSP library in Rust with Python bindings.
 - v0.0.2: add API implementation and basic test
 - v0.0.1: placeholder API, project structure, roadmap
 
-## Features (as of v0.0.7)
+## Status
+
+- Pre-alpha
+
+## Features (as of v0.0.8)
 
 - Core traits and runner ✅
 - Basic, IQ->IQ, IQ->Audio, Audio->IQ graph schedulers ✅
 - NCO, Tone generator, FIR low pass, DC blocker, FIR decimator, AGC ✅
-- CW, AM, SSB, FM, PM demodulators ✅
-- AM modulator
-- PyO3 binding for SSB and simple Python process ✅
+- CW, AM, SSB, FM, PM modulators and demodulators ✅
 - Basic DSP and Demod tests ✅
 
 ## Next Milestones
 
-- CW, SSB, FM, PM modulators
+- PyO3 binding for SSB and simple Python process ✅
 - Expose full pipeline via Python, record/replay, UI, etc.
 
 # Demodulator Usage

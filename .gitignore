@@ -3,6 +3,8 @@
 .DS_Store
 *~
 *.bak
+*.patch
 
 # directories
 /target
+/tmp
