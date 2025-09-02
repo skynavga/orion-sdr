@@ -6,6 +6,7 @@ use crate::dsp::{Nco, mix_with_nco};
 /// Output is complex IQ: s[n] = (carrier_level + m * x[n]) * e^{jφ[n]}
 /// - `carrier_level` = 0.0 → DSB-SC; >0 adds a carrier (conventional AM)
 /// - `modulation_index` m: recommended 0.0..1.0 to avoid overmodulation
+#[derive(Debug, Clone)]
 pub struct AmDsbMod {
     nco: Nco,
     modulation_index: f32,

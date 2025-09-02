@@ -3,6 +3,7 @@ use crate::core::{Block, WorkReport};
 use crate::dsp::{Nco, mix_with_nco};
 
 /// FM (direct) – phase accumulator with deviation scaling (Hz per unit input).
+#[derive(Debug, Clone)]
 pub struct FmPhaseAccumMod {
     fs: f32,
     kf_hz_per_unit: f32, // peak deviation per |x|=1

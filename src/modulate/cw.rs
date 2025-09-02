@@ -3,6 +3,7 @@ use crate::core::{Block, WorkReport};
 use crate::dsp::{Nco, mix_with_nco};
 
 /// CW (keyed carrier) – envelope-shaped keyed NCO
+#[derive(Debug, Clone)]
 pub struct CwKeyedMod {
     nco: Nco,
     env: f32,
