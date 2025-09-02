@@ -3,6 +3,7 @@ use crate::core::{Block, WorkReport};
 use crate::dsp::{Nco, mix_with_nco};
 
 /// PM (direct) – instantaneous phase φ = kp * x[n], optional RF upconversion.
+#[derive(Debug, Clone)]
 pub struct PmDirectPhaseMod {
     kp_rad_per_unit: f32,
     rf_nco: Nco,

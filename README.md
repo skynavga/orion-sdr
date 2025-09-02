@@ -4,6 +4,7 @@ A composable SDR/DSP library in Rust with Python bindings.
 
 ## Change Log
 
+- v0.0.10: optimize SSB mod and demod path; add throughput results to readme
 - v0.0.9: subdivide modulator and demodulator code into per-mode modules
 - v0.0.8: add CW, SSB, FM, PM modulators; reorganize source into module tree
 - v0.0.7: use {Mode}{Approach}{Demod|Mod} name convention; add Audio to IQ chain, AM modulator with tests
@@ -18,11 +19,11 @@ A composable SDR/DSP library in Rust with Python bindings.
 
 - Pre-alpha
 
-## Features (as of v0.0.9)
+## Features (as of v0.0.10)
 
 - Core traits and runner ✅
 - Basic, IQ->IQ, IQ->Audio, Audio->IQ graph schedulers ✅
-- NCO, Tone generator, FIR low pass, DC blocker, FIR decimator, AGC ✅
+- NCO, Phase Rotator, IIR  FIR low pass, DC blocker, FIR decimator, AGC, IIR cascade ✅
 - CW, AM, SSB, FM, PM modulators and demodulators ✅
 - Basic DSP and Demod tests ✅
 
@@ -30,6 +31,22 @@ A composable SDR/DSP library in Rust with Python bindings.
 
 - PyO3 binding for SSB and simple Python process ✅
 - Expose full pipeline via Python, record/replay, UI, etc.
+
+## Throughput Test Results (v0.0.10, optimized release build)
+
+The following results were obtained using `cargo test --release -- --ignored --nocapture` on Apple M2 Silicon (sans SIMD):
+
+| Mode   | Throughput (Msps) | Runtime (s) |
+|--------|-------------------|-------------|
+| SSB-USB | **122.75**        | 0.011       |
+| CW      | 104.41            | 0.019       |
+| AM      | 33.40             | 0.059       |
+| PM      | 30.59             | 0.064       |
+| FM      | 26.71             | 0.074       |
+
+All throughput tests passed successfully (`5 passed; 0 failed`).
+
+> **Note:** SSB optimizations in this release improved throughput substantially, achieving over 120 Msps, the highest among all demodulation modes.
 
 # Demodulator Usage
 

@@ -1,89 +1,107 @@
-use num_complex::Complex32 as C32;
+// src/modulate/ssb.rs
+use crate::dsp::{LpCascade, Rotator};
 use crate::core::{Block, WorkReport};
-use crate::dsp::{FirLowpass, Nco, mix_with_nco};
+use num_complex::Complex32 as C32;
 
-/// SSB (Weaver/phasing method) – audio → analytic (via sin/cos mix + LPF), optional RF upconvert.
-/// Produces USB by default; set `sideband = -1.0` for LSB (flips Q sign).
+#[allow(dead_code)]
 pub struct SsbPhasingMod {
     fs: f32,
-    // Audio IF for Weaver mixing (typically ~1–2 kHz); controls tone placement.
     audio_if_hz: f32,
-    // Lowpass to constrain audio BW around 0 after the Weaver mixers
-    pre_lp: FirLowpass,
-    // Optional upconversion to RF (0 Hz => stay at complex baseband)
-    rf_nco: Nco,
-    // +1.0 => USB, -1.0 => LSB
-    sideband: f32,
-    gain: f32,
-    // scratch buffers
-    i_buf: Vec<f32>,
-    q_buf: Vec<f32>,
-    tmp: Vec<f32>,
-    cos_nco: Nco,
-    sin_nco: Nco,
+    usb: bool,
+    // Replaces two FirLowpass instances:
+    lp_i: LpCascade,
+    lp_q: LpCascade,
+    // Rotators
+    aud_nco: Rotator,
+    rf_nco:  Rotator, // rf_hz==0.0 -> baseband
 }
 
 impl SsbPhasingMod {
-    /// `audio_bw_hz`: desired SSB audio bandwidth
-    /// `audio_if_hz`: Weaver mixing frequency inside audio band (e.g., 1500.0)
-    /// `rf_hz`: final RF translation (0 for baseband IQ)
-    /// `usb`: true for USB, false for LSB
-    pub fn new(sample_rate: f32, audio_bw_hz: f32, audio_if_hz: f32, rf_hz: f32, usb: bool) -> Self {
-        // create pre-emphasis lowpass for audio before phasing
-        let trans_hz = (audio_bw_hz * 0.15).clamp(200.0, 600.0);
-        let pre_lp = FirLowpass::design(sample_rate, audio_bw_hz, trans_hz);
-        let side = if usb { 1.0 } else { -1.0 };
+    pub fn new(fs: f32, audio_bw_hz: f32, audio_if_hz: f32, rf_hz: f32, usb: bool) -> Self {
+        // Slightly undercut fc to ensure good sideband suppression at edges
+        let fc = audio_bw_hz * 0.9;
         Self {
-            fs: sample_rate,
+            fs,
             audio_if_hz,
-            pre_lp,
-            rf_nco: Nco::new(rf_hz, sample_rate),
-            sideband: side,
-            gain: 1.0,
-            i_buf: Vec::new(),
-            q_buf: Vec::new(),
-            tmp: Vec::new(),
-            cos_nco: Nco::new(audio_if_hz, sample_rate),
-            sin_nco: Nco::new(audio_if_hz, sample_rate),
+            usb,
+            lp_i: LpCascade::design(fs, fc),
+            lp_q: LpCascade::design(fs, fc),
+            aud_nco: Rotator::new(audio_if_hz, fs),
+            rf_nco:  Rotator::new(rf_hz, fs),
         }
     }
-    pub fn set_gain(&mut self, g: f32) { self.gain = g; }
-    pub fn set_audio_if(&mut self, f: f32) {
-        self.audio_if_hz = f;
-        self.cos_nco = Nco::new(f, self.fs);
-        self.sin_nco = Nco::new(f, self.fs);
-    }
-    pub fn set_usb(&mut self, usb: bool) { self.sideband = if usb { 1.0 } else { -1.0 }; }
 }
 
 impl Block for SsbPhasingMod {
     type In = f32;   // audio
     type Out = C32;  // IQ
 
+    #[inline]
     fn process(&mut self, input: &[f32], output: &mut [C32]) -> WorkReport {
         let n = input.len().min(output.len());
-        if self.i_buf.len() < n { self.i_buf.resize(n, 0.0); }
-        if self.q_buf.len() < n { self.q_buf.resize(n, 0.0); }
-        let (i_buf, q_buf) = (&mut self.i_buf[..n], &mut self.q_buf[..n]);
 
-        // Weaver: multiply audio by cos and sin at audio_if_hz, then lowpass both
-        for k in 0..n {
-            let (c, s) = self.cos_nco.next_cs(); // returns (cos, sin) of running phase
-            let x = input[k];
-            i_buf[k] = x * c;
-            q_buf[k] = x * s;
+        let side = if self.usb { 1.0 } else { -1.0 };
+        let mut i = 0;
+        let nn = n & !3; // small unroll
+
+        while i < nn {
+            // 0
+            let p0 = self.aud_nco.next(); // (cos, sin)
+            let i0 = self.lp_i.process(input[i]     * p0.re);
+            let q0 = self.lp_q.process(input[i]     * p0.im);
+            let z0 = C32::new(i0, side * q0);
+            let r0 = self.rf_nco.next();
+            output[i] = C32::new(
+                z0.re.mul_add(r0.re, -z0.im * r0.im),
+                z0.im.mul_add(r0.re,  z0.re * r0.im),
+            );
+
+            // 1
+            let p1 = self.aud_nco.next();
+            let i1 = self.lp_i.process(input[i+1] * p1.re);
+            let q1 = self.lp_q.process(input[i+1] * p1.im);
+            let z1 = C32::new(i1, side * q1);
+            let r1 = self.rf_nco.next();
+            output[i+1] = C32::new(
+                z1.re.mul_add(r1.re, -z1.im * r1.im),
+                z1.im.mul_add(r1.re,  z1.re * r1.im),
+            );
+
+            // 2
+            let p2 = self.aud_nco.next();
+            let i2 = self.lp_i.process(input[i+2] * p2.re);
+            let q2 = self.lp_q.process(input[i+2] * p2.im);
+            let z2 = C32::new(i2, side * q2);
+            let r2 = self.rf_nco.next();
+            output[i+2] = C32::new(
+                z2.re.mul_add(r2.re, -z2.im * r2.im),
+                z2.im.mul_add(r2.re,  z2.re * r2.im),
+            );
+
+            // 3
+            let p3 = self.aud_nco.next();
+            let i3 = self.lp_i.process(input[i+3] * p3.re);
+            let q3 = self.lp_q.process(input[i+3] * p3.im);
+            let z3 = C32::new(i3, side * q3);
+            let r3 = self.rf_nco.next();
+            output[i+3] = C32::new(
+                z3.re.mul_add(r3.re, -z3.im * r3.im),
+                z3.im.mul_add(r3.re,  z3.re * r3.im),
+            );
+
+            i += 4;
         }
-        if self.tmp.len() != n { self.tmp.resize(n, 0.0); }
-        self.tmp.copy_from_slice(&i_buf[..n]);
-        self.pre_lp.process(&self.tmp[..], &mut i_buf[..n]);
-        self.tmp.copy_from_slice(&q_buf[..n]);
-        self.pre_lp.process(&self.tmp[..], &mut q_buf[..n]);
-
-        // Build analytic audio: I = LP(x·cos), Q = ± LP(x·sin)
-        for k in 0..n {
-            let z = C32::new(i_buf[k], self.sideband * q_buf[k]) * self.gain;
-            // Optional RF translation
-            output[k] = mix_with_nco(z, &mut self.rf_nco);
+        while i < n {
+            let p = self.aud_nco.next();
+            let ii = self.lp_i.process(input[i] * p.re);
+            let qq = self.lp_q.process(input[i] * p.im);
+            let z  = C32::new(ii, side * qq);
+            let r  = self.rf_nco.next();
+            output[i] = C32::new(
+                z.re.mul_add(r.re, -z.im * r.im),
+                z.im.mul_add(r.re,  z.re * r.im),
+            );
+            i += 1;
         }
 
         WorkReport { in_read: n, out_written: n }
