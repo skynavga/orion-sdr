@@ -1,5 +1,5 @@
-use crate::core::{Block, WorkReport};
 use num_complex::Complex32 as C32;
+use crate::core::{Block, WorkReport};
 
 /// Root-mean-square of a real slice.
 #[inline]

@@ -17,4 +17,4 @@ pub mod dc;
 pub use dc::DcBlocker;
 
 pub mod nco;
-pub use nco::Nco;
+pub use nco::{Nco, mix_with_nco};

@@ -4,6 +4,7 @@ A composable SDR/DSP library in Rust with Python bindings.
 
 ## Change Log
 
+- v0.0.9: subdivide modulator and demodulator code into per-mode modules
 - v0.0.8: add CW, SSB, FM, PM modulators; reorganize source into module tree
 - v0.0.7: use {Mode}{Approach}{Demod|Mod} name convention; add Audio to IQ chain, AM modulator with tests
 - v0.0.6: add FM and PM demodulators with tests; update changelog, readme
@@ -17,7 +18,7 @@ A composable SDR/DSP library in Rust with Python bindings.
 
 - Pre-alpha
 
-## Features (as of v0.0.8)
+## Features (as of v0.0.9)
 
 - Core traits and runner ✅
 - Basic, IQ->IQ, IQ->Audio, Audio->IQ graph schedulers ✅
@@ -43,7 +44,7 @@ Extract a CW tone at a chosen audio pitch (e.g., 600–800 Hz) from complex base
 ```rust
 use orion_sdr::{
     core::IqToAudioChain,
-    demod::CwEnvelopeDemod,
+    demodulate::CwEnvelopeDemod,
     dsp::{FirDecimator, AgcRms},
 };
 use num_complex::Complex32 as C32;
@@ -78,7 +79,7 @@ Simple envelope detector with post low-pass and DC removal.
 ```rust
 use orion_sdr::{
     core::IqToAudioChain,
-    demod::AmEnvelopeDemod,
+    demodulate::AmEnvelopeDemod,
     dsp::AgcRms,
 };
 use num_complex::Complex32 as C32;
@@ -100,7 +101,7 @@ Product detector with BFO; set BFO frequency and audio bandwidth to taste.
 ```rust
 use orion_sdr::{
     core::IqToAudioChain,
-    demod::SsbProductDemod,
+    demodulate::SsbProductDemod,
     dsp::{FirDecimator, AgcRms},
 };
 use num_complex::Complex32 as C32;
@@ -131,7 +132,7 @@ Phase-difference quadrature discriminator. Optional limiter and de-emphasis. Aud
 ```rust
 use orion_sdr::{
     core::IqToAudioChain,
-    demod::FmQuadratureDemod,
+    demodulate::FmQuadratureDemod,
     dsp::AgcRms,
 };
 use num_complex::Complex32 as C32;
@@ -159,7 +160,7 @@ Instantaneous phase (with unwrap). Set `pm_sense_rad` so that your expected phas
 ```rust
 use orion_sdr::{
     core::IqToAudioChain,
-    demod::PmQuadratureDemod,
+    demodulate::PmQuadratureDemod,
 };
 use num_complex::Complex32 as C32;
 
