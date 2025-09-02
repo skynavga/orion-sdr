@@ -64,7 +64,7 @@ impl Block for FmQuadratureDemod {
         }
 
         // LP -> output
-        self.post_lp.process_block(&ytmp[..], &mut output[..n]);
+        self.post_lp.process(&ytmp[..], &mut output[..n]);
 
         WorkReport { in_read: n, out_written: n }
     }

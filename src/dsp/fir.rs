@@ -35,7 +35,7 @@ impl FirLowpass {
     }
 
     #[inline]
-    pub fn process_block(&mut self, input: &[f32], output: &mut [f32]) {
+    pub fn process(&mut self, input: &[f32], output: &mut [f32]) {
         let n = input.len().min(output.len());
         for i in 0..n {
             self.delay[self.idx] = input[i];

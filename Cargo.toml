@@ -30,3 +30,8 @@ features = ["extension-module"]
 
 [dependencies.numpy]
 version = "0.22"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

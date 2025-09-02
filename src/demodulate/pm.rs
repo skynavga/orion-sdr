@@ -54,7 +54,7 @@ impl Block for PmQuadratureDemod {
         self.prev = prev;
 
         // 2) Post-lowpass to audio bandwidth
-        self.post_lp.process_block(&ytmp[..], &mut output[..n]);
+        self.post_lp.process(&ytmp[..], &mut output[..n]);
 
         WorkReport { in_read: n, out_written: n }
     }
