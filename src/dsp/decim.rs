@@ -45,8 +45,8 @@ impl Block for FirDecimator {
             self.rq[k] = input[k].im;
         }
         // filter at input rate
-        self.lp_i.process_block(&self.ri[..n], &mut self.yi[..n]);
-        self.lp_q.process_block(&self.rq[..n], &mut self.yq[..n]);
+        self.lp_i.process(&self.ri[..n], &mut self.yi[..n]);
+        self.lp_q.process(&self.rq[..n], &mut self.yq[..n]);
 
         // decimate by M
         let m = self.m;

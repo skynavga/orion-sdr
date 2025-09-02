@@ -43,7 +43,7 @@ impl Block for AmEnvelopeDemod {
         }
 
         // LP -> output
-        self.lp.process_block(&tmp[..], &mut output[..n]);
+        self.lp.process(&tmp[..], &mut output[..n]);
 
         // DC block (separate buffers)
         self.dc.process(&output[..n], &mut tmp[..]);

@@ -75,9 +75,9 @@ impl Block for SsbPhasingMod {
         }
         if self.tmp.len() != n { self.tmp.resize(n, 0.0); }
         self.tmp.copy_from_slice(&i_buf[..n]);
-        self.pre_lp.process_block(&self.tmp[..], &mut i_buf[..n]);
+        self.pre_lp.process(&self.tmp[..], &mut i_buf[..n]);
         self.tmp.copy_from_slice(&q_buf[..n]);
-        self.pre_lp.process_block(&self.tmp[..], &mut q_buf[..n]);
+        self.pre_lp.process(&self.tmp[..], &mut q_buf[..n]);
 
         // Build analytic audio: I = LP(x·cos), Q = ± LP(x·sin)
         for k in 0..n {
