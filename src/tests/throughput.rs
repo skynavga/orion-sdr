@@ -43,7 +43,6 @@ fn measure_throughput(mut f: impl FnMut() -> usize, samples_per_pass: usize, rep
 // --- CW -----------------------------------------------------------------
 
 #[test]
-#[ignore]
 fn throughput_cw_roundtrip() {
     use crate::core::{AudioToIqChain, IqToAudioChain};
     use crate::modulate::CwKeyedMod;
@@ -72,11 +71,10 @@ fn throughput_cw_roundtrip() {
     assert!(msps >= min_msps, "CW throughput {:.2} Msps < min {:.2} Msps", msps, min_msps);
 }
 
-// --- AM -----------------------------------------------------------------
+// --- AM-PowerSqrt -------------------------------------------------------
 
 #[test]
-#[ignore]
-fn throughput_am_roundtrip() {
+fn throughput_am_powersqrt_roundtrip() {
     use crate::core::{AudioToIqChain, IqToAudioChain};
     use crate::modulate::AmDsbMod;
     use crate::demodulate::AmEnvelopeDemod;
@@ -99,15 +97,53 @@ fn throughput_am_roundtrip() {
         repeats,
     );
 
-    println!("[AM] {:.2} Msps in {:.3}s", msps, dt);
+    println!("[AM](PowerSqrt) {:.2} Msps in {:.3}s", msps, dt);
     let min_msps = minsps_from_env(0.2);
-    assert!(msps >= min_msps, "AM throughput {:.2} Msps < min {:.2} Msps", msps, min_msps);
+    assert!(msps >= min_msps, "AM-PowerSqrt throughput {:.2} Msps < min {:.2} Msps", msps, min_msps);
+}
+
+// --- AM-AbsApprox -------------------------------------------------------
+
+#[test]
+fn throughput_am_absapprox_roundtrip() {
+    use crate::core::{AudioToIqChain, IqToAudioChain};
+    use crate::modulate::AmDsbMod;
+    use crate::demodulate::AmEnvelopeDemod;
+
+    let fs = 48_000.0;
+    let n = 65_536;
+    let repeats = 30;
+
+    // Same signal shape & size as the PowerSqrt test for apples-to-apples comparison
+    let audio = real_tone(fs, 1000.0, n, 0.5);
+
+    // Keep the same modulator config you use in the PowerSqrt test
+    let mut tx = AudioToIqChain::new(AmDsbMod::new(fs, 0.0, 0.8, 0.5));
+
+    // AbsApprox envelope
+    let mut rx = IqToAudioChain::new(
+        AmEnvelopeDemod::new(fs, 5_000.0).with_abs_approx(0.9475, 0.3925)
+    );
+
+    let (msps, dt) = measure_throughput(
+        || {
+            // Clone the tone each pass for fairness (matches existing style)
+            let iq = tx.process(audio.clone());
+            let out = rx.process(iq);
+            out.len()
+        },
+        n,
+        repeats,
+    );
+
+    println!("[AM](AbsApprox) {:.2} Msps in {:.3}s", msps, dt);
+    let min_msps = minsps_from_env(0.2);
+    assert!(msps >= min_msps,"AM-AbsApprox throughput {:.2} Msps < min {:.2} Msps", msps, min_msps);
 }
 
 // --- SSB (USB) ----------------------------------------------------------
 
 #[test]
-#[ignore]
 fn throughput_ssb_usb_roundtrip() {
     use crate::core::{AudioToIqChain, IqToAudioChain};
     use crate::modulate::SsbPhasingMod;
@@ -139,7 +175,6 @@ fn throughput_ssb_usb_roundtrip() {
 // --- FM -----------------------------------------------------------------
 
 #[test]
-#[ignore]
 fn throughput_fm_roundtrip() {
     use crate::core::{AudioToIqChain, IqToAudioChain};
     use crate::modulate::FmPhaseAccumMod;
@@ -171,7 +206,6 @@ fn throughput_fm_roundtrip() {
 // --- PM -----------------------------------------------------------------
 
 #[test]
-#[ignore]
 fn throughput_pm_roundtrip() {
     use crate::core::{AudioToIqChain, IqToAudioChain};
     use crate::modulate::PmDirectPhaseMod;

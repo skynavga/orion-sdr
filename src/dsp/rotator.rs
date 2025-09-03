@@ -36,7 +36,7 @@ impl Rotator {
     }
 
     /// Advance and return next phasor (cos, sin) as complex.
-    #[inline]
+    #[inline(always)]
     pub fn next(&mut self) -> C32 {
         // Complex multiply with FMAs:
         let zr = self.z.re.mul_add(self.w.re, -self.z.im * self.w.im);
