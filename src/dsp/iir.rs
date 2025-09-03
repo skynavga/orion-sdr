@@ -11,7 +11,7 @@ impl Biquad {
         Self{b0,b1,b2,a1,a2,z1:0.0,z2:0.0}
     }
     #[inline] pub fn reset(&mut self){ self.z1=0.0; self.z2=0.0; }
-    #[inline] pub fn process(&mut self, x: f32) -> f32 {
+    #[inline(always)] pub fn process(&mut self, x: f32) -> f32 {
         // Transposed Direct Form II, with FMAs
         let y = x.mul_add(self.b0, self.z1);
         self.z1 = x.mul_add(self.b1, self.z2) - self.a1 * y;
@@ -48,7 +48,7 @@ impl LpCascade {
     }
 
     #[inline] pub fn reset(&mut self) { self.s[0].reset(); self.s[1].reset(); }
-    #[inline] pub fn process(&mut self, mut x: f32) -> f32 {
+    #[inline(always)] pub fn process(&mut self, mut x: f32) -> f32 {
         x = self.s[0].process(x);
         x = self.s[1].process(x);
         x

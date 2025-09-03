@@ -1,6 +1,6 @@
 [package]
 name = "orion-sdr"
-version = "0.0.10"
+version = "0.0.11"
 edition = "2024"
 description = "DSP/SDR block library targeting HF-to-UHF, satellites, and Python bindings. Roadmap inside."
 license = "MIT OR Apache-2.0"
@@ -14,8 +14,8 @@ name = "sdr"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-# Enable SIMD or other accelerations later
 simd = []
+throughput = []
 
 [dependencies]
 num-complex = "0.4"
