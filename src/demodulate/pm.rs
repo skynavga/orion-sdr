@@ -43,21 +43,14 @@ impl Block for PmQuadratureDemod {
         // If your PM modulator is symmetric (no extra integration), this
         // matches the “quadrature PM” path used in your tests.
         let mut prev = self.prev;
-        let mut ytmp = vec![0.0f32; n];
 
         for i in 0..n {
             let z = input[i];
             let w = z * prev.conj();
-            let dphi = w.im.atan2(w.re);     // [-π, π]
-            ytmp[i] = self.k * dphi;
+            output[i] = self.post_lp.process(self.k * w.im.atan2(w.re));
             prev = z;
         }
         self.prev = prev;
-
-        // 2) Post-lowpass to audio bandwidth
-        for i in 0..n {
-            output[i] = self.post_lp.process(ytmp[i]);
-        }
 
         WorkReport { in_read: n, out_written: n }
     }

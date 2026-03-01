@@ -41,7 +41,6 @@ impl Block for FmQuadratureDemod {
     #[inline(always)]
     fn process(&mut self, input: &[Self::In], output: &mut [Self::Out]) -> WorkReport {
         let n = input.len().min(output.len());
-        let mut ytmp = vec![0.0f32; n];
         if let Some(r) = &mut self.xf {
             for i in 0..n {
                 let z = input[i] * r.next().conj();
@@ -49,7 +48,7 @@ impl Block for FmQuadratureDemod {
                     z.re * self.prev.re + z.im * self.prev.im,
                     z.im * self.prev.re - z.re * self.prev.im,
                 );
-                ytmp[i] = prod.im.atan2(prod.re) * self.k;
+                output[i] = self.post_lp.process(prod.im.atan2(prod.re) * self.k);
                 self.prev = z;
             }
         } else {
@@ -59,14 +58,9 @@ impl Block for FmQuadratureDemod {
                     z.re * self.prev.re + z.im * self.prev.im,
                     z.im * self.prev.re - z.re * self.prev.im,
                 );
-                ytmp[i] = prod.im.atan2(prod.re) * self.k;
+                output[i] = self.post_lp.process(prod.im.atan2(prod.re) * self.k);
                 self.prev = z;
             }
-        }
-
-        // LP -> output
-        for i in 0..n {
-            output[i] = self.post_lp.process(ytmp[i]);
         }
 
         WorkReport { in_read: n, out_written: n }
