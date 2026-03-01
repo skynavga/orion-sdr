@@ -1,6 +1,6 @@
 use num_complex::Complex32 as C32;
 use crate::core::{Block, WorkReport};
-use crate::dsp::{FirLowpass, Rotator};
+use crate::dsp::{LpCascade, Rotator};
  
  // FM Quadrature Demod
 #[derive(Debug, Clone)]
@@ -11,14 +11,14 @@ use crate::dsp::{FirLowpass, Rotator};
     xf: Option<Rotator>,
     prev: C32,
     // audio postfilter
-    post_lp: FirLowpass,
+    post_lp: LpCascade,
  }
 
 impl FmQuadratureDemod {
 
     pub fn new(fs: f32, dev_hz: f32, audio_bw_hz: f32) -> Self {
         let k = 1.0 / dev_hz.max(1.0);
-        let post_lp = FirLowpass::design(fs, audio_bw_hz * 0.9, audio_bw_hz * 0.3);
+        let post_lp = LpCascade::design(fs, audio_bw_hz * 0.9);
          Self {
             fs,
             k,
@@ -38,6 +38,7 @@ impl Block for FmQuadratureDemod {
     type In = C32;
     type Out = f32;
 
+    #[inline(always)]
     fn process(&mut self, input: &[Self::In], output: &mut [Self::Out]) -> WorkReport {
         let n = input.len().min(output.len());
         let mut ytmp = vec![0.0f32; n];
@@ -64,7 +65,9 @@ impl Block for FmQuadratureDemod {
         }
 
         // LP -> output
-        self.post_lp.process(&ytmp[..], &mut output[..n]);
+        for i in 0..n {
+            output[i] = self.post_lp.process(ytmp[i]);
+        }
 
         WorkReport { in_read: n, out_written: n }
     }
