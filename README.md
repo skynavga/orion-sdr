@@ -39,12 +39,12 @@ The following results were obtained using `cargo test --release --features throu
 
 | Mode         | Throughput (Msps) | Runtime (s) |
 |--------------|-------------------|-------------|
-| AM-AbsApprox | 116.46            | 0.017 |
-| AM-PowerSqrt | 115.42            | 0.017 |
-| SSB-USB      | 101.53            | 0.013 |
-| CW           |  89.98            | 0.022 |
-| PM           |  83.71            | 0.023 |
-| FM           |  62.80            | 0.031 |
+| AM-PowerSqrt | 122.51            | 0.016 |
+| AM-AbsApprox | 112.41            | 0.017 |
+| SSB-USB      | 117.81            | 0.011 |
+| CW           |  82.76            | 0.024 |
+| PM           |  91.48            | 0.021 |
+| FM           |  61.04            | 0.032 |
 
 # Demodulator Usage
 

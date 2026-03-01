@@ -1,6 +1,7 @@
 use num_complex::Complex32 as C32;
 use crate::core::{Block, WorkReport};
 use crate::dsp::{LpCascade, Rotator};
+use crate::util::atan2_approx;
  
  // FM Quadrature Demod
 #[derive(Debug, Clone)]
@@ -48,7 +49,7 @@ impl Block for FmQuadratureDemod {
                     z.re * self.prev.re + z.im * self.prev.im,
                     z.im * self.prev.re - z.re * self.prev.im,
                 );
-                output[i] = self.post_lp.process(prod.im.atan2(prod.re) * self.k);
+                output[i] = self.post_lp.process(atan2_approx(prod.im, prod.re) * self.k);
                 self.prev = z;
             }
         } else {
@@ -58,7 +59,7 @@ impl Block for FmQuadratureDemod {
                     z.re * self.prev.re + z.im * self.prev.im,
                     z.im * self.prev.re - z.re * self.prev.im,
                 );
-                output[i] = self.post_lp.process(prod.im.atan2(prod.re) * self.k);
+                output[i] = self.post_lp.process(atan2_approx(prod.im, prod.re) * self.k);
                 self.prev = z;
             }
         }

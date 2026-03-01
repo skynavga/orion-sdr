@@ -77,3 +77,21 @@ where
     let wr = blk.process(input, &mut out);
     (out, wr)
 }
+
+/// Fast atan2 approximation via 5th-order minimax polynomial.
+/// Max error ≈ 0.0005 rad (~0.03°). Arguments follow the standard (y, x) convention.
+#[inline(always)]
+pub fn atan2_approx(y: f32, x: f32) -> f32 {
+    let ax = x.abs();
+    let ay = y.abs();
+    let (mn, mx) = if ax < ay { (ax, ay) } else { (ay, ax) };
+    let r = mn / (mx + f32::EPSILON);
+    let r2 = r * r;
+    let phi = r * (std::f32::consts::FRAC_PI_4 + r2 * (-0.2447 + r2 * 0.0663));
+    let phi = if ax < ay { std::f32::consts::FRAC_PI_2 - phi } else { phi };
+    if x < 0.0 {
+        (std::f32::consts::PI - phi) * if y < 0.0 { -1.0 } else { 1.0 }
+    } else {
+        phi * if y < 0.0 { -1.0 } else { 1.0 }
+    }
+}

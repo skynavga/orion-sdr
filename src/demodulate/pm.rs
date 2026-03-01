@@ -1,6 +1,7 @@
 use num_complex::Complex32 as C32;
 use crate::core::{Block, WorkReport};
 use crate::dsp::LpCascade;
+use crate::util::atan2_approx;
  
 /// PM demodulator via quadrature (phase difference) + post LPF
 #[allow(dead_code)]
@@ -47,7 +48,7 @@ impl Block for PmQuadratureDemod {
         for i in 0..n {
             let z = input[i];
             let w = z * prev.conj();
-            output[i] = self.post_lp.process(self.k * w.im.atan2(w.re));
+            output[i] = self.post_lp.process(self.k * atan2_approx(w.im, w.re));
             prev = z;
         }
         self.prev = prev;
