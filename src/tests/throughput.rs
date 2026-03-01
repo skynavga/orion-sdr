@@ -217,7 +217,7 @@ fn throughput_pm_roundtrip() {
 
     let audio = real_tone(fs, 900.0, n, 0.5);
     let mut tx = AudioToIqChain::new(PmDirectPhaseMod::new(fs, 0.9, 0.0));
-    let mut rx = IqToAudioChain::new(PmQuadratureDemod::new(0.9, 5_000.0, fs));
+    let mut rx = IqToAudioChain::new(PmQuadratureDemod::new(fs, 0.9, 5_000.0));
 
     let (msps, dt) = measure_throughput(
         || {

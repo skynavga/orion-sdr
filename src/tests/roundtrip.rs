@@ -195,7 +195,7 @@ fn roundtrip_pm_quadrature() {
     let iq = tx.process(audio_in.clone());
 
     // RX: PM demod (quadrature/dφ), audio LP ~5 kHz
-    let mut dem = IqToAudioChain::new(PmQuadratureDemod::new(0.9, 5_000.0, fs));
+    let mut dem = IqToAudioChain::new(PmQuadratureDemod::new(fs, 0.9, 5_000.0));
     let audio_out = dem.process(iq);
 
     let s = tail(&audio_out);
