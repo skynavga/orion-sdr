@@ -176,7 +176,7 @@ fn pm_quadrature_demod_recovers_tone() {
         let phi = beta * (2.0*std::f32::consts::PI * f_mod * t).sin();
         iq.push(C32::new(phi.cos(), phi.sin()));
     }
-    let mut dem = PmQuadratureDemod::new(beta, 5_000.0, fs);
+    let mut dem = PmQuadratureDemod::new(fs, beta, 5_000.0);
     let mut y = vec![0.0f32; n];
     let _ = dem.process(&iq, &mut y);
     let snr = snr_db_at(f_mod, fs, &y);

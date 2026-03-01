@@ -40,27 +40,27 @@ impl Block for FmQuadratureDemod {
 
     fn process(&mut self, input: &[Self::In], output: &mut [Self::Out]) -> WorkReport {
         let n = input.len().min(output.len());
-        if let Some(r) = &mut self.xf {
-            // translate in-place: x := x * conj(rot)
-            for i in 0..n {
-                let w = r.next().conj();
-                let x = input[i] * w;
-                output[i] = 0.0; // will be overwritten
-                self.prev = x; // just to keep prev consistent; actual demod below uses `x`
-            }
-        }
-        // standard FM angle diff
         let mut ytmp = vec![0.0f32; n];
-        for i in 0..n {
-            let z = input[i];
-            // angle(curr * conj(prev)) = instantaneous phase increment
-            let prod = C32::new(
-                z.re * self.prev.re + z.im * self.prev.im,
-                z.im * self.prev.re - z.re * self.prev.im,
-            );
-            let dphi = prod.im.atan2(prod.re);
-            ytmp[i] = dphi * self.k;
-            self.prev = z;
+        if let Some(r) = &mut self.xf {
+            for i in 0..n {
+                let z = input[i] * r.next().conj();
+                let prod = C32::new(
+                    z.re * self.prev.re + z.im * self.prev.im,
+                    z.im * self.prev.re - z.re * self.prev.im,
+                );
+                ytmp[i] = prod.im.atan2(prod.re) * self.k;
+                self.prev = z;
+            }
+        } else {
+            for i in 0..n {
+                let z = input[i];
+                let prod = C32::new(
+                    z.re * self.prev.re + z.im * self.prev.im,
+                    z.im * self.prev.re - z.re * self.prev.im,
+                );
+                ytmp[i] = prod.im.atan2(prod.re) * self.k;
+                self.prev = z;
+            }
         }
 
         // LP -> output

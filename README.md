@@ -183,7 +183,7 @@ let fs = 48_000.0;
 let pm_sense_rad = 0.8;     // radians peak phase deviation → ~±1.0 audio
 let audio_bw_hz = 5_000.0;
 
-let mut chain = IqToAudioChain::new(PmQuadratureDemod::new(pm_sense_rad, audio_bw_hz, fs));
+let mut chain = IqToAudioChain::new(PmQuadratureDemod::new(fs, pm_sense_rad, audio_bw_hz));
 
 // Optional: disable amplitude limiter on the demod if desired
 // chain.demod_mut().set_limiter(false);
