@@ -35,18 +35,60 @@ impl Block for CwKeyedMod {
     type In = f32;   // keying envelope 0..1 (you can derive this from audio or key events)
     type Out = C32;  // IQ
 
+    #[inline(always)]
     fn process(&mut self, input: &[f32], output: &mut [C32]) -> WorkReport {
         let n = input.len().min(output.len());
-        for i in 0..n {
+        let mut i = 0;
+        let nn = n & !3;
+
+        while i < nn {
+            // 0
+            let tgt0 = input[i].clamp(0.0, 1.0);
+            self.env = if tgt0 >= self.env {
+                self.alpha_rise * self.env + (1.0 - self.alpha_rise) * tgt0
+            } else {
+                self.alpha_fall * self.env + (1.0 - self.alpha_fall) * tgt0
+            };
+            output[i] = mix_with_nco(C32::new(self.env * self.gain, 0.0), &mut self.nco);
+
+            // 1
+            let tgt1 = input[i+1].clamp(0.0, 1.0);
+            self.env = if tgt1 >= self.env {
+                self.alpha_rise * self.env + (1.0 - self.alpha_rise) * tgt1
+            } else {
+                self.alpha_fall * self.env + (1.0 - self.alpha_fall) * tgt1
+            };
+            output[i+1] = mix_with_nco(C32::new(self.env * self.gain, 0.0), &mut self.nco);
+
+            // 2
+            let tgt2 = input[i+2].clamp(0.0, 1.0);
+            self.env = if tgt2 >= self.env {
+                self.alpha_rise * self.env + (1.0 - self.alpha_rise) * tgt2
+            } else {
+                self.alpha_fall * self.env + (1.0 - self.alpha_fall) * tgt2
+            };
+            output[i+2] = mix_with_nco(C32::new(self.env * self.gain, 0.0), &mut self.nco);
+
+            // 3
+            let tgt3 = input[i+3].clamp(0.0, 1.0);
+            self.env = if tgt3 >= self.env {
+                self.alpha_rise * self.env + (1.0 - self.alpha_rise) * tgt3
+            } else {
+                self.alpha_fall * self.env + (1.0 - self.alpha_fall) * tgt3
+            };
+            output[i+3] = mix_with_nco(C32::new(self.env * self.gain, 0.0), &mut self.nco);
+
+            i += 4;
+        }
+        while i < n {
             let tgt = input[i].clamp(0.0, 1.0);
-            // asymmetric slew for rise/fall shaping
             self.env = if tgt >= self.env {
                 self.alpha_rise * self.env + (1.0 - self.alpha_rise) * tgt
             } else {
                 self.alpha_fall * self.env + (1.0 - self.alpha_fall) * tgt
             };
-            let base = C32::new(self.env * self.gain, 0.0);
-            output[i] = mix_with_nco(base, &mut self.nco);
+            output[i] = mix_with_nco(C32::new(self.env * self.gain, 0.0), &mut self.nco);
+            i += 1;
         }
         WorkReport { in_read: n, out_written: n }
     }
