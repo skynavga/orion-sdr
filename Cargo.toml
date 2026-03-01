@@ -25,11 +25,11 @@ realfft = "3"
 rustfft = "6"
 
 [dependencies.pyo3]
-version = "0.22"
+version = "0.28"
 features = ["extension-module"]
 
 [dependencies.numpy]
-version = "0.22"
+version = "0.28"
 
 [profile.release]
 opt-level = 3
