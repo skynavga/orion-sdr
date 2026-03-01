@@ -26,7 +26,7 @@ impl Block for CwEnvelopeDemod {
         let n = input.len().min(output.len());
         let a = self.alpha;
         for i in 0..n {
-            let mag = input[i].re.hypot(input[i].im);
+            let mag = (input[i].re * input[i].re + input[i].im * input[i].im).sqrt();
             self.y = a * self.y + (1.0 - a) * mag;
             output[i] = self.y * self.gain;
         }
