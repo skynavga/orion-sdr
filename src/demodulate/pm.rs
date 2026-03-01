@@ -1,6 +1,6 @@
 use num_complex::Complex32 as C32;
 use crate::core::{Block, WorkReport};
-use crate::dsp::{FirLowpass};
+use crate::dsp::LpCascade;
  
 /// PM demodulator via quadrature (phase difference) + post LPF
 #[allow(dead_code)]
@@ -8,7 +8,7 @@ use crate::dsp::{FirLowpass};
 pub struct PmQuadratureDemod {
     fs: f32,           // sample rate (kept for future use; ok if unused)
     k: f32,            // gain/sensitivity applied to phase difference
-    post_lp: FirLowpass,
+    post_lp: LpCascade,
     prev: C32,         // previous complex sample for quadrature detector
 }
 
@@ -17,7 +17,7 @@ impl PmQuadratureDemod {
     /// `k` is a scaling constant (1.0 is fine; adjust per modulator).
     pub fn new(fs: f32, k: f32, audio_bw_hz: f32) -> Self {
         // Gentle transition band (25% of cutoff); tweak as needed.
-        let lp = FirLowpass::design(fs, audio_bw_hz, audio_bw_hz * 0.25);
+        let lp = LpCascade::design(fs, audio_bw_hz * 0.9);
         Self {
             fs,
             k,
@@ -31,6 +31,7 @@ impl Block for PmQuadratureDemod {
     type In  = C32;
     type Out = f32;
 
+    #[inline(always)]
     fn process(&mut self, input: &[Self::In], output: &mut [Self::Out]) -> WorkReport {
         let n = input.len().min(output.len());
         if n == 0 {
@@ -54,7 +55,9 @@ impl Block for PmQuadratureDemod {
         self.prev = prev;
 
         // 2) Post-lowpass to audio bandwidth
-        self.post_lp.process(&ytmp[..], &mut output[..n]);
+        for i in 0..n {
+            output[i] = self.post_lp.process(ytmp[i]);
+        }
 
         WorkReport { in_read: n, out_written: n }
     }

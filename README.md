@@ -33,18 +33,18 @@ A composable SDR/DSP library in Rust with Python bindings.
 - PyO3 binding for SSB and simple Python process
 - Expose full pipeline via Python, record/replay, UI, etc.
 
-## Throughput Test Results (v0.0.10, optimized release build)
+## Throughput Test Results (v0.0.11, optimized release build)
 
 The following results were obtained using `cargo test --release --features throughput -- --nocapture` on Apple M2 Pro Silicon (sans SIMD):
 
 | Mode         | Throughput (Msps) | Runtime (s) |
 |--------------|-------------------|-------------|
-| AM-AbsApprox | 156.89            | 0.013 |
-| AM-PowerSqrt | 152.34            | 0.013 |
-| SSB-USB      | 124.71            | 0.011 |
-| CW           | 100.74            | 0.020 |
-| PM           |  31.04            | 0.063 |
-| FM           |  27.23            | 0.072 |
+| AM-AbsApprox | 105.83            | 0.019 |
+| AM-PowerSqrt | 100.29            | 0.020 |
+| SSB-USB      |  86.61            | 0.015 |
+| CW           |  75.86            | 0.026 |
+| PM           |  71.48            | 0.028 |
+| FM           |  54.24            | 0.036 |
 
 # Demodulator Usage
 
