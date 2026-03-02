@@ -4,7 +4,7 @@ mod demodulate;
 mod modulate;
 
 #[pymodule]
-fn sdr(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn orion_sdr(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<demodulate::PyCwEnvelopeDemod>()?;
     m.add_class::<demodulate::PyAmEnvelopeDemod>()?;
     m.add_class::<demodulate::PySsbProductDemod>()?;

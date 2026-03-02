@@ -1,7 +1,7 @@
 """
 Type stubs for the orion-sdr native extension module.
 
-All classes live in the flat ``sdr`` namespace.  IQ arrays use
+All classes live in the flat ``orion_sdr`` namespace.  IQ arrays use
 ``numpy.complex64``; audio arrays use ``numpy.float32``.  Every
 ``process()`` call returns a new 1-D array of the same length as the
 input.  Arrays must be 1-D and C-contiguous; a wrong dtype or layout
