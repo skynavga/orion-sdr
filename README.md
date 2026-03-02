@@ -206,19 +206,67 @@ All 5 demodulators and all 5 modulators are available as a native Python extensi
 
 ## Installation
 
-Build and install the wheel with [maturin](https://www.maturin.rs/):
+**Prerequisites:** a [Rust toolchain](https://rustup.rs) (stable, 1.75+), Python 3.9+, and [maturin](https://www.maturin.rs/).
 
 ```bash
 pip install maturin
+```
+
+**Build a wheel and install it:**
+
+```bash
 maturin build --release
 pip install target/wheels/orion_sdr-*.whl
 ```
 
-Or, with an active virtualenv, install directly in editable/develop mode:
+**Or install directly into an active virtualenv (editable/develop mode):**
 
 ```bash
 maturin develop --release
 ```
+
+Both paths produce an `orion_sdr` package that can be imported as `import orion_sdr`.
+
+## Type Stubs
+
+The package ships a [PEP 561](https://peps.python.org/pep-0561/) inline stub.
+After installation the layout inside `site-packages` is:
+
+```
+orion_sdr/
+  __init__.py           ← re-exports everything from the native extension
+  __init__.pyi          ← full type stub (signatures + docstrings for all 10 classes)
+  py.typed              ← PEP 561 marker; tells type checkers this package is typed
+  orion_sdr.cpython-*.so  ← compiled native extension
+```
+
+No extra configuration is required — mypy, pyright, and pylance all pick up
+the stub automatically once the package is installed.
+
+**Verify with mypy:**
+
+```bash
+pip install mypy
+```
+
+```python
+# check_orion_sdr.py
+import orion_sdr as sdr, numpy as np
+mod = sdr.AmDsbMod(fs=48_000, rf_hz=0.0, carrier_level=1.0, modulation_index=0.8)
+audio: np.ndarray = np.zeros(1024, dtype=np.float32)
+iq = mod.process(audio)
+reveal_type(iq)
+```
+
+```
+$ mypy check_orion_sdr.py
+check_orion_sdr.py:5: note: Revealed type is "numpy.ndarray[..., numpy.dtype[numpy.complexfloating[...]]]"
+Success: no issues found in 1 source file
+```
+
+**Verify with pyright / pylance** (VS Code): open any `.py` file that imports
+`orion_sdr`, hover over a constructor or `process()` call, and the parameter names,
+types, and docstring should appear in the tooltip.
 
 ## API Overview
 
@@ -246,7 +294,7 @@ Arrays must be 1-D and C-contiguous. A wrong dtype or non-contiguous layout rais
 ## Demodulator Examples
 
 ```python
-import sdr
+import orion_sdr as sdr
 import numpy as np
 
 # Synthetic IQ block (replace with real samples from your SDR)
@@ -281,7 +329,7 @@ audio = pm.process(iq)
 ## Modulator Examples
 
 ```python
-import sdr
+import orion_sdr as sdr
 import numpy as np
 
 audio = np.zeros(4096, dtype=np.float32)
@@ -316,7 +364,7 @@ iq = ssb_mod.process(audio)
 ## Round-trip Example
 
 ```python
-import sdr
+import orion_sdr as sdr
 import numpy as np
 
 fs = 48_000
