@@ -8,6 +8,14 @@ repository = "https://github.com/skynavga/orion-sdr"
 readme = "README.md"
 keywords = ["sdr", "dsp", "radio", "satellite"]
 categories = ["science", "embedded", "no-std::no-alloc"]
+include = [
+    "src/**/*",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+    "sdr.pyi",
+]
 
 [lib]
 name = "sdr"
