@@ -4,7 +4,7 @@ A composable SDR/DSP library in Rust with Python bindings.
 
 ## Change Log
 
-- v0.0.11: optimize AM mod and demod path; update throughput results
+- v0.0.11: fuse LpCascade + DcBlocker into LpDcCascade for AM/SSB demod paths; unroll SSB and CW demod/mod inner loops; inline CW hypot; NCO and FM mod use phasor recurrence (no per-sample cos/sin); PM/FM use 5th-order minimax atan2 approximation, IIR post-filter, and eliminate redundant buffer copies; fix FM/PM call-site bugs; optimize AM mod and demod path; update throughput results
 - v0.0.10: optimize SSB mod and demod path; add throughput results to readme
 - v0.0.9: subdivide modulator and demodulator code into per-mode modules
 - v0.0.8: add CW, SSB, FM, PM modulators; reorganize source into module tree
@@ -35,16 +35,16 @@ A composable SDR/DSP library in Rust with Python bindings.
 
 ## Throughput Test Results (v0.0.11, optimized release build)
 
-The following results were obtained using `cargo test --release --features throughput -- --nocapture` on Apple M2 Pro Silicon (sans SIMD):
+The following results were obtained using `cargo test --release --features throughput -- --nocapture` on Apple M2 Pro Silicon (sans SIMD), averaged over 9 runs:
 
-| Mode         | Throughput (Msps) | Runtime (s) |
-|--------------|-------------------|-------------|
-| CW           | 137.88            | 0.014 |
-| AM-AbsApprox | 134.18            | 0.015 |
-| AM-PowerSqrt | 132.29            | 0.015 |
-| SSB-USB      | 119.26            | 0.011 |
-| PM           | 115.24            | 0.017 |
-| FM           | 101.10            | 0.020 |
+| Mode         | Throughput (Msps) |
+|--------------|-------------------|
+| CW           | 149 ±3            |
+| AM-AbsApprox | 149 ±4            |
+| AM-PowerSqrt | 147 ±2            |
+| PM           | 127 ±3            |
+| FM           | 117 ±3            |
+| SSB-USB      | 117 ±4            |
 
 # Demodulator Usage
 

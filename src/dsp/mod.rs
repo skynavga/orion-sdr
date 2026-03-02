@@ -14,7 +14,7 @@ pub mod fir;
 pub use fir::FirLowpass;
 
 pub mod iir;
-pub use iir::{Biquad, LpCascade};
+pub use iir::{Biquad, LpCascade, LpDcCascade};
 
 pub mod nco;
 pub use nco::{Nco, mix_with_nco};
