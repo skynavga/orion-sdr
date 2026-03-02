@@ -4,7 +4,8 @@ A composable SDR/DSP library in Rust with Python bindings.
 
 ## Change Log
 
-- v0.0.11: fuse LpCascade + DcBlocker into LpDcCascade for AM/SSB demod paths; unroll SSB and CW demod/mod inner loops; inline CW hypot; NCO and FM mod use phasor recurrence (no per-sample cos/sin); PM/FM use 5th-order minimax atan2 approximation, IIR post-filter, and eliminate redundant buffer copies; fix FM/PM call-site bugs; optimize AM mod and demod path; update throughput results
+- v0.0.12: more optimizations on all mod/demod paths; add claude configuration, update readme
+- v0.0.11: optimize AM mod and demod path; add throughput results to readme
 - v0.0.10: optimize SSB mod and demod path; add throughput results to readme
 - v0.0.9: subdivide modulator and demodulator code into per-mode modules
 - v0.0.8: add CW, SSB, FM, PM modulators; reorganize source into module tree
@@ -20,7 +21,7 @@ A composable SDR/DSP library in Rust with Python bindings.
 
 - Pre-alpha
 
-## Features (as of v0.0.11)
+## Features (as of v0.0.12)
 
 - Core traits and runner ✅
 - Basic, IQ->IQ, IQ->Audio, Audio->IQ graph schedulers ✅
@@ -33,7 +34,7 @@ A composable SDR/DSP library in Rust with Python bindings.
 - PyO3 binding for SSB and simple Python process
 - Expose full pipeline via Python, record/replay, UI, etc.
 
-## Throughput Test Results (v0.0.11, optimized release build)
+## Throughput Test Results (v0.0.12, optimized release build)
 
 The following results were obtained using `cargo test --release --features throughput -- --nocapture` on Apple M2 Pro Silicon (sans SIMD), averaged over 9 runs:
 
