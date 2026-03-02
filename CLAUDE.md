@@ -2,7 +2,7 @@
 
 ## Project
 
-`orion-sdr` is a composable SDR/DSP library in Rust (crate name `orion-sdr`, lib name `sdr`), edition 2024, targeting HF–UHF signal processing with planned Python bindings via PyO3.
+`orion-sdr` is a composable SDR/DSP library in Rust (crate name `orion-sdr`, lib name `sdr`, v0.0.12), edition 2024, targeting HF–UHF signal processing with planned Python bindings via PyO3.
 
 ## Source Layout
 
