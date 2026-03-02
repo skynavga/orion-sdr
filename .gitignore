@@ -8,3 +8,4 @@
 # directories
 /target
 /tmp
+/.mypy_cache
