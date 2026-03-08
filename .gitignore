@@ -11,8 +11,10 @@
 /tmp
 /.mypy_cache
 
-# Python virtualenv
-/.venv
+# python specific
+.pytest_cache/
+.venv/
+__pycache__/
 
 # maturin develop output
 /python/orion_sdr/*.so
