@@ -78,7 +78,7 @@ git add Cargo.toml Cargo.lock pyproject.toml README.md \
 
 Commit with message: `Bump version to NEW_VERSION`
 
-Include the standard co-author trailer:
+Do not include the standard co-author trailer:
 ```
 Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
 ```
