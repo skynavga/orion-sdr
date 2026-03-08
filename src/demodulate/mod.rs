@@ -5,6 +5,9 @@ pub use bpsk::{BpskDemod, BpskDecider};
 pub mod qpsk;
 pub use qpsk::{QpskDemod, QpskDecider};
 
+pub mod qam;
+pub use qam::{QamDemod, QamDecider, Qam16Decider, Qam64Decider, Qam256Decider};
+
 pub mod cw;
 pub use cw::CwEnvelopeDemod;
 
