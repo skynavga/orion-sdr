@@ -10,12 +10,12 @@ your setup.
 ## CW Demodulation (Envelope)
 
 Extract a CW tone at a chosen audio pitch (e.g., 600–800 Hz) from complex baseband IQ.
+`audio_bw_hz` sets the one-pole envelope LP bandwidth (e.g. 300 Hz for narrow CW).
 
 ```rust
 use orion_sdr::{
     core::IqToAudioChain,
     demodulate::CwEnvelopeDemod,
-    dsp::{FirDecimator, AgcRms},
 };
 use num_complex::Complex32 as C32;
 
@@ -25,28 +25,20 @@ let audio_bw_hz = 300.0;
 
 let mut chain = IqToAudioChain::new(CwEnvelopeDemod::new(fs, pitch_hz, audio_bw_hz));
 
-// Optional: decimate IQ before demod to save CPU
-let m = 2;
-let cutoff = (fs / m as f32) * 0.45;
-let trans  = (fs / m as f32) * 0.10;
-chain.push_iq(FirDecimator::new(fs, m, cutoff, trans));
-
-// Optional: audio AGC
-chain.push_audio(AgcRms::new(fs, 0.2, 5.0, 200.0));
-
 let iq: Vec<C32> = get_iq_block();
 let audio: Vec<f32> = chain.process(iq);
 ```
 
 ## AM Demodulation (Envelope)
 
-Simple envelope detector with post low-pass and DC removal.
+Envelope detector with fused 4th-order LP and DC blocker.  Default method is
+`PowerSqrt` (√(I²+Q²)); call `.with_abs_approx(0.9475, 0.3925)` on the demod
+for a faster abs-approximation variant.
 
 ```rust
 use orion_sdr::{
     core::IqToAudioChain,
     demodulate::AmEnvelopeDemod,
-    dsp::AgcRms,
 };
 use num_complex::Complex32 as C32;
 
@@ -54,7 +46,6 @@ let fs = 48_000.0;
 let audio_bw_hz = 5_000.0;
 
 let mut chain = IqToAudioChain::new(AmEnvelopeDemod::new(fs, audio_bw_hz));
-chain.push_audio(AgcRms::new(fs, 0.2, 10.0, 300.0));
 
 let iq: Vec<C32> = get_iq_block();
 let audio = chain.process(iq);
@@ -62,13 +53,13 @@ let audio = chain.process(iq);
 
 ## SSB Demodulation (Product)
 
-Product detector with BFO; set BFO frequency and audio bandwidth to taste.
+Product detector with BFO and fused 4th-order LP + DC blocker.  Set `bfo_hz` to
+the carrier offset of the signal within the baseband (0.0 if already centred).
 
 ```rust
 use orion_sdr::{
     core::IqToAudioChain,
     demodulate::SsbProductDemod,
-    dsp::{FirDecimator, AgcRms},
 };
 use num_complex::Complex32 as C32;
 
@@ -78,28 +69,20 @@ let audio_bw_hz = 2_800.0;
 
 let mut chain = IqToAudioChain::new(SsbProductDemod::new(fs, bfo_hz, audio_bw_hz));
 
-// Optional: decimate IQ first
-let m = 2;
-let cutoff = (fs / m as f32) * 0.45;
-let trans  = (fs / m as f32) * 0.10;
-chain.push_iq(FirDecimator::new(fs, m, cutoff, trans));
-
-// Optional: audio AGC
-chain.push_audio(AgcRms::new(fs, 0.2, 5.0, 200.0));
-
 let iq: Vec<C32> = get_iq_block();
 let audio = chain.process(iq);
 ```
 
 ## FM Demodulation (Quadrature)
 
-Phase-difference quadrature discriminator. Audio is scaled so roughly ±deviation → ±1.0.
+Phase-difference quadrature discriminator using `atan2_approx`.  Audio is scaled
+so ±`dev_hz` of frequency deviation maps to roughly ±1.0.  Use `.with_translate(freq_hz)`
+to shift the signal before demodulation when it is not already centred.
 
 ```rust
 use orion_sdr::{
     core::IqToAudioChain,
     demodulate::FmQuadratureDemod,
-    dsp::AgcRms,
 };
 use num_complex::Complex32 as C32;
 
@@ -109,20 +92,14 @@ let audio_bw_hz = 5_000.0;
 
 let mut chain = IqToAudioChain::new(FmQuadratureDemod::new(fs, dev_hz, audio_bw_hz));
 
-// Optional: de-emphasis (300–750 µs NBFM voice; 75 µs US WBFM; 50 µs EU WBFM)
-// chain.demod_mut().set_deemph_tau_us(300.0);
-
-// Optional: post audio AGC
-chain.push_audio(AgcRms::new(fs, 0.2, 5.0, 200.0));
-
 let iq: Vec<C32> = get_iq_block();
 let audio = chain.process(iq);
 ```
 
 ## PM Demodulation (Quadrature)
 
-Instantaneous phase (with unwrap). Set `pm_sense_rad` so that expected phase deviation
-maps to ~±1.0 audio.
+Phase-difference quadrature discriminator, scaled by `k`.  Set `k` to match the
+modulator's `kp_rad_per_unit` so that the expected phase deviation maps to ~±1.0 audio.
 
 ```rust
 use orion_sdr::{
@@ -132,13 +109,10 @@ use orion_sdr::{
 use num_complex::Complex32 as C32;
 
 let fs = 48_000.0;
-let pm_sense_rad = 0.8;
+let k = 0.8;            // match PmDirectPhaseMod kp_rad_per_unit
 let audio_bw_hz = 5_000.0;
 
-let mut chain = IqToAudioChain::new(PmQuadratureDemod::new(fs, pm_sense_rad, audio_bw_hz));
-
-// Optional: disable amplitude limiter
-// chain.demod_mut().set_limiter(false);
+let mut chain = IqToAudioChain::new(PmQuadratureDemod::new(fs, k, audio_bw_hz));
 
 let iq: Vec<C32> = get_iq_block();
 let audio = chain.process(iq);
@@ -146,14 +120,15 @@ let audio = chain.process(iq);
 
 ## Tips (analog modes)
 
-- **Center your signal** in the complex baseband before demod (DDC/tuning not shown here).
-- **Decimate early** to reduce CPU, but design anti-aliasing correctly (`FirDecimator`
-  cutoff/transition relative to the *post-decim* rate).
-- **AGC placement:** try IQ-domain AGC (before demod) *or* audio-domain AGC (after demod)
-  depending on your preference and mode.
-- **FM de-emphasis:** speech NBFM often benefits from 300–750 µs; broadcast WBFM uses
-  75 µs (US) or 50 µs (EU).
-- **Block sizes:** feed consistent chunk sizes to keep latency predictable.
+- **Center your signal** before demodulation.  Use `Rotator` for DDC/frequency
+  translation, or `FmQuadratureDemod::with_translate(freq_hz)` for FM.
+- **Decimation:** run `FirDecimator` on the IQ stream before the demod block to
+  reduce CPU, sizing cutoff and transition relative to the post-decimation rate.
+- **AGC:** apply `AgcRmsIq` to the IQ stream before demod, or `AgcRms` to the audio
+  output after demod — both are available in `orion_sdr::dsp`.
+- **FM de-emphasis:** no built-in de-emphasis filter yet; apply a first-order IIR
+  post-demod (τ = 75 µs for US WBFM, 50 µs for EU WBFM, 300–750 µs for NBFM voice).
+- **Block sizes:** feed consistent chunk sizes to keep filter state and latency predictable.
 
 ---
 
