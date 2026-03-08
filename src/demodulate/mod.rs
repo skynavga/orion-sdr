@@ -1,4 +1,7 @@
 
+pub mod bpsk;
+pub use bpsk::{BpskDemod, BpskDecider};
+
 pub mod cw;
 pub use cw::CwEnvelopeDemod;
 
