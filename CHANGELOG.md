@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.14] - 2026-03-08
+
+### Added
+
+- GitHub Actions workflow (`publish.yml`) to build and publish wheels for
+  Linux (x86-64, aarch64), macOS (x86-64, arm64), and Windows (x86-64)
+  on every `v*` tag push, using `maturin-action` and OIDC trusted publishing
+
 ## [0.0.13] - 2026-03-08
 
 ### Added

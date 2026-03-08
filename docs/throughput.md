@@ -3,7 +3,7 @@
 Measurements taken on Apple M2 Pro, release build (`opt-level=3`, `lto=fat`,
 `codegen-units=1`), no SIMD, averaged over 9 runs.
 
-## v0.0.13 Results
+## v0.0.14 Results
 
 | Mode         | Msps    |
 |--------------|---------|
