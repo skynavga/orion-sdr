@@ -1,0 +1,18 @@
+[build-system]
+requires = ["maturin>=1.0"]
+build-backend = "maturin"
+
+[project]
+name = "orion-sdr"
+version = "0.0.12"
+description = "DSP/SDR block library targeting HF-to-UHF, with Python bindings"
+license = { text = "MIT OR Apache-2.0" }
+requires-python = ">=3.12"
+dependencies = ["numpy>=1.24"]
+
+[tool.maturin]
+python-source = "python"
+module-name = "orion_sdr.orion_sdr"
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]

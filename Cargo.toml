@@ -10,11 +10,12 @@ keywords = ["sdr", "dsp", "radio", "satellite"]
 categories = ["science", "embedded", "no-std::no-alloc"]
 include = [
     "src/**/*",
+    "python/**/*",
     "Cargo.toml",
+    "pyproject.toml",
     "README.md",
     "LICENSE-MIT",
     "LICENSE-APACHE",
-    "orion_sdr.pyi",
 ]
 
 [lib]
@@ -34,7 +35,7 @@ rustfft = "6"
 
 [dependencies.pyo3]
 version = "0.28"
-features = ["extension-module"]
+features = ["extension-module", "abi3-py312"]
 
 [dependencies.numpy]
 version = "0.28"

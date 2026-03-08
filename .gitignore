@@ -4,8 +4,16 @@
 *~
 *.bak
 *.patch
+*.pyc
 
 # directories
 /target
 /tmp
 /.mypy_cache
+
+# Python virtualenv
+/.venv
+
+# maturin develop output
+/python/orion_sdr/*.so
+/python/orion_sdr/*.pyd
