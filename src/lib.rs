@@ -7,7 +7,7 @@ pub mod modulate;
 pub mod util;
 pub mod python;
 
-pub use core::{Block, WorkReport, AudioToIqChain, IqToAudioChain};
+pub use core::{Block, WorkReport, AudioToIqChain, IqToAudioChain, IqToIqChain};
   
 #[cfg(test)]
 mod tests;

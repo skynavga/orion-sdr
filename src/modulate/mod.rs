@@ -1,4 +1,7 @@
 
+pub mod bpsk;
+pub use bpsk::{BpskMapper, BpskMod};
+
 pub mod cw;
 pub use cw::CwKeyedMod;
 
