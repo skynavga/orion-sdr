@@ -115,3 +115,134 @@ impl PyPmQuadratureDemod {
         Ok(out.into_pyarray(py))
     }
 }
+
+// ── BpskDemod ─────────────────────────────────────────────────────────────────
+
+/// Combined BPSK soft-demod + hard decider.
+/// Input: complex64 IQ array (carrier-removed baseband, 1 sample per symbol).
+/// Output: uint8 array of bits (0 or 1), one per input symbol.
+#[pyclass(name = "BpskDemod")]
+pub struct PyBpskDemod {
+    demod: crate::demodulate::BpskDemod,
+    decider: crate::demodulate::BpskDecider,
+}
+
+#[pymethods]
+impl PyBpskDemod {
+    #[new]
+    fn new(gain: f32) -> Self {
+        Self {
+            demod: crate::demodulate::BpskDemod::new(gain),
+            decider: crate::demodulate::BpskDecider::new(),
+        }
+    }
+    fn set_gain(&mut self, g: f32) { self.demod.set_gain(g); }
+    fn process<'py>(&mut self, py: Python<'py>, iq: PyReadonlyArray1<'py, Complex32>)
+        -> PyResult<Bound<'py, PyArray1<u8>>>
+    {
+        let input = iq.as_slice()?;
+        let n = input.len();
+        let mut soft = vec![Complex32::new(0.0, 0.0); n];
+        let mut bits = vec![0u8; n];
+        self.demod.process(input, &mut soft);
+        self.decider.process(&soft, &mut bits);
+        Ok(bits.into_pyarray(py))
+    }
+}
+
+// ── QpskDemod ─────────────────────────────────────────────────────────────────
+
+/// Combined QPSK soft-demod + hard decider.
+/// Input: complex64 IQ array (carrier-removed baseband, 1 sample per symbol).
+/// Output: uint8 array of bits (0 or 1); two bits per input symbol,
+///         interleaved as [b0_I, b0_Q, b1_I, b1_Q, …].
+#[pyclass(name = "QpskDemod")]
+pub struct PyQpskDemod {
+    demod: crate::demodulate::QpskDemod,
+    decider: crate::demodulate::QpskDecider,
+}
+
+#[pymethods]
+impl PyQpskDemod {
+    #[new]
+    fn new(gain: f32) -> Self {
+        Self {
+            demod: crate::demodulate::QpskDemod::new(gain),
+            decider: crate::demodulate::QpskDecider::new(),
+        }
+    }
+    fn set_gain(&mut self, g: f32) { self.demod.set_gain(g); }
+    fn process<'py>(&mut self, py: Python<'py>, iq: PyReadonlyArray1<'py, Complex32>)
+        -> PyResult<Bound<'py, PyArray1<u8>>>
+    {
+        let input = iq.as_slice()?;
+        let n = input.len();
+        let mut soft = vec![Complex32::new(0.0, 0.0); n];
+        let mut bits = vec![0u8; n * 2];
+        self.demod.process(input, &mut soft);
+        self.decider.process(&soft, &mut bits);
+        Ok(bits.into_pyarray(py))
+    }
+}
+
+// ── QamDemod ──────────────────────────────────────────────────────────────────
+
+/// Enum holding one of the three concrete QamDecider instantiations.
+enum QamDeciderInner {
+    Qam16(crate::demodulate::Qam16Decider),
+    Qam64(crate::demodulate::Qam64Decider),
+    Qam256(crate::demodulate::Qam256Decider),
+}
+
+impl QamDeciderInner {
+    fn bits(&self) -> usize {
+        match self { Self::Qam16(_) => 4, Self::Qam64(_) => 6, Self::Qam256(_) => 8 }
+    }
+    fn process(&mut self, input: &[Complex32], output: &mut [u8]) {
+        match self {
+            Self::Qam16(d)  => { d.process(input, output); }
+            Self::Qam64(d)  => { d.process(input, output); }
+            Self::Qam256(d) => { d.process(input, output); }
+        }
+    }
+}
+
+/// Combined QAM soft-demod + hard decider.
+///
+/// *order* must be 16, 64, or 256.
+/// Input: complex64 IQ array (carrier-removed baseband, 1 sample per symbol).
+/// Output: uint8 array of bits (0 or 1); log2(order) bits per input symbol.
+#[pyclass(name = "QamDemod")]
+pub struct PyQamDemod {
+    demod: crate::demodulate::QamDemod,
+    decider: QamDeciderInner,
+}
+
+#[pymethods]
+impl PyQamDemod {
+    #[new]
+    fn new(order: u32, gain: f32) -> PyResult<Self> {
+        let decider = match order {
+            16  => QamDeciderInner::Qam16(crate::demodulate::Qam16Decider::new()),
+            64  => QamDeciderInner::Qam64(crate::demodulate::Qam64Decider::new()),
+            256 => QamDeciderInner::Qam256(crate::demodulate::Qam256Decider::new()),
+            _   => return Err(pyo3::exceptions::PyValueError::new_err(
+                "QamDemod: order must be 16, 64, or 256"
+            )),
+        };
+        Ok(Self { demod: crate::demodulate::QamDemod::new(gain), decider })
+    }
+    fn set_gain(&mut self, g: f32) { self.demod.set_gain(g); }
+    fn process<'py>(&mut self, py: Python<'py>, iq: PyReadonlyArray1<'py, Complex32>)
+        -> PyResult<Bound<'py, PyArray1<u8>>>
+    {
+        let input = iq.as_slice()?;
+        let n = input.len();
+        let bits_per_sym = self.decider.bits();
+        let mut soft = vec![Complex32::new(0.0, 0.0); n];
+        let mut bits = vec![0u8; n * bits_per_sym];
+        self.demod.process(input, &mut soft);
+        self.decider.process(&soft, &mut bits);
+        Ok(bits.into_pyarray(py))
+    }
+}

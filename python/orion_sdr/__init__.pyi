@@ -2,10 +2,10 @@
 Type stubs for the orion-sdr native extension module.
 
 All classes live in the flat ``orion_sdr`` namespace.  IQ arrays use
-``numpy.complex64``; audio arrays use ``numpy.float32``.  Every
-``process()`` call returns a new 1-D array of the same length as the
-input.  Arrays must be 1-D and C-contiguous; a wrong dtype or layout
-raises ``ValueError``.
+``numpy.complex64``; audio arrays use ``numpy.float32``; bit arrays use
+``numpy.uint8`` (one bit per byte, value 0 or 1).  Every ``process()``
+call returns a new 1-D array; arrays must be 1-D and C-contiguous, or a
+``ValueError`` is raised.
 """
 
 import numpy as np
@@ -77,6 +77,54 @@ class PmQuadratureDemod:
 
     def __init__(self, fs: float, k: float, audio_bw_hz: float) -> None: ...
     def process(self, iq: NDArray[np.complex64]) -> NDArray[np.float32]: ...
+
+# ---------------------------------------------------------------------------
+# Digital demodulators  (IQ complex64 → bits uint8)
+# ---------------------------------------------------------------------------
+
+class BpskDemod:
+    """BPSK demodulator: hard-decision slicer.
+
+    Input: complex64 IQ array, carrier-removed baseband, 1 sample per symbol.
+    Output: uint8 bit array — one bit (0 or 1) per input symbol.
+    Decision rule: Re(z) ≥ 0 → 0, Re(z) < 0 → 1.
+
+    *gain* scales the soft metric before slicing (use 1.0 for normalized input).
+    """
+
+    def __init__(self, gain: float = 1.0) -> None: ...
+    def set_gain(self, g: float) -> None: ...
+    def process(self, iq: NDArray[np.complex64]) -> NDArray[np.uint8]: ...
+
+class QpskDemod:
+    """QPSK demodulator: hard-decision slicer.
+
+    Input: complex64 IQ array, carrier-removed baseband, 1 sample per symbol.
+    Output: uint8 bit array — two bits per input symbol, interleaved as
+    ``[b0_I, b0_Q, b1_I, b1_Q, …]``.  Matches the Gray coding of ``QpskMod``.
+
+    *gain* scales the soft metric before slicing (use 1.0 for normalized input).
+    """
+
+    def __init__(self, gain: float = 1.0) -> None: ...
+    def set_gain(self, g: float) -> None: ...
+    def process(self, iq: NDArray[np.complex64]) -> NDArray[np.uint8]: ...
+
+class QamDemod:
+    """QAM demodulator: hard-decision slicer for square QAM constellations.
+
+    *order* must be 16, 64, or 256 (raises ``ValueError`` otherwise).
+    Input: complex64 IQ array, carrier-removed baseband, 1 sample per symbol.
+    Output: uint8 bit array — ``log2(order)`` bits per input symbol, laid out
+    as ``log2(order)/2`` I-axis bits then ``log2(order)/2`` Q-axis bits
+    (MSB-first within each axis Gray index).  Matches ``QamMod`` bit layout.
+
+    *gain* scales the soft metric before slicing (use 1.0 for normalized input).
+    """
+
+    def __init__(self, order: int, gain: float = 1.0) -> None: ...
+    def set_gain(self, g: float) -> None: ...
+    def process(self, iq: NDArray[np.complex64]) -> NDArray[np.uint8]: ...
 
 # ---------------------------------------------------------------------------
 # Modulators  (audio float32 → IQ complex64)
@@ -180,3 +228,52 @@ class SsbPhasingMod:
         usb: bool,
     ) -> None: ...
     def process(self, audio: NDArray[np.float32]) -> NDArray[np.complex64]: ...
+
+# ---------------------------------------------------------------------------
+# Digital modulators  (bits uint8 → IQ complex64)
+# ---------------------------------------------------------------------------
+
+class BpskMod:
+    """BPSK modulator: Gray-coded constellation mapper + waveform stage.
+
+    Input: uint8 bit array (LSB of each byte used), one bit per symbol.
+    Output: complex64 IQ array of the same length.
+    Constellation: bit 0 → (+1, 0), bit 1 → (−1, 0).
+
+    Set *rf_hz* to 0.0 for baseband output; non-zero upconverts via an
+    internal ``Rotator`` (phasor recurrence, no per-sample trig).
+    """
+
+    def __init__(self, fs: float, rf_hz: float, gain: float = 1.0) -> None: ...
+    def set_gain(self, g: float) -> None: ...
+    def process(self, bits: NDArray[np.uint8]) -> NDArray[np.complex64]: ...
+
+class QpskMod:
+    """QPSK modulator: Gray-coded constellation mapper + waveform stage.
+
+    Input: uint8 bit array (LSB of each byte); consumed in pairs ``[b0, b1]``.
+    Output: complex64 IQ array of length ``len(bits) // 2``.
+    Constellation is normalized to unit energy (each axis ±1/√2).
+
+    Set *rf_hz* to 0.0 for baseband output.
+    """
+
+    def __init__(self, fs: float, rf_hz: float, gain: float = 1.0) -> None: ...
+    def set_gain(self, g: float) -> None: ...
+    def process(self, bits: NDArray[np.uint8]) -> NDArray[np.complex64]: ...
+
+class QamMod:
+    """Square QAM modulator: Gray-coded constellation mapper + waveform stage.
+
+    *order* must be 16, 64, or 256 (raises ``ValueError`` otherwise).
+    Input: uint8 bit array (LSB of each byte); consumed ``log2(order)`` bytes
+    per symbol.  Output: complex64 IQ array of length
+    ``len(bits) // log2(order)``.
+
+    Constellation is Gray-coded on each axis independently and normalized to
+    unit average symbol energy.  Set *rf_hz* to 0.0 for baseband output.
+    """
+
+    def __init__(self, order: int, fs: float, rf_hz: float, gain: float = 1.0) -> None: ...
+    def set_gain(self, g: float) -> None: ...
+    def process(self, bits: NDArray[np.uint8]) -> NDArray[np.complex64]: ...

@@ -5,6 +5,7 @@ Covers:
 - Stateful behaviour (instances are independent)
 - Input validation (wrong dtype, wrong ndim, non-contiguous)
 - Setter methods (set_gain, set_deviation, set_sensitivity, set_clamp)
+- Digital mode: output length, dtype, invalid-order rejection
 """
 
 import numpy as np
@@ -166,6 +167,114 @@ class TestSetters:
         mod = sdr.AmDsbMod(FS, 0.0, 1.0, 0.8)
         mod.set_clamp(True)   # should not raise
         mod.set_clamp(False)
+
+
+# ---------------------------------------------------------------------------
+# Output shape and dtype — digital modulators (bits uint8 → IQ complex64)
+# ---------------------------------------------------------------------------
+
+class TestDigitalModOutputShape:
+    def test_bpsk_output_length_and_dtype(self):
+        bits = np.zeros(N, dtype=np.uint8)
+        out = sdr.BpskMod(1.0, 0.0, 1.0).process(bits)
+        assert out.shape == (N,) and out.dtype == np.complex64
+
+    def test_qpsk_output_length_and_dtype(self):
+        bits = np.zeros(N, dtype=np.uint8)  # N bits → N//2 symbols
+        out = sdr.QpskMod(1.0, 0.0, 1.0).process(bits)
+        assert out.shape == (N // 2,) and out.dtype == np.complex64
+
+    def test_qam16_output_length_and_dtype(self):
+        bits = np.zeros(N, dtype=np.uint8)  # N bits → N//4 symbols
+        out = sdr.QamMod(16, 1.0, 0.0, 1.0).process(bits)
+        assert out.shape == (N // 4,) and out.dtype == np.complex64
+
+    def test_qam64_output_length_and_dtype(self):
+        bits = np.zeros(N, dtype=np.uint8)  # N bits → N//6 symbols
+        out = sdr.QamMod(64, 1.0, 0.0, 1.0).process(bits)
+        assert out.shape == (N // 6,) and out.dtype == np.complex64
+
+    def test_qam256_output_length_and_dtype(self):
+        bits = np.zeros(N, dtype=np.uint8)  # N bits → N//8 symbols
+        out = sdr.QamMod(256, 1.0, 0.0, 1.0).process(bits)
+        assert out.shape == (N // 8,) and out.dtype == np.complex64
+
+    def test_qam_invalid_order(self):
+        with pytest.raises((ValueError, TypeError)):
+            sdr.QamMod(32, 1.0, 0.0, 1.0)
+
+
+# ---------------------------------------------------------------------------
+# Output shape and dtype — digital demodulators (IQ complex64 → bits uint8)
+# ---------------------------------------------------------------------------
+
+class TestDigitalDemodOutputShape:
+    def test_bpsk_output_length_and_dtype(self):
+        iq = np.zeros(N, dtype=np.complex64)
+        out = sdr.BpskDemod(1.0).process(iq)
+        assert out.shape == (N,) and out.dtype == np.uint8
+
+    def test_qpsk_output_length_and_dtype(self):
+        iq = np.zeros(N, dtype=np.complex64)
+        out = sdr.QpskDemod(1.0).process(iq)
+        assert out.shape == (N * 2,) and out.dtype == np.uint8
+
+    def test_qam16_output_length_and_dtype(self):
+        iq = np.zeros(N, dtype=np.complex64)
+        out = sdr.QamDemod(16, 1.0).process(iq)
+        assert out.shape == (N * 4,) and out.dtype == np.uint8
+
+    def test_qam64_output_length_and_dtype(self):
+        iq = np.zeros(N, dtype=np.complex64)
+        out = sdr.QamDemod(64, 1.0).process(iq)
+        assert out.shape == (N * 6,) and out.dtype == np.uint8
+
+    def test_qam256_output_length_and_dtype(self):
+        iq = np.zeros(N, dtype=np.complex64)
+        out = sdr.QamDemod(256, 1.0).process(iq)
+        assert out.shape == (N * 8,) and out.dtype == np.uint8
+
+    def test_qam_invalid_order(self):
+        with pytest.raises((ValueError, TypeError)):
+            sdr.QamDemod(128, 1.0)
+
+    def test_bits_are_binary(self):
+        """All output bits must be 0 or 1."""
+        iq = np.ones(N, dtype=np.complex64)  # Re=1 → all-zero decisions
+        for cls, kwargs in [
+            (sdr.BpskDemod,  {"gain": 1.0}),
+            (sdr.QpskDemod,  {"gain": 1.0}),
+            (sdr.QamDemod,   {"order": 16, "gain": 1.0}),
+        ]:
+            out = cls(**kwargs).process(iq)
+            assert np.all((out == 0) | (out == 1)), f"{cls.__name__} output contains non-binary values"
+
+
+# ---------------------------------------------------------------------------
+# Digital setter methods
+# ---------------------------------------------------------------------------
+
+class TestDigitalSetters:
+    def test_bpsk_mod_set_gain(self):
+        bits = np.ones(N, dtype=np.uint8)
+        m1 = sdr.BpskMod(1.0, 0.0, 1.0)
+        m2 = sdr.BpskMod(1.0, 0.0, 1.0)
+        m2.set_gain(2.0)
+        rms1 = float(np.sqrt(np.mean(np.abs(m1.process(bits.copy()))**2)))
+        rms2 = float(np.sqrt(np.mean(np.abs(m2.process(bits.copy()))**2)))
+        assert rms2 > rms1
+
+    def test_bpsk_demod_set_gain(self):
+        sdr.BpskDemod(1.0).set_gain(0.5)  # should not raise
+
+    def test_qpsk_mod_set_gain(self):
+        sdr.QpskMod(1.0, 0.0, 1.0).set_gain(2.0)  # should not raise
+
+    def test_qam_mod_set_gain(self):
+        sdr.QamMod(16, 1.0, 0.0, 1.0).set_gain(2.0)  # should not raise
+
+    def test_qam_demod_set_gain(self):
+        sdr.QamDemod(64, 1.0).set_gain(0.5)  # should not raise
 
 
 # ---------------------------------------------------------------------------
