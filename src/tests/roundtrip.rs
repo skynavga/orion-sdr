@@ -176,6 +176,44 @@ fn roundtrip_fm_quadrature() {
     assert!(snr > 20.0, "FM roundtrip SNR too low: {snr:.1} dB");
 }
 
+// === QPSK: mapper correctness + noiseless roundtrip ======================
+
+#[test]
+fn qpsk_mapper_symbols() {
+    use crate::modulate::QpskMapper;
+    use crate::core::Block;
+    use num_complex::Complex32 as C32;
+    const S: f32 = std::f32::consts::FRAC_1_SQRT_2;
+    // All four dibits in Gray order: (0,0), (0,1), (1,0), (1,1)
+    let bits = [0u8, 0,  0, 1,  1, 0,  1, 1];
+    let mut out = [C32::default(); 4];
+    QpskMapper::new().process(&bits, &mut out);
+    assert_eq!(out[0], C32::new( S,  S));
+    assert_eq!(out[1], C32::new( S, -S));
+    assert_eq!(out[2], C32::new(-S,  S));
+    assert_eq!(out[3], C32::new(-S, -S));
+}
+
+#[test]
+fn roundtrip_qpsk_noiseless() {
+    use crate::modulate::{QpskMapper, QpskMod};
+    use crate::demodulate::{QpskDemod, QpskDecider};
+    use crate::core::Block;
+    use num_complex::Complex32 as C32;
+    let n_syms = 256;
+    // Cycle through all four dibits
+    let bits_in: Vec<u8> = (0..n_syms * 2).map(|i| ((i / 2 + i) & 1) as u8).collect();
+    let mut syms     = vec![C32::default(); n_syms];
+    let mut iq       = vec![C32::default(); n_syms];
+    let mut soft     = vec![C32::default(); n_syms];
+    let mut bits_out = vec![0u8; n_syms * 2];
+    QpskMapper::new().process(&bits_in, &mut syms);
+    QpskMod::new(1.0, 0.0, 1.0).process(&syms, &mut iq);
+    QpskDemod::new(1.0).process(&iq, &mut soft);
+    QpskDecider::new().process(&soft, &mut bits_out);
+    assert_eq!(bits_in, bits_out);
+}
+
 // === BPSK: mapper correctness + noiseless roundtrip ======================
 
 #[test]

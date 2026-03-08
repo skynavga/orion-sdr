@@ -2,6 +2,9 @@
 pub mod bpsk;
 pub use bpsk::{BpskDemod, BpskDecider};
 
+pub mod qpsk;
+pub use qpsk::{QpskDemod, QpskDecider};
+
 pub mod cw;
 pub use cw::CwEnvelopeDemod;
 
