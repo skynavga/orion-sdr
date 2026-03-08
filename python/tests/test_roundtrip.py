@@ -1,8 +1,11 @@
-"""Roundtrip SNR tests for the orion_sdr Python extension.
+"""Roundtrip tests for the orion_sdr Python extension.
 
-Each test modulates a tone, demodulates it, and asserts that SNR in the
-recovered audio exceeds a minimum threshold. Thresholds match the Rust
-roundtrip tests in src/tests/roundtrip.rs.
+Analog tests modulate a tone, demodulate it, and assert that SNR in the
+recovered audio exceeds a minimum threshold.
+
+Digital tests perform noiseless bit-exact roundtrips through the full
+mod/demod pipeline (mapper → waveform → demod → decider) and assert
+perfect bit recovery.
 """
 
 import numpy as np
@@ -117,3 +120,72 @@ def test_roundtrip_pm_quadrature():
 
     snr = snr_db(tail(audio_out), FS, f_mod)
     assert snr > 18.0, f"PM roundtrip SNR {snr:.1f} dB < 18 dB"
+
+
+# ---------------------------------------------------------------------------
+# BPSK: noiseless bit-exact roundtrip
+# ---------------------------------------------------------------------------
+
+def test_roundtrip_bpsk_noiseless():
+    """BpskMod → BpskDemod must recover bits perfectly in a noiseless channel."""
+    n = 256
+    bits_in = np.array([i & 1 for i in range(n)], dtype=np.uint8)
+
+    iq = sdr.BpskMod(1.0, 0.0, 1.0).process(bits_in)
+    bits_out = sdr.BpskDemod(1.0).process(iq)
+
+    assert iq.shape == (n,) and iq.dtype == np.complex64
+    assert bits_out.shape == (n,) and bits_out.dtype == np.uint8
+    np.testing.assert_array_equal(bits_in, bits_out)
+
+
+# ---------------------------------------------------------------------------
+# QPSK: mapper symbol check + noiseless roundtrip
+# ---------------------------------------------------------------------------
+
+def test_qpsk_mapper_symbols():
+    """Check all four constellation points against expected normalized values."""
+    S = float(np.sqrt(0.5))  # 1/√2
+    # dibits: (0,0)→(+S,+S), (0,1)→(+S,−S), (1,0)→(−S,+S), (1,1)→(−S,−S)
+    bits = np.array([0,0, 0,1, 1,0, 1,1], dtype=np.uint8)
+    iq = sdr.QpskMod(1.0, 0.0, 1.0).process(bits)
+    assert iq.shape == (4,)
+    expected = np.array([S+1j*S, S-1j*S, -S+1j*S, -S-1j*S], dtype=np.complex64)
+    np.testing.assert_allclose(iq, expected, atol=1e-6)
+
+
+def test_roundtrip_qpsk_noiseless():
+    n_syms = 256
+    # interleave 0/1 bits so all dibits appear
+    bits_in = np.array([(i // 2 + i) & 1 for i in range(n_syms * 2)], dtype=np.uint8)
+
+    iq = sdr.QpskMod(1.0, 0.0, 1.0).process(bits_in)
+    bits_out = sdr.QpskDemod(1.0).process(iq)
+
+    assert iq.shape == (n_syms,) and iq.dtype == np.complex64
+    assert bits_out.shape == (n_syms * 2,) and bits_out.dtype == np.uint8
+    np.testing.assert_array_equal(bits_in, bits_out)
+
+
+# ---------------------------------------------------------------------------
+# QAM-16/64/256: noiseless roundtrip for each order
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("order,bits_per_sym", [(16, 4), (64, 6), (256, 8)])
+def test_roundtrip_qam_noiseless(order, bits_per_sym):
+    """QamMod(order) → QamDemod(order) must recover bits perfectly."""
+    n_syms = 256
+    n_bits = n_syms * bits_per_sym
+    # cycle bits to exercise all symbol values
+    bits_in = np.array([(i // bits_per_sym + i % bits_per_sym) & 1
+                        for i in range(n_bits)], dtype=np.uint8)
+
+    iq = sdr.QamMod(order, 1.0, 0.0, 1.0).process(bits_in)
+    bits_out = sdr.QamDemod(order, 1.0).process(iq)
+
+    assert iq.shape == (n_syms,) and iq.dtype == np.complex64
+    assert bits_out.shape == (n_bits,) and bits_out.dtype == np.uint8
+    np.testing.assert_array_equal(
+        bits_in, bits_out,
+        err_msg=f"QAM-{order} noiseless roundtrip failed"
+    )

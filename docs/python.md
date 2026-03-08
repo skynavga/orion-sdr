@@ -1,6 +1,8 @@
 # Python Bindings
 
-All 5 demodulators and all 5 modulators are available as a native Python extension via PyO3.
+All analog and digital modulators and demodulators are available as a native Python
+extension via PyO3: CW, AM, SSB, FM, PM (analog) and BPSK, QPSK, QAM-16/64/256 (digital)
+— 16 classes in total.
 
 ## Installation
 
@@ -81,7 +83,7 @@ If you have the `.venv` activated (`source .venv/bin/activate`) you can drop the
 |------|----------------|
 | `conftest.py` | Shared helpers: `real_tone`, `complex_tone`, `snr_db`, `tail`, fixtures |
 | `test_unit.py` | Output shape/dtype, input validation, setters, instance isolation |
-| `test_roundtrip.py` | Mod→demod SNR for CW, AM, SSB, FM, PM (thresholds match Rust tests) |
+| `test_roundtrip.py` | Mod→demod SNR for CW, AM, SSB, FM, PM; noiseless bit-exact roundtrips for BPSK, QPSK, QAM-16/64/256 |
 
 ## Python Source Layout
 
@@ -89,7 +91,7 @@ If you have the `.venv` activated (`source .venv/bin/activate`) you can drop the
 python/
   orion_sdr/
     __init__.py       ← re-exports everything from the native extension
-    __init__.pyi      ← hand-authored PEP 561 type stub (all 10 classes)
+    __init__.pyi      ← hand-authored PEP 561 type stub (all 16 classes)
     py.typed          ← PEP 561 marker; tells type checkers this package is typed
     orion_sdr.so      ← compiled native extension (built by maturin, not in repo)
   tests/
@@ -136,6 +138,8 @@ docstring should appear in the tooltip.
 
 ## Demodulator Examples
 
+### Analog
+
 ```python
 import orion_sdr as sdr
 import numpy as np
@@ -169,7 +173,39 @@ pm = sdr.PmQuadratureDemod(fs=48_000, k=0.8, audio_bw_hz=5_000)
 audio = pm.process(iq)
 ```
 
+### Digital
+
+```python
+import orion_sdr as sdr
+import numpy as np
+
+# IQ symbols at baseband, 1 sample per symbol (carrier-removed)
+iq = np.zeros(4096, dtype=np.complex64)
+
+# BPSK hard-decision demodulator — 1 bit per symbol → uint8 array of 0/1
+bpsk = sdr.BpskDemod(gain=1.0)
+bits = bpsk.process(iq)   # → uint8 ndarray, shape (4096,)
+
+# QPSK hard-decision demodulator — 2 bits per symbol → uint8 array of 0/1
+qpsk = sdr.QpskDemod(gain=1.0)
+bits = qpsk.process(iq)   # → uint8 ndarray, shape (8192,)
+
+# QAM-16 hard-decision demodulator — 4 bits per symbol
+qam16 = sdr.QamDemod(order=16, gain=1.0)
+bits = qam16.process(iq)   # → uint8 ndarray, shape (16384,)
+
+# QAM-64 — 6 bits per symbol
+qam64 = sdr.QamDemod(order=64, gain=1.0)
+bits = qam64.process(iq)   # → uint8 ndarray, shape (24576,)
+
+# QAM-256 — 8 bits per symbol
+qam256 = sdr.QamDemod(order=256, gain=1.0)
+bits = qam256.process(iq)   # → uint8 ndarray, shape (32768,)
+```
+
 ## Modulator Examples
+
+### Analog
 
 ```python
 import orion_sdr as sdr
@@ -204,7 +240,41 @@ ssb_mod = sdr.SsbPhasingMod(fs=48_000, audio_bw_hz=2_800, audio_if_hz=1_500,
 iq = ssb_mod.process(audio)
 ```
 
-## Round-Trip Example
+### Digital
+
+```python
+import orion_sdr as sdr
+import numpy as np
+
+# BPSK modulator — 1 bit per symbol; input uint8 array (LSB of each byte)
+bpsk_mod = sdr.BpskMod(fs=1.0, rf_hz=0.0, gain=1.0)
+bits = np.array([0, 1, 0, 1, 1, 0], dtype=np.uint8)
+iq = bpsk_mod.process(bits)   # → complex64, shape (6,): (+1,0),(−1,0),...
+
+# QPSK modulator — 2 bits per symbol; len(bits) must be even
+qpsk_mod = sdr.QpskMod(fs=1.0, rf_hz=0.0, gain=1.0)
+bits = np.zeros(512, dtype=np.uint8)
+iq = qpsk_mod.process(bits)   # → complex64, shape (256,)
+
+# QAM-16 modulator — 4 bits per symbol
+qam16_mod = sdr.QamMod(order=16, fs=1.0, rf_hz=0.0, gain=1.0)
+bits = np.zeros(1024, dtype=np.uint8)
+iq = qam16_mod.process(bits)   # → complex64, shape (256,)
+
+# QAM-64 — 6 bits per symbol
+qam64_mod = sdr.QamMod(order=64, fs=1.0, rf_hz=0.0, gain=1.0)
+bits = np.zeros(1536, dtype=np.uint8)
+iq = qam64_mod.process(bits)   # → complex64, shape (256,)
+
+# QAM-256 — 8 bits per symbol; set rf_hz to upconvert in one step
+qam256_mod = sdr.QamMod(order=256, fs=48_000.0, rf_hz=12_000.0, gain=1.0)
+bits = np.zeros(2048, dtype=np.uint8)
+iq = qam256_mod.process(bits)   # → complex64, shape (256,), centred at 12 kHz
+```
+
+## Round-Trip Examples
+
+### Analog (SSB)
 
 ```python
 import orion_sdr as sdr
@@ -229,6 +299,25 @@ print(audio_in.shape, audio_out.shape, audio_out.dtype)
 # (8192,) (8192,) float32
 ```
 
+### Digital (BPSK)
+
+```python
+import orion_sdr as sdr
+import numpy as np
+
+n = 256
+bits_in = np.array([(i & 1) for i in range(n)], dtype=np.uint8)
+
+mod   = sdr.BpskMod(fs=1.0, rf_hz=0.0, gain=1.0)
+demod = sdr.BpskDemod(gain=1.0)
+
+iq       = mod.process(bits_in)    # → complex64, shape (256,)
+bits_out = demod.process(iq)       # → uint8,     shape (256,)
+
+np.testing.assert_array_equal(bits_in, bits_out)
+print("BPSK noiseless roundtrip: perfect recovery")
+```
+
 ## Notes
 
 - All `process()` calls are synchronous and hold the GIL. For high-throughput pipelines,
@@ -239,3 +328,8 @@ print(audio_in.shape, audio_out.shape, audio_out.dtype)
   in one step.
 - `CwKeyedMod` expects a keying envelope (0 = key up, 1 = key down), not audio.
   Derive the envelope from PTT state or a CW decoder.
+- Digital mod/demod classes operate at **1 sample per symbol** with no pulse shaping.
+  Insert a matched filter or interpolator between the modulator and channel if needed.
+- `QamMod` and `QamDemod` raise `ValueError` for orders other than 16, 64, or 256.
+- Bit arrays are `uint8` with one bit per byte (value 0 or 1). The LSB of each byte
+  is used; higher bits are ignored by the modulators.

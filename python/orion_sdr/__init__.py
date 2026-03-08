@@ -4,11 +4,17 @@ from orion_sdr.orion_sdr import (
     SsbProductDemod,
     FmQuadratureDemod,
     PmQuadratureDemod,
+    BpskDemod,
+    QpskDemod,
+    QamDemod,
     AmDsbMod,
     CwKeyedMod,
     FmPhaseAccumMod,
     PmDirectPhaseMod,
     SsbPhasingMod,
+    BpskMod,
+    QpskMod,
+    QamMod,
 )
 
 __all__ = [
@@ -17,9 +23,15 @@ __all__ = [
     "SsbProductDemod",
     "FmQuadratureDemod",
     "PmQuadratureDemod",
+    "BpskDemod",
+    "QpskDemod",
+    "QamDemod",
     "AmDsbMod",
     "CwKeyedMod",
     "FmPhaseAccumMod",
     "PmDirectPhaseMod",
     "SsbPhasingMod",
+    "BpskMod",
+    "QpskMod",
+    "QamMod",
 ]
