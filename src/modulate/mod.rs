@@ -5,6 +5,9 @@ pub use bpsk::{BpskMapper, BpskMod};
 pub mod qpsk;
 pub use qpsk::{QpskMapper, QpskMod};
 
+pub mod qam;
+pub use qam::{QamMapper, QamMod, Qam16Mapper, Qam64Mapper, Qam256Mapper};
+
 pub mod cw;
 pub use cw::CwKeyedMod;
 

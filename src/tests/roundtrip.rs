@@ -176,6 +176,65 @@ fn roundtrip_fm_quadrature() {
     assert!(snr > 20.0, "FM roundtrip SNR too low: {snr:.1} dB");
 }
 
+// === QAM: mapper correctness + noiseless roundtrip =======================
+
+// Helper: run a noiseless QAM roundtrip for any BITS value.
+fn qam_roundtrip_noiseless<const BITS: usize>(n_syms: usize) {
+    use crate::modulate::{QamMapper, QamMod};
+    use crate::demodulate::{QamDemod, QamDecider};
+    use crate::core::Block;
+    use num_complex::Complex32 as C32;
+
+    let n_bits = n_syms * BITS;
+    // Cycle bit pattern through all 2^BITS combinations to exercise every symbol
+    let bits_in: Vec<u8> = (0..n_bits).map(|i| ((i / BITS + i % BITS) & 1) as u8).collect();
+    let mut syms     = vec![C32::default(); n_syms];
+    let mut iq       = vec![C32::default(); n_syms];
+    let mut soft     = vec![C32::default(); n_syms];
+    let mut bits_out = vec![0u8; n_bits];
+
+    QamMapper::<BITS>::new().process(&bits_in, &mut syms);
+    QamMod::new(1.0, 0.0, 1.0).process(&syms, &mut iq);
+    QamDemod::new(1.0).process(&iq, &mut soft);
+    QamDecider::<BITS>::new().process(&soft, &mut bits_out);
+    assert_eq!(bits_in, bits_out, "QAM-{} noiseless roundtrip failed", 1 << BITS);
+}
+
+#[test]
+fn qam16_mapper_symbols() {
+    use crate::modulate::Qam16Mapper;
+    use crate::core::Block;
+    use num_complex::Complex32 as C32;
+    // QAM-16: M=4 levels/axis, scale = 1/sqrt(10)
+    let scale = (1.0f32 / 10.0f32).sqrt();
+    // Spot-check all 4 I-axis Gray-coded positions with Q fixed to (0,0) → +3*scale
+    // Input layout: [b0_I, b1_I, b0_Q, b1_Q] per symbol
+    let bits: Vec<u8> = vec![
+        0,0, 0,0,  // gray_I=0b00=0 → level -3; gray_Q=0b00=0 → level -3
+        0,1, 0,0,  // gray_I=0b01=1 → level -1; gray_Q=0b00=0 → level -3
+        1,1, 0,0,  // gray_I=0b11=3 → level +1; gray_Q=0b00=0 → level -3
+        1,0, 0,0,  // gray_I=0b10=2 → level +3; gray_Q=0b00=0 → level -3
+    ];
+    let mut out = [C32::default(); 4];
+    Qam16Mapper::new().process(&bits, &mut out);
+    let eps = 1e-6f32;
+    assert!((out[0].re - (-3.0 * scale)).abs() < eps, "QAM-16 I level mismatch sym 0: {:?}", out[0]);
+    assert!((out[1].re - (-1.0 * scale)).abs() < eps, "QAM-16 I level mismatch sym 1: {:?}", out[1]);
+    assert!((out[2].re - ( 1.0 * scale)).abs() < eps, "QAM-16 I level mismatch sym 2: {:?}", out[2]);
+    assert!((out[3].re - ( 3.0 * scale)).abs() < eps, "QAM-16 I level mismatch sym 3: {:?}", out[3]);
+    // All Q values should equal -3*scale (gray index 0 on Q axis)
+    for s in &out { assert!((s.im - (-3.0 * scale)).abs() < eps, "QAM-16 Q level mismatch: {:?}", s); }
+}
+
+#[test]
+fn roundtrip_qam16_noiseless() { qam_roundtrip_noiseless::<4>(256); }
+
+#[test]
+fn roundtrip_qam64_noiseless() { qam_roundtrip_noiseless::<6>(256); }
+
+#[test]
+fn roundtrip_qam256_noiseless() { qam_roundtrip_noiseless::<8>(256); }
+
 // === QPSK: mapper correctness + noiseless roundtrip ======================
 
 #[test]
