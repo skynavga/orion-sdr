@@ -4,7 +4,7 @@ Measurements taken on Apple M2 Pro, release build (`opt-level=3`, `lto=fat`,
 `codegen-units=1`), no SIMD, averaged over 9 runs.  Results are ordered
 by throughput (descending).
 
-## v0.0.14 Results
+## v0.0.15 Results
 
 ### Analog modes (9-run mean ±stdev)
 

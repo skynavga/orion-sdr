@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.15] - 2026-03-08
+
+### Added
+
+- BPSK, QPSK, QAM-16/64/256 modulators and demodulators (Rust + PyO3 bindings)
+  - `BpskMapper`, `BpskMod`, `BpskDemod`, `BpskDecider` (1 bit/symbol)
+  - `QpskMapper`, `QpskMod`, `QpskDemod`, `QpskDecider` (2 bits/symbol, Gray-coded)
+  - `QamMapper<BITS>`, `QamMod`, `QamDecider<BITS>`, `QamDemod` (const-generic, 4/6/8 bits/symbol, Gray-coded, unit-energy normalized)
+  - Python classes: `BpskMod`, `BpskDemod`, `QpskMod`, `QpskDemod`, `QamMod`, `QamDemod`
+- `IqToIqChain<B>` graph scheduler for C32→C32 pipelines
+- Throughput tests for all digital modes (BPSK ~253 Msps, QPSK ~317 Msps, QAM-16 ~209 Msps, QAM-64 ~92 Msps, QAM-256 ~73 Msps)
+- Python unit and roundtrip tests for all digital modes (54 tests total)
+- PEP 561 type stubs for 6 new digital classes
+- Release-prep and release skills (`skills/release-prep/`, `skills/release/`)
+
+### Changed
+
+- Docs updated to cover digital modes: `docs/features.md`, `docs/design.md`, `docs/modulate.md`, `docs/demodulate.md`, `docs/throughput.md`, `docs/python.md`
+- Fixed incorrect API examples in `docs/demodulate.md` (removed fictional `push_iq`, `push_audio`, `demod_mut`, `set_deemph_tau_us`, `set_limiter` calls)
+
 ## [0.0.14] - 2026-03-08
 
 ### Added
