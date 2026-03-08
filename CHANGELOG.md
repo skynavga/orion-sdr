@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.13] - 2026-03-08
+
+### Added
+
+- Restructured docs into `docs/` directory (source, design, conventions,
+  throughput, features, commands, demodulate, modulate, python, api)
+- `CHANGELOG.md` with git-accurate dates in Keep a Changelog format
+- Mixed maturin Python package layout (`python/orion_sdr/`) with `__init__.py`,
+  `py.typed`, and type stub (moved from root `orion_sdr.pyi`)
+- `pyproject.toml` with maturin config and pytest settings
+- pytest test suite: unit tests (shape, dtype, validation, setters, isolation)
+  and roundtrip SNR tests for all 5 modes
+- Cargo test aliases (`test-unit`, `test-roundtrip`, `test-throughput`)
+- `.markdownlint.json` (MD024 `siblings_only`)
+- `.venv` and `*.so`/`*.pyd` added to `.gitignore`
+
 ## [0.0.12] - 2026-03-01
 
 ### Added
