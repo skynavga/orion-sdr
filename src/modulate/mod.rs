@@ -2,6 +2,9 @@
 pub mod bpsk;
 pub use bpsk::{BpskMapper, BpskMod};
 
+pub mod qpsk;
+pub use qpsk::{QpskMapper, QpskMod};
+
 pub mod cw;
 pub use cw::CwKeyedMod;
 
