@@ -1,6 +1,7 @@
 # Modulator Usage
 
-Usage patterns and examples for all modulators in **orion-sdr**: CW, AM, SSB, FM, PM.
+Usage patterns and examples for all modulators in **orion-sdr**: CW, AM, SSB, FM, PM,
+BPSK, QPSK, QAM-16/64/256.
 
 ## CW Keyed Modulator
 
@@ -75,4 +76,118 @@ let kp_rad_per_unit = 0.8;
 let rf_hz = 0.0;
 
 let mut mod_ = PmDirectPhaseMod::new(fs, kp_rad_per_unit, rf_hz);
+```
+
+---
+
+## Digital Modulators
+
+All digital modulation pipelines use two stages:
+
+1. A **mapper** converts a flat `&[u8]` bit stream (one bit per byte, LSB used) into
+   `&[Complex32]` constellation symbols.
+2. A **waveform stage** (`BpskMod`, `QpskMod`, or `QamMod`) multiplies each symbol by
+   a carrier phasor and applies gain.  Set `rf_hz = 0.0` for baseband output.
+
+Both stages implement `Block` and can be driven directly or wrapped in `IqToIqChain`.
+
+### BPSK
+
+Gray-coded; 1 bit per symbol.  Constellation: `(+1, 0)` for bit 0, `(−1, 0)` for bit 1.
+
+```rust
+use orion_sdr::{
+    core::Block,
+    modulate::{BpskMapper, BpskMod},
+};
+use num_complex::Complex32 as C32;
+
+let bits: Vec<u8> = vec![0, 1, 0, 0, 1, 1, 0, 1]; // one bit per byte (LSB)
+let mut syms = vec![C32::default(); bits.len()];
+let mut iq   = vec![C32::default(); bits.len()];
+
+BpskMapper::new().process(&bits, &mut syms);
+
+// baseband, unit gain
+BpskMod::new(1.0, 0.0, 1.0).process(&syms, &mut iq);
+```
+
+### QPSK
+
+Gray-coded; 2 bits per symbol.  Input consumed in pairs `[b0, b1]`; normalized to
+unit energy (each axis at ±1/√2).
+
+```rust
+use orion_sdr::{
+    core::Block,
+    modulate::{QpskMapper, QpskMod},
+};
+use num_complex::Complex32 as C32;
+
+// 8 bits → 4 symbols
+let bits: Vec<u8> = vec![0,0, 0,1, 1,0, 1,1];
+let mut syms = vec![C32::default(); 4];
+let mut iq   = vec![C32::default(); 4];
+
+QpskMapper::new().process(&bits, &mut syms);
+QpskMod::new(1.0, 0.0, 1.0).process(&syms, &mut iq);
+```
+
+### QAM-16 / QAM-64 / QAM-256
+
+Const-generic `QamMapper<const BITS: usize>` where `BITS` is the bits per symbol:
+`4` → QAM-16, `6` → QAM-64, `8` → QAM-256.  Type aliases are provided for convenience.
+
+Input is consumed `BITS` bytes per symbol: the first `BITS/2` bytes encode the I axis
+(MSB-first within the axis Gray index), the next `BITS/2` bytes encode the Q axis.
+Constellation is normalized to unit average symbol energy.
+
+`QamMod` is order-independent and shared across all QAM variants.
+
+```rust
+use orion_sdr::{
+    core::Block,
+    modulate::{Qam16Mapper, Qam64Mapper, Qam256Mapper, QamMod},
+};
+use num_complex::Complex32 as C32;
+
+let n_syms = 64;
+
+// QAM-16: 4 bits/symbol
+let bits16: Vec<u8> = vec![0u8; n_syms * 4];
+let mut syms = vec![C32::default(); n_syms];
+let mut iq   = vec![C32::default(); n_syms];
+Qam16Mapper::new().process(&bits16, &mut syms);
+QamMod::new(1.0, 0.0, 1.0).process(&syms, &mut iq);
+
+// QAM-64: 6 bits/symbol — same pattern, different mapper
+let bits64: Vec<u8> = vec![0u8; n_syms * 6];
+Qam64Mapper::new().process(&bits64, &mut syms);
+QamMod::new(1.0, 0.0, 1.0).process(&syms, &mut iq);
+
+// QAM-256: 8 bits/symbol
+let bits256: Vec<u8> = vec![0u8; n_syms * 8];
+Qam256Mapper::new().process(&bits256, &mut syms);
+QamMod::new(1.0, 0.0, 1.0).process(&syms, &mut iq);
+```
+
+### Carrier upconversion
+
+All waveform stages accept an `rf_hz` parameter.  When non-zero the symbols are
+rotated onto that carrier using an internal `Rotator` (phasor recurrence, no per-sample
+trig):
+
+```rust
+use orion_sdr::{core::Block, modulate::{BpskMapper, BpskMod}};
+use num_complex::Complex32 as C32;
+
+let fs = 2_400_000.0;   // 2.4 MHz sample rate
+let rf_hz = 100_000.0;  // 100 kHz IF carrier
+
+let bits: Vec<u8> = (0..256).map(|i| (i & 1) as u8).collect();
+let mut syms = vec![C32::default(); 256];
+let mut iq   = vec![C32::default(); 256];
+
+BpskMapper::new().process(&bits, &mut syms);
+BpskMod::new(fs, rf_hz, 1.0).process(&syms, &mut iq);
 ```
