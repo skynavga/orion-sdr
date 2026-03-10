@@ -25,20 +25,26 @@ src/
     rotator.rs        — Rotator
   demodulate/
     am.rs             — AmEnvelopeDemod (PowerSqrt, AbsApprox)
+    bpsk.rs           — BpskDemod, BpskDecider
     cw.rs             — CwEnvelopeDemod
     fm.rs             — FmQuadratureDemod
     pm.rs             — PmQuadratureDemod
+    qam.rs            — QamDemod, QamDecider<BITS>, Qam16/64/256Decider
+    qpsk.rs           — QpskDemod, QpskDecider
     ssb.rs            — SsbProductDemod
   modulate/
     am.rs             — AmDsbMod
+    bpsk.rs           — BpskMapper, BpskMod
     cw.rs             — CwKeyedMod
     fm.rs             — FmPhaseAccumMod
     pm.rs             — PmDirectPhaseMod
+    qam.rs            — QamMapper<BITS>, QamMod, Qam16/64/256Mapper
+    qpsk.rs           — QpskMapper, QpskMod
     ssb.rs            — SsbPhasingMod
   python/
     mod.rs            — PyO3 module entry point, class registration
-    demodulate.rs     — Python wrappers for all 5 demodulators
-    modulate.rs       — Python wrappers for all 5 modulators
+    demodulate.rs     — Python wrappers for all 8 demodulators (5 analog + 3 digital)
+    modulate.rs       — Python wrappers for all 8 modulators (5 analog + 3 digital)
   tests/
     unit.rs           — unit tests
     roundtrip.rs      — mod→demod SNR roundtrip tests
