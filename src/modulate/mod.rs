@@ -1,4 +1,10 @@
 
+pub mod ft8;
+pub use ft8::{Ft8Mod, Ft8Frame};
+
+pub mod ft4;
+pub use ft4::{Ft4Mod, Ft4Frame};
+
 pub mod bpsk;
 pub use bpsk::{BpskMapper, BpskMod};
 
