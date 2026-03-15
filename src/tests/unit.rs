@@ -199,3 +199,105 @@ fn audio_to_iq_chain_runs_and_lengths_match() {
     let power: f32 = iq.iter().map(|z| z.norm_sqr()).sum::<f32>() / (n as f32);
     assert!(power > 1e-6, "IQ power too small");
 }
+
+// === FT8 unit tests =======================================================
+
+#[test]
+fn ft8_frame_length() {
+    use crate::modulate::{Ft8Mod, Ft8Frame};
+    use crate::modulate::ft8::FT8_FRAME_LEN;
+    let tx = Ft8Mod::new(12_000.0, 1_000.0, 0.0, 1.0);
+    let iq = tx.modulate(&Ft8Frame::zeros());
+    assert_eq!(iq.len(), FT8_FRAME_LEN, "FT8 frame length mismatch");
+}
+
+#[test]
+fn ft8_symbol_sequence_count() {
+    use crate::modulate::{Ft8Mod, Ft8Frame};
+    use crate::modulate::ft8::{FT8_TOTAL_SYMS, FT8_DATA_SYMS};
+    let seq = Ft8Mod::build_symbol_sequence(&Ft8Frame::zeros());
+    assert_eq!(seq.len(), FT8_TOTAL_SYMS);
+    // Verify data symbol count: total - 3 Costas blocks × 7 = 79 - 21 = 58
+    let sync_pos: [(usize, usize); 3] = [(0, 7), (36, 43), (72, 79)];
+    let mut is_sync = [false; FT8_TOTAL_SYMS];
+    for &(start, end) in &sync_pos { for p in start..end { is_sync[p] = true; } }
+    let data_count = is_sync.iter().filter(|&&s| !s).count();
+    assert_eq!(data_count, FT8_DATA_SYMS);
+}
+
+#[test]
+fn ft8_costas_positions_correct() {
+    use crate::modulate::{Ft8Mod, Ft8Frame};
+    // The Costas sequence [3,1,4,0,6,5,2] should appear at positions 0-6, 36-42, 72-78
+    let costas = [3u8, 1, 4, 0, 6, 5, 2];
+    let sync_starts = [0usize, 36, 72];
+    let seq = Ft8Mod::build_symbol_sequence(&Ft8Frame::zeros());
+    for &start in &sync_starts {
+        for i in 0..7 {
+            assert_eq!(seq[start + i], costas[i],
+                "FT8 Costas mismatch at sym {}: got {}, expected {}",
+                start + i, seq[start + i], costas[i]);
+        }
+    }
+}
+
+#[test]
+fn ft8_iq_power_unity() {
+    use crate::modulate::{Ft8Mod, Ft8Frame};
+    use crate::modulate::ft8::FT8_FRAME_LEN;
+    let tx = Ft8Mod::new(12_000.0, 1_000.0, 0.0, 1.0);
+    let iq = tx.modulate(&Ft8Frame::zeros());
+    // All IQ samples are unit-amplitude phasors, so mean power should be ~1.0
+    let power: f32 = iq.iter().map(|z| z.norm_sqr()).sum::<f32>() / (FT8_FRAME_LEN as f32);
+    assert!((power - 1.0).abs() < 0.01, "FT8 IQ power deviates from 1.0: {}", power);
+}
+
+// === FT4 unit tests =======================================================
+
+#[test]
+fn ft4_frame_length() {
+    use crate::modulate::{Ft4Mod, Ft4Frame};
+    use crate::modulate::ft4::FT4_FRAME_LEN;
+    let tx = Ft4Mod::new(12_000.0, 1_000.0, 0.0, 1.0);
+    let iq = tx.modulate(&Ft4Frame::zeros());
+    assert_eq!(iq.len(), FT4_FRAME_LEN, "FT4 frame length mismatch");
+}
+
+#[test]
+fn ft4_symbol_sequence_count() {
+    use crate::modulate::{Ft4Mod, Ft4Frame};
+    use crate::modulate::ft4::{FT4_TOTAL_SYMS, FT4_DATA_SYMS};
+    let seq = Ft4Mod::build_symbol_sequence(&Ft4Frame::zeros());
+    assert_eq!(seq.len(), FT4_TOTAL_SYMS);
+    // Verify data symbol count: total - 4 Costas blocks × 4 = 103 - 16 = 87
+    let sync_pos: [(usize, usize); 4] = [(0, 4), (29, 33), (60, 64), (99, 103)];
+    let mut is_sync = [false; FT4_TOTAL_SYMS];
+    for &(start, end) in &sync_pos { for p in start..end { is_sync[p] = true; } }
+    let data_count = is_sync.iter().filter(|&&s| !s).count();
+    assert_eq!(data_count, FT4_DATA_SYMS);
+}
+
+#[test]
+fn ft4_costas_positions_correct() {
+    use crate::modulate::{Ft4Mod, Ft4Frame};
+    let costas: [[u8; 4]; 4] = [[0,1,3,2],[1,0,2,3],[2,3,0,1],[3,2,1,0]];
+    let sync_starts = [0usize, 29, 60, 99];
+    let seq = Ft4Mod::build_symbol_sequence(&Ft4Frame::zeros());
+    for (blk, &start) in sync_starts.iter().enumerate() {
+        for i in 0..4 {
+            assert_eq!(seq[start + i], costas[blk][i],
+                "FT4 Costas mismatch blk {} sym {}: got {}, expected {}",
+                blk, i, seq[start + i], costas[blk][i]);
+        }
+    }
+}
+
+#[test]
+fn ft4_iq_power_unity() {
+    use crate::modulate::{Ft4Mod, Ft4Frame};
+    use crate::modulate::ft4::FT4_FRAME_LEN;
+    let tx = Ft4Mod::new(12_000.0, 1_000.0, 0.0, 1.0);
+    let iq = tx.modulate(&Ft4Frame::zeros());
+    let power: f32 = iq.iter().map(|z| z.norm_sqr()).sum::<f32>() / (FT4_FRAME_LEN as f32);
+    assert!((power - 1.0).abs() < 0.01, "FT4 IQ power deviates from 1.0: {}", power);
+}
