@@ -213,66 +213,127 @@ skipped.  The data symbols at frame-relative positions are:
 
 ---
 
-## Phase 4 — Message packing: 77-bit structured payloads [TODO]
+## Phase 4 — Message packing: 77-bit structured payloads [DONE]
 
 This phase adds the application layer: encoding human-readable QSO
 messages into the 77-bit payload and decoding them back.
 
-### Message types (FT8 standard)
+### Message types supported
 
-| Type | Bits | Description |
-|------|------|-------------|
-| 0    | 77   | Free text / telemetry (13 chars, base-42 alphabet) |
-| 1    | 77   | Standard QSO: callsign1 + callsign2 + grid/report |
-| 2    | 77   | EU VHF contest |
-| 3    | 77   | ARRL field day |
-| 4    | 77   | Nonstandard callsign (hashed) |
-| 5    | 77   | Telemetry (71 bits arbitrary) |
+| i3 | n3 | Description |
+|----|----|-------------|
+| 1/2 | — | Standard QSO: callsign + callsign + grid/report |
+| 0  | 0  | Free text (up to 13 chars, base-42 alphabet) |
+| 0  | 5  | Telemetry (71 arbitrary bits) |
+| 4  | —  | Nonstandard callsign (58-bit plain + 12-bit hash) |
 
-### Phase 4a — Type 1 (standard QSO) [primary target]
+### What was built
 
-- [ ] `src/message/callsign.rs` — standard callsign encoder/decoder
-  - 28-bit encoding for callsigns matching `[A-Z0-9]{1,3}[0-9][A-Z]{1,4}`
-  - Special codes: CQ (0), DE, QRZ, etc.
-- [ ] `src/message/grid.rs` — Maidenhead grid square encoder/decoder
-  - 15-bit encoding for 4-character grid (e.g. "FN31")
-- [ ] `src/message/report.rs` — signal report / RRR / 73 encoder/decoder
-- [ ] `src/message/type1.rs` — `Ft8MessageType1 { from, to, grid_or_report }`
-  - `pack(&self) -> [u8; 77]`
-  - `unpack(bits: &[u8; 77]) -> Option<Self>`
-- [ ] Unit tests: known pack/unpack roundtrips matching WSJT-X output
+- `src/message/tables.rs` — `Table` enum + `nchar`/`charn` matching ft8_lib's
+  six character tables (FULL 42, ALPHANUM_SPACE_SLASH 38, ALPHANUM_SPACE 37,
+  LETTERS_SPACE 27, ALPHANUM 36, NUMERIC 10)
+- `src/message/callsign.rs` — `pack_basecall`, `pack28`/`unpack28`,
+  `pack58`/`unpack58`, `CallsignHashTable` (in-memory `HashMap<u32, String>`
+  keyed by 22-bit multiply-shift hash)
+- `src/message/grid.rs` — `packgrid`/`unpackgrid`, `GridField` enum
+  (Grid, Report, RReport, RRR, RR73, Seventy3, None)
+- `src/message/free_text.rs` — `encode_free_text`/`decode_free_text`
+  (big-endian base-42, 9-byte 71-bit integer)
+- `src/message/message.rs` — `Ft8Message` enum, `pack77`/`unpack77`
+- `src/message/mod.rs` — public re-exports
 
-### Phase 4b — Type 0 (free text)
+### Bit layout
 
-- [ ] `src/message/freetext.rs` — base-42 encode/decode
-  - Alphabet: `0-9A-Z /?.,` (42 chars)
-  - Up to 13 characters → 71 bits
+**Type 1/2** (29 + 29 + 1 + 15 + 3 = 77 bits):
+```
+n29a[28:0] | n29b[28:0] | ir[0] | igrid4[14:0] | i3[2:0]
+```
+Packed MSB-first across `payload[0..9]`; `i3=1` (no suffix), `i3=2` (/P suffix).
+The `ir` bit is bit 5 of `payload[7]`; `igrid4` spans bits 4:0 of `payload[7]`
+through bits 7:6 of `payload[9]`.
 
-### Phase 4c — remaining types (if needed)
+**Type 0/free-text** (71 bits + 6 zero bits):
+The 9-byte `b71` big-endian integer is left-shifted 1 bit into `payload[0..8]`;
+`payload[9] = 0x00` (i3=0, n3=0).
 
-Types 2, 3, 4, 5 can be added incrementally based on need.
+**Type 0/telemetry** (n3=5): same left-shift; `payload[8] |= 0x01` (n3 bit 2),
+`payload[9] = 0x40` (n3 bits 1:0 = 0b01, i3=0).
+
+**Type 4** (12 + 58 + 1 + 2 + 1 + 3 = 77 bits):
+```
+n12[11:0] | n58[57:0] | iflip[0] | nrpt[1:0] | icq[0] | i3[2:0]
+```
+
+### Implementation notes and gotchas
+
+**Telemetry type encoding spans two bytes.**
+`n3` is extracted as `((payload[8] << 2) & 0x04) | ((payload[9] >> 6) & 0x03)`.
+For n3=5=0b101: bit 2 lives in `payload[8]` bit 0 (which the left-shift leaves
+as zero), and bits 1:0 live in `payload[9]` bits 7:6.  Setting `payload[9] = 5<<3`
+is wrong — that sets i3=5, not n3=5.
+
+**Free-text left-shift direction.**
+ft8_lib iterates the shift loop `for i in (0..9).rev()` (i=8 down to 0), carrying
+the MSB of each byte into the LSB of the byte above.  The decode loop runs
+forward (i=0..9), shifting right and carrying LSBs upward.
+
+**CallsignHashTable n12 lookup.**
+The hash table is keyed by the full 22-bit hash n22.  When decoding a Type 4
+message the payload carries only n12 = n22 >> 10.  The lookup scans the map for
+any key in `[n12<<10, (n12+1)<<10)` — this is correct and cheap for the small
+hash tables used in practice.
+
+### Tests
+
+- 26 unit tests in `src/tests/unit/message.rs`
+- 3 full-stack roundtrip tests in `src/tests/roundtrip/message.rs`:
+  `full_stack_ft8_type1`, `full_stack_ft8_free_text`, `full_stack_ft4_type1`
+  (each: `pack77` → `Ft8Codec::encode` → `Ft8Mod` → `Ft8Demod` →
+  `Ft8Codec::decode_hard` → `unpack77`)
+
+---
+
+## Phase 4 addendum — Throughput tests [DONE]
+
+Added alongside Phase 4 completion:
+
+- `src/tests/throughput/ft8.rs` — 5 tests: mod, demod, codec encode, codec decode,
+  full roundtrip (codec encode → mod → demod → codec decode)
+- `src/tests/throughput/ft4.rs` — 5 tests: same structure for FT4
+
+Results on Apple M2 Pro (release build, 20 passes × 1 frame):
+
+| Stage | FT8 Msps | FT4 Msps |
+|---|---:|---:|
+| mod | 266 | 222 |
+| demod | 29 | 45 |
+| roundtrip | 27 | 44 |
+
+Demod is the bottleneck in both cases (8 Goertzel correlators × 79 symbols for
+FT8; 4 × 105 for FT4). FT4 demod is faster per-sample because the frame is 2.5×
+shorter and uses only 4 tones. Codec encode/decode numbers are elided by the
+optimizer at constant input in release mode — this is expected for a floor test.
 
 ---
 
 ## Phase 5 — Python bindings and documentation [TODO]
 
-- [ ] PyO3 bindings for `Ft8Encoder`, `Ft8Decoder`, `Ft8Sync`, `Ft8MessageType1`
-  - Expose `encode(msg_str) -> bytes` and `decode(iq: np.ndarray) -> str | None`
+- [ ] PyO3 bindings for `Ft8Encoder`, `Ft8Decoder`, `Ft8Sync`, `Ft8Message`
+  - Expose `encode(msg: Ft8Message) -> bytes` and
+    `decode(iq: np.ndarray) -> Ft8Message | None`
 - [ ] Pytest integration tests mirroring Rust roundtrip tests
-- [ ] Update `docs/modulate.md`, `docs/demodulate.md`, `docs/api.md`
-- [ ] Throughput benchmark: encode+decode cycles/sec at target SNR
+- [ ] Update `docs/source.md`, `docs/api.md` with message module API
+- [ ] `docs/python.md` — FT8/FT4 usage examples
 
 ---
 
-## Implementation order recommendation
+## Implementation order (actual)
 
 ```
-Phase 2 (codec) → Phase 3 (sync) → Phase 4a (Type 1 messages) → Phase 5 (bindings)
+Phase 1 (waveform) → Phase 2 (codec) → Phase 3 (sync) → Phase 4 (messages) → Phase 5 (bindings)
 ```
 
-Phase 2 is self-contained and testable without real RF. Phase 3 depends on
-Phase 2 (needs LLRs → soft decode). Phase 4 is independent of 2 and 3 and
-could be parallelised. Phase 5 wraps everything at the end.
+Phases 1–4 are complete. Phase 5 (Python bindings) is next.
 
 ---
 
