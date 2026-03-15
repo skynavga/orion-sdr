@@ -338,20 +338,27 @@ fn ft4_symbol_sequence_count() {
     use crate::modulate::ft4::{FT4_TOTAL_SYMS, FT4_DATA_SYMS};
     let seq = Ft4Mod::build_symbol_sequence(&Ft4Frame::zeros());
     assert_eq!(seq.len(), FT4_TOTAL_SYMS);
-    // Verify data symbol count: total - 4 Costas blocks × 4 = 103 - 16 = 87
-    let sync_pos: [(usize, usize); 4] = [(0, 4), (29, 33), (60, 64), (99, 103)];
-    let mut is_sync = [false; FT4_TOTAL_SYMS];
-    for &(start, end) in &sync_pos { for p in start..end { is_sync[p] = true; } }
-    let data_count = is_sync.iter().filter(|&&s| !s).count();
+    // Verify data symbol count: 105 total - 2 ramps - 4 Costas blocks × 4 = 87
+    let sync_pos: [(usize, usize); 4] = [(1, 5), (34, 38), (67, 71), (100, 104)];
+    let mut is_reserved = [false; FT4_TOTAL_SYMS];
+    is_reserved[0] = true;
+    is_reserved[104] = true;
+    for &(start, end) in &sync_pos { for p in start..end { is_reserved[p] = true; } }
+    let data_count = is_reserved.iter().filter(|&&s| !s).count();
     assert_eq!(data_count, FT4_DATA_SYMS);
 }
 
 #[test]
 fn ft4_costas_positions_correct() {
     use crate::modulate::{Ft4Mod, Ft4Frame};
-    let costas: [[u8; 4]; 4] = [[0,1,3,2],[1,0,2,3],[2,3,0,1],[3,2,1,0]];
-    let sync_starts = [0usize, 29, 60, 99];
+    // Reference: ft8_lib kFT4_Costas_pattern
+    let costas: [[u8; 4]; 4] = [[0,1,3,2],[1,0,2,3],[2,3,1,0],[3,2,0,1]];
+    let sync_starts = [1usize, 34, 67, 100];
     let seq = Ft4Mod::build_symbol_sequence(&Ft4Frame::zeros());
+    // Verify ramp symbols
+    assert_eq!(seq[0], 0, "FT4 ramp at position 0 should be tone 0");
+    assert_eq!(seq[104], 0, "FT4 ramp at position 104 should be tone 0");
+    // Verify Costas blocks
     for (blk, &start) in sync_starts.iter().enumerate() {
         for i in 0..4 {
             assert_eq!(seq[start + i], costas[blk][i],

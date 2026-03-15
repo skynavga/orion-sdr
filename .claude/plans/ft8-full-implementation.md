@@ -33,6 +33,22 @@ Each phase below adds one layer, building on the previous.
 - Unit tests: frame length, symbol count, Costas positions, IQ power
 - Roundtrip tests: noiseless and all-tones
 
+### Post-Phase-1 correction (applied before Phase 3)
+
+The initial FT4 frame structure did not match the reference (ft8_lib):
+
+| | Phase 1 (wrong) | Corrected |
+|---|---|---|
+| Total symbols | 103 | **105** |
+| Frame length | 59 328 samples | **60 480 samples** |
+| Costas positions | (0,4),(29,33),(60,64),(99,103) | **(1,5),(34,38),(67,71),(100,104)** |
+| Costas row 2 | `[2,3,0,1]` | **`[2,3,1,0]`** |
+| Costas row 3 | `[3,2,1,0]` | **`[3,2,0,1]`** |
+| Ramp symbols | none | **tone 0 at positions 0 and 104** |
+
+Frame layout: `R S4_1 D29 S4_2 D29 S4_3 D29 S4_4 R`
+(2 ramps + 4×4 Costas + 87 data = 105 symbols)
+
 ### What is explicitly NOT included
 
 - No channel coding (CRC, LDPC, Gray mapping)

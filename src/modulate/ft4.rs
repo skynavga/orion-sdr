@@ -6,20 +6,24 @@ use crate::dsp::Rotator;
 pub const FT4_TONE_SPACING_HZ: f32 = 20.833_334; // 500/24 Hz (exact: 20000/960)
 pub const FT4_BAUD: f32 = 20.833_334;
 pub const FT4_SAMPLES_PER_SYM: usize = 576; // 12000 / 20.833... = 576
-pub const FT4_TOTAL_SYMS: usize = 103;
+// Frame structure: R S4_1 D29 S4_2 D29 S4_3 D29 S4_4 R  (105 symbols total)
+// R = ramp symbol (tone 0) at positions 0 and 104.
+// 4 Costas blocks of 4 symbols + 2 ramps = 18 non-data symbols; 105 - 18 = 87 data.
+pub const FT4_TOTAL_SYMS: usize = 105;
 pub const FT4_DATA_SYMS: usize = 87;
 pub const FT4_TONES: usize = 4;
-pub const FT4_FRAME_LEN: usize = FT4_TOTAL_SYMS * FT4_SAMPLES_PER_SYM; // 59_328
+pub const FT4_FRAME_LEN: usize = FT4_TOTAL_SYMS * FT4_SAMPLES_PER_SYM; // 60_480
 
-// FT4 Costas arrays (4 × 4-symbol arrays)
+// FT4 Costas arrays (4 × 4-symbol arrays). Source: ft8_lib kFT4_Costas_pattern.
 const FT4_COSTAS: [[u8; 4]; 4] = [
     [0, 1, 3, 2],
     [1, 0, 2, 3],
-    [2, 3, 0, 1],
-    [3, 2, 1, 0],
+    [2, 3, 1, 0],
+    [3, 2, 0, 1],
 ];
-// Costas block positions in the 103-symbol sequence: [start, end)
-const FT4_SYNC_POS: [(usize, usize); 4] = [(0, 4), (29, 33), (60, 64), (99, 103)];
+// Costas block positions in the 105-symbol sequence: [start, end)
+// Ramp symbols occupy positions 0 and 104 (not included here).
+const FT4_SYNC_POS: [(usize, usize); 4] = [(1, 5), (34, 38), (67, 71), (100, 104)];
 
 /// FT4 data frame: 87 tone indices (0–3), no sync symbols.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,7 +36,7 @@ impl Ft4Frame {
 
 /// FT4 modulator: frame-at-a-time rectangular 4-FSK.
 ///
-/// Produces a 59 328-sample (103 × 576) complex IQ waveform at 12 kHz.
+/// Produces a 60 480-sample (105 × 576) complex IQ waveform at 12 kHz.
 /// Phase continuity is maintained across symbol boundaries (CPFSK).
 #[derive(Debug, Clone)]
 pub struct Ft4Mod {
@@ -53,26 +57,41 @@ impl Ft4Mod {
         Self { fs, base_hz, rf_hz, gain }
     }
 
-    /// Build the 103-symbol tone sequence from an Ft4Frame, inserting Costas sync.
+    /// Build the 105-symbol tone sequence from an Ft4Frame, inserting ramps and Costas sync.
+    ///
+    /// Layout: R S4_1 D29 S4_2 D29 S4_3 D29 S4_4 R
+    /// - Ramp symbols (tone 0) at positions 0 and 104.
+    /// - Costas blocks at positions 1-4, 34-37, 67-70, 100-103.
+    /// - 87 data symbols fill the remaining positions.
     pub fn build_symbol_sequence(frame: &Ft4Frame) -> [u8; FT4_TOTAL_SYMS] {
         let mut syms = [0u8; FT4_TOTAL_SYMS];
-        // Mark sync positions
-        let mut is_sync = [false; FT4_TOTAL_SYMS];
+
+        // Ramp symbols: tone 0 at start and end (already zero from array init,
+        // but set explicitly for clarity)
+        syms[0] = 0;
+        syms[104] = 0;
+
+        // Mark non-data positions: ramps + Costas blocks
+        let mut is_reserved = [false; FT4_TOTAL_SYMS];
+        is_reserved[0] = true;
+        is_reserved[104] = true;
         for &(start, end) in &FT4_SYNC_POS {
             for pos in start..end {
-                is_sync[pos] = true;
+                is_reserved[pos] = true;
             }
         }
+
         // Fill in Costas sync symbols
         for (blk, &(start, _)) in FT4_SYNC_POS.iter().enumerate() {
             for i in 0..4 {
                 syms[start + i] = FT4_COSTAS[blk][i];
             }
         }
-        // Fill in data symbols
+
+        // Fill in data symbols in the remaining slots
         let mut data_idx = 0usize;
         for pos in 0..FT4_TOTAL_SYMS {
-            if !is_sync[pos] {
+            if !is_reserved[pos] {
                 syms[pos] = frame.0[data_idx];
                 data_idx += 1;
             }
@@ -80,7 +99,7 @@ impl Ft4Mod {
         syms
     }
 
-    /// Modulate one frame → `Vec<C32>` of length `FT4_FRAME_LEN` (59 328).
+    /// Modulate one frame → `Vec<C32>` of length `FT4_FRAME_LEN` (60 480).
     pub fn modulate(&self, frame: &Ft4Frame) -> Vec<C32> {
         let syms = Self::build_symbol_sequence(frame);
         let total_samples = FT4_TOTAL_SYMS * FT4_SAMPLES_PER_SYM;
