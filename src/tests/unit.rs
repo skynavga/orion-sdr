@@ -252,6 +252,75 @@ fn ft8_iq_power_unity() {
     assert!((power - 1.0).abs() < 0.01, "FT8 IQ power deviates from 1.0: {}", power);
 }
 
+// === Phase 2: codec unit tests ============================================
+
+#[test]
+fn ft8_gray_encode_decode_roundtrip() {
+    use crate::codec::gray::{gray8_encode, gray8_decode};
+    for i in 0u8..8 {
+        assert_eq!(gray8_decode(gray8_encode(i)), i, "FT8 Gray roundtrip failed for {i}");
+    }
+}
+
+#[test]
+fn ft4_gray_encode_decode_roundtrip() {
+    use crate::codec::gray::{gray4_encode, gray4_decode};
+    for i in 0u8..4 {
+        assert_eq!(gray4_decode(gray4_encode(i)), i, "FT4 Gray roundtrip failed for {i}");
+    }
+}
+
+#[test]
+fn ft8_crc_known_answer() {
+    use crate::codec::crc::{ft8_add_crc, ft8_extract_crc, ft8_crc14};
+    // All-zeros payload: CRC should be deterministic and non-trivially verifiable.
+    let payload = [0u8; 10];
+    let mut a91 = [0u8; 12];
+    ft8_add_crc(&payload, &mut a91);
+    let extracted = ft8_extract_crc(&a91);
+    // Recompute over zero-padded payload
+    let mut buf = [0u8; 12];
+    buf[..10].copy_from_slice(&payload);
+    let computed = ft8_crc14(&buf, 82);
+    assert_eq!(extracted, computed, "CRC mismatch for all-zero payload");
+}
+
+#[test]
+fn ldpc_encode_syndrome_passes() {
+    use crate::codec::ldpc::{ldpc_encode, ldpc_count_errors, K_BYTES, N_BYTES, N};
+    use crate::codec::crc::ft8_add_crc;
+    let payload = [0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0x00u8];
+    let mut a91 = [0u8; K_BYTES];
+    ft8_add_crc(&payload, &mut a91);
+    let mut codeword = [0u8; N_BYTES];
+    ldpc_encode(&a91, &mut codeword);
+    let mut hard = [0u8; N];
+    for i in 0..N {
+        hard[i] = (codeword[i / 8] >> (7 - (i % 8))) & 1;
+    }
+    assert_eq!(ldpc_count_errors(&hard), 0, "LDPC syndrome check failed");
+}
+
+#[test]
+fn ft8_codec_encode_produces_valid_tones() {
+    use crate::codec::ft8::{Ft8Codec, Ft8Bits};
+    let payload: Ft8Bits = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01, 0x23, 0x45, 0x60];
+    let frame = Ft8Codec::encode(&payload);
+    for &t in frame.0.iter() {
+        assert!(t < 8, "FT8 codec produced out-of-range tone: {t}");
+    }
+}
+
+#[test]
+fn ft4_codec_encode_produces_valid_tones() {
+    use crate::codec::ft4::{Ft4Codec, Ft4Bits};
+    let payload: Ft4Bits = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01, 0x23, 0x45, 0x60];
+    let frame = Ft4Codec::encode(&payload);
+    for &t in frame.0.iter() {
+        assert!(t < 4, "FT4 codec produced out-of-range tone: {t}");
+    }
+}
+
 // === FT4 unit tests =======================================================
 
 #[test]
