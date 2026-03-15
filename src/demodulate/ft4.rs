@@ -5,14 +5,16 @@ use crate::modulate::ft4::{
     FT4_TONES, FT4_TOTAL_SYMS, FT4_FRAME_LEN,
 };
 
-// Costas sync positions
-const FT4_SYNC_POS: [(usize, usize); 4] = [(0, 4), (29, 33), (60, 64), (99, 103)];
+// Costas sync positions in the 105-symbol frame: [start, end)
+// Ramp symbols at positions 0 and 104 are handled separately.
+const FT4_SYNC_POS: [(usize, usize); 4] = [(1, 5), (34, 38), (67, 71), (100, 104)];
 
 /// FT4 demodulator: frame-at-a-time dot-product tone detector.
 ///
-/// For each of the 103 symbol slots, computes energy at each of the 4 tone
-/// frequencies and picks the strongest. Sync positions are stripped; the 87
-/// data tones are returned as `Ft4Frame`.
+/// For each of the 105 symbol slots, computes energy at each of the 4 tone
+/// frequencies and picks the strongest. Ramp symbols (positions 0 and 104)
+/// and Costas sync blocks are stripped; the 87 data tones are returned as
+/// `Ft4Frame`.
 #[derive(Debug, Clone)]
 pub struct Ft4Demod {
     fs: f32,
@@ -24,7 +26,7 @@ impl Ft4Demod {
         Self { fs, base_hz }
     }
 
-    /// Demodulate a 59 328-sample IQ block → `Ft4Frame` (87 data tone indices).
+    /// Demodulate a 60 480-sample IQ block → `Ft4Frame` (87 data tone indices).
     ///
     /// Returns `None` if the input slice is shorter than `FT4_FRAME_LEN`.
     pub fn demodulate(&self, iq: &[C32]) -> Option<Ft4Frame> {
@@ -46,11 +48,13 @@ impl Ft4Demod {
             all_tones[sym] = detect_tone(slice, &steps);
         }
 
-        // Mark sync positions
-        let mut is_sync = [false; FT4_TOTAL_SYMS];
+        // Mark reserved positions: ramp symbols and Costas blocks
+        let mut is_reserved = [false; FT4_TOTAL_SYMS];
+        is_reserved[0] = true;
+        is_reserved[104] = true;
         for &(start, end) in &FT4_SYNC_POS {
             for pos in start..end {
-                is_sync[pos] = true;
+                is_reserved[pos] = true;
             }
         }
 
@@ -58,7 +62,7 @@ impl Ft4Demod {
         let mut data = [0u8; FT4_DATA_SYMS];
         let mut idx = 0;
         for pos in 0..FT4_TOTAL_SYMS {
-            if !is_sync[pos] {
+            if !is_reserved[pos] {
                 data[idx] = all_tones[pos];
                 idx += 1;
             }
