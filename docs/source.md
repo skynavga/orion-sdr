@@ -67,6 +67,7 @@ src/
     mod.rs            — PyO3 module entry point, class registration
     demodulate.rs     — Python wrappers for demodulators
     modulate.rs       — Python wrappers for modulators
+    ft8.rs            — Python wrappers for FT8/FT4 waveform, codec, sync, and message
   tests/
     unit/             — per-module unit tests (one file per module)
     roundtrip/        — mod→demod→decode full-stack tests (one file per mode)

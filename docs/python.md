@@ -1,8 +1,9 @@
 # Python Bindings
 
-All analog and digital modulators and demodulators are available as a native Python
-extension via PyO3: CW, AM, SSB, FM, PM (analog) and BPSK, QPSK, QAM-16/64/256 (digital)
-— 16 classes in total.
+The complete orion-sdr stack is available as a native Python extension via PyO3: analog
+modes (CW, AM, SSB, FM, PM), digital modes (BPSK, QPSK, QAM-16/64/256), and the full
+FT8/FT4 pipeline (waveform, codec, sync, message packing) — 28 classes and functions in
+total.
 
 ## Installation
 
@@ -84,6 +85,7 @@ If you have the `.venv` activated (`source .venv/bin/activate`) you can drop the
 | `conftest.py` | Shared helpers: `real_tone`, `complex_tone`, `snr_db`, `tail`, fixtures |
 | `test_unit.py` | Output shape/dtype, input validation, setters, instance isolation |
 | `test_roundtrip.py` | Mod→demod SNR for CW, AM, SSB, FM, PM; noiseless bit-exact roundtrips for BPSK, QPSK, QAM-16/64/256 |
+| `test_ft8.py` | FT8/FT4 waveform shape/roundtrip, codec encode/decode, sync detection, message roundtrips, full-stack test |
 
 ## Python Source Layout
 
@@ -91,7 +93,7 @@ If you have the `.venv` activated (`source .venv/bin/activate`) you can drop the
 python/
   orion_sdr/
     __init__.py       ← re-exports everything from the native extension
-    __init__.pyi      ← hand-authored PEP 561 type stub (all 16 classes)
+    __init__.pyi      ← hand-authored PEP 561 type stub (all 28 classes/functions)
     py.typed          ← PEP 561 marker; tells type checkers this package is typed
     orion_sdr.so      ← compiled native extension (built by maturin, not in repo)
   tests/
@@ -316,6 +318,148 @@ bits_out = demod.process(iq)       # → uint8,     shape (256,)
 
 np.testing.assert_array_equal(bits_in, bits_out)
 print("BPSK noiseless roundtrip: perfect recovery")
+```
+
+## FT8 / FT4
+
+The full FT8 and FT4 encode/decode pipeline is exposed at four levels:
+waveform, codec, frame sync, and message packing.
+
+### Waveform
+
+```python
+import orion_sdr as sdr
+import numpy as np
+
+# FT8 modulator — input: 58 tone indices (uint8, 0–7)
+mod8 = sdr.Ft8Mod(fs=12_000, base_hz=1_000.0, rf_hz=0.0, gain=1.0)
+tones = np.zeros(58, dtype=np.uint8)
+iq = mod8.modulate(tones)   # → complex64, shape (151_680,)
+
+# FT8 demodulator — input: at least 151 680 samples
+demod8 = sdr.Ft8Demod(fs=12_000, base_hz=1_000.0)
+tones_out = demod8.demodulate(iq)   # → uint8, shape (58,)
+
+# FT4 modulator — input: 87 tone indices (uint8, 0–3)
+mod4 = sdr.Ft4Mod(fs=12_000, base_hz=1_000.0, rf_hz=0.0, gain=1.0)
+tones4 = np.zeros(87, dtype=np.uint8)
+iq4 = mod4.modulate(tones4)   # → complex64, shape (60_480,)
+
+# FT4 demodulator
+demod4 = sdr.Ft4Demod(fs=12_000, base_hz=1_000.0)
+tones4_out = demod4.demodulate(iq4)   # → uint8, shape (87,)
+```
+
+### Codec
+
+`Ft8Codec` and `Ft4Codec` are stateless; all methods are static.
+
+```python
+import orion_sdr as sdr
+
+payload = bytes(10)   # 77-bit payload in 10 bytes
+
+# Encode payload → tone indices
+tones = sdr.Ft8Codec.encode(payload)        # → uint8[58]
+
+# Hard-decision decode (no noise tolerance)
+result = sdr.Ft8Codec.decode_hard(tones)    # → bytes[10] or None
+
+# Soft-decision decode (use after ft8_sync for noise resilience)
+llr = ...                                   # float32[174] from ft8_sync
+result = sdr.Ft8Codec.decode_soft(llr)      # → bytes[10] or None
+
+# FT4 — same interface
+tones4 = sdr.Ft4Codec.encode(payload)       # → uint8[87]
+result4 = sdr.Ft4Codec.decode_hard(tones4)
+```
+
+### Frame sync
+
+`ft8_sync` searches an IQ buffer for FT8 frame candidates and returns
+soft LLRs ready for `Ft8Codec.decode_soft`.
+
+```python
+import orion_sdr as sdr
+import numpy as np
+
+iq = np.zeros(151_680, dtype=np.complex64)   # your received buffer
+
+candidates = sdr.ft8_sync(
+    iq,
+    12_000.0,   # fs
+    950.0,      # base_hz — search starts here
+    1_100.0,    # max_hz  — search ends here
+    0,          # t_min (symbol offset)
+    0,          # t_max  (0 = end of buffer)
+    5,          # max_cand — return up to 5 best hits
+)
+
+for c in candidates:
+    print(c["time_sym"], c["freq_bin"], c["score"])
+    result = sdr.Ft8Codec.decode_soft(c["llr"])   # llr: float32[174]
+    if result is not None:
+        print("decoded:", result.hex())
+```
+
+Use `ft4_sync` for FT4; the signature and return format are identical.
+
+### Message packing
+
+```python
+import orion_sdr as sdr
+
+# Pack a standard QSO message (callsign + callsign + grid/report/token)
+payload = sdr.ft8_pack_standard("KD9ABC", "W9XYZ", "FN31")   # → bytes[10]
+payload = sdr.ft8_pack_standard("CQ", "W9XYZ", "+07")
+payload = sdr.ft8_pack_standard("KD9ABC", "W9XYZ", "RR73")
+
+# Pack free text (up to 13 chars, base-42 alphabet)
+payload = sdr.ft8_pack_free_text("CQ DX")                    # → bytes[10]
+
+# Pack telemetry (arbitrary 9 bytes → 71 bits)
+payload = sdr.ft8_pack_telemetry(b'\x12\x34\x56\x78\x9a\xbc\xde\xf0\x11')
+
+# Unpack any payload
+msg = sdr.ft8_unpack(payload)
+# Standard:   {"type": "standard", "call_to": "KD9ABC", "call_de": "W9XYZ", "extra": "FN31"}
+# FreeText:   {"type": "free_text", "text": "CQ DX"}
+# Telemetry:  {"type": "telemetry", "data": b'\x12\x34...'}
+```
+
+### Full-stack example
+
+```python
+import orion_sdr as sdr
+import numpy as np
+
+FS = 12_000.0
+BASE_HZ = 1_000.0
+
+# 1. Pack message
+payload = sdr.ft8_pack_standard("KD9ABC", "W9XYZ", "FN31")
+
+# 2. Encode to tone indices
+tones = sdr.Ft8Codec.encode(payload)
+
+# 3. Modulate to IQ
+mod = sdr.Ft8Mod(FS, BASE_HZ, rf_hz=0.0, gain=1.0)
+iq = mod.modulate(tones)
+
+# 4. (transmit / receive / add noise here)
+
+# 5. Sync search
+candidates = sdr.ft8_sync(iq, FS, BASE_HZ - 50, BASE_HZ + 100, 0, 0, 5)
+
+# 6. Soft decode
+if candidates:
+    payload_out = sdr.Ft8Codec.decode_soft(candidates[0]["llr"])
+
+# 7. Unpack
+if payload_out:
+    msg = sdr.ft8_unpack(payload_out)
+    print(msg["call_to"], msg["call_de"], msg["extra"])
+    # → KD9ABC W9XYZ FN31
 ```
 
 ## Notes

@@ -316,14 +316,35 @@ optimizer at constant input in release mode — this is expected for a floor tes
 
 ---
 
-## Phase 5 — Python bindings and documentation [TODO]
+## Phase 5 — Python bindings and documentation [DONE]
 
-- [ ] PyO3 bindings for `Ft8Encoder`, `Ft8Decoder`, `Ft8Sync`, `Ft8Message`
-  - Expose `encode(msg: Ft8Message) -> bytes` and
-    `decode(iq: np.ndarray) -> Ft8Message | None`
-- [ ] Pytest integration tests mirroring Rust roundtrip tests
-- [ ] Update `docs/source.md`, `docs/api.md` with message module API
-- [ ] `docs/python.md` — FT8/FT4 usage examples
+This phase exposes the complete Rust FT8/FT4 stack to Python via PyO3,
+following the same patterns as the existing 16-class analog/digital bindings.
+
+### What was built
+
+- `src/python/ft8.rs` — all PyO3 bindings (new file, ~370 lines):
+  - `PyFt8Mod` / `PyFt4Mod` — waveform modulators (`modulate(tones) → complex64[N]`)
+  - `PyFt8Demod` / `PyFt4Demod` — Goertzel demodulators (`demodulate(iq) → uint8[N]`)
+  - `PyFt8Codec` / `PyFt4Codec` — stateless codec classes with three static methods:
+    `encode`, `decode_hard`, `decode_soft`
+  - `ft8_sync` / `ft4_sync` — sync functions returning `list[dict]`
+    (each dict: `time_sym`, `freq_bin`, `score`, `llr: float32[174]`)
+  - `ft8_pack_standard`, `ft8_pack_free_text`, `ft8_pack_telemetry` — message packing
+  - `ft8_unpack` — payload → typed dict
+
+- `src/python/mod.rs` — added `mod ft8;` and registered 6 classes + 6 functions
+- `python/orion_sdr/__init__.py` — added 12 new exports
+- `python/orion_sdr/__init__.pyi` — added type stubs for all new classes/functions
+- `python/tests/test_ft8.py` — 22 pytest tests (all pass):
+  waveform shape/roundtrip, codec encode/decode, sync detection, message roundtrips,
+  full-stack (pack → encode → mod → sync → decode_soft → unpack)
+
+### PyO3 0.28 notes
+
+`PyObject` was removed from the root namespace in PyO3 0.28. For methods that
+return `bytes | None`, use `Bound<'py, PyAny>` as the return type and
+`py.None().into_bound(py)` for the None branch.
 
 ---
 
@@ -333,7 +354,7 @@ optimizer at constant input in release mode — this is expected for a floor tes
 Phase 1 (waveform) → Phase 2 (codec) → Phase 3 (sync) → Phase 4 (messages) → Phase 5 (bindings)
 ```
 
-Phases 1–4 are complete. Phase 5 (Python bindings) is next.
+All five phases are complete.
 
 ---
 

@@ -254,3 +254,72 @@ BpskDecider::new().process(&soft, &mut bits);
 - **Soft decisions for FEC:** `BpskDemod` / `QpskDemod` / `QamDemod` output the raw
   `Complex32` metric before slicing — feed `Re(soft)` (and `Im(soft)` for QPSK/QAM)
   directly into a soft-decision Viterbi or LDPC decoder when one is available.
+
+---
+
+## FT8 / FT4 Demodulation
+
+FT8 and FT4 demodulation has two distinct use cases:
+
+1. **Pre-aligned** — you have a single frame at a known time/frequency offset and
+   want tone decisions. Use `Ft8Demod` / `Ft4Demod` directly.
+2. **Search** — you have a raw capture and need to find frames. Use `ft8_sync` /
+   `ft4_sync`, which also return soft LLRs for LDPC decoding.
+
+### Direct demodulation (aligned input)
+
+`Ft8Demod` uses the same Goertzel dot-product correlator as the sync waterfall but
+operates on a single pre-aligned frame.  It returns hard tone decisions, which
+`Ft8Codec::decode_hard` can decode directly.
+
+```rust
+use orion_sdr::demodulate::Ft8Demod;
+use orion_sdr::codec::ft8::Ft8Codec;
+use num_complex::Complex32 as C32;
+
+let iq: Vec<C32> = get_ft8_frame();   // 151 680 samples, tone 0 at base_hz
+
+let demod = Ft8Demod::new(12_000.0, 1_000.0);
+if let Some(frame) = demod.demodulate(&iq) {
+    if let Some(payload) = Ft8Codec::decode_hard(&frame) {
+        // payload: [u8; 10]  — 77-bit message
+    }
+}
+```
+
+For FT4, substitute `Ft4Demod` and `Ft4Codec`; the input must be at least 60 480 samples.
+
+### Sync search (unknown timing / frequency)
+
+`ft8_sync` computes a symbol-rate magnitude waterfall over the supplied IQ buffer,
+searches for Costas-array matches, and extracts soft LLRs for each candidate.
+Pass `llr` to `Ft8Codec::decode_soft` for robust decoding in noise.
+
+```rust
+use orion_sdr::sync::ft8_sync;
+use orion_sdr::codec::ft8::Ft8Codec;
+use num_complex::Complex32 as C32;
+
+let iq: Vec<C32> = get_received_block();   // arbitrary length
+
+// Search for FT8 frames with tone-0 between 1000 and 1200 Hz,
+// anywhere in the buffer, return up to 5 candidates.
+let candidates = ft8_sync(
+    &iq,
+    12_000.0,  // fs
+    1_000.0,   // base_hz
+    1_200.0,   // max_hz
+    0,         // t_min (symbol offset)
+    0,         // t_max (0 = end of buffer)
+    5,         // max_cand
+);
+
+for c in &candidates {
+    if let Some(payload) = Ft8Codec::decode_soft(&c.llr) {
+        println!("found: time={} freq={} score={:.1}", c.time_sym, c.freq_bin, c.score);
+        // payload: [u8; 10]
+    }
+}
+```
+
+Use `ft4_sync` for FT4; the signature is identical.
