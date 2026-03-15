@@ -86,3 +86,48 @@ Setting `rf_hz = 0.0` gives baseband passthrough.
 ## Throughput
 
 See [throughput.md](throughput.md) for benchmark results and how to run them.
+
+---
+
+## Acronym Glossary
+
+| Acronym | Expansion | Notes |
+|---------|-----------|-------|
+| AGC | Automatic Gain Control | `AgcRms`, `AgcRmsIq` in `dsp/agc.rs` |
+| AM | Amplitude Modulation | DSB (double-sideband) variant implemented |
+| AWGN | Additive White Gaussian Noise | Standard noise model used in tests |
+| BP | Belief Propagation | Iterative sum-product algorithm used in LDPC decoder |
+| BPSK | Binary Phase-Shift Keying | 1 bit/symbol |
+| CLT | Central Limit Theorem | Used in AWGN generation (sum-of-uniforms approximation) |
+| CPFSK | Continuous-Phase Frequency-Shift Keying | Phase continuity across symbol boundaries; used by FT8/FT4 |
+| CRC | Cyclic Redundancy Check | CRC-14 (poly 0x2757) used by FT8/FT4 |
+| CW | Continuous Wave | Morse-code keyed carrier |
+| DC | Direct Current | Zero-frequency component; blocked by `DcBlocker` |
+| DSB | Double-Sideband | Both sidebands transmitted; see AM |
+| DSP | Digital Signal Processing | — |
+| FEC | Forward Error Correction | LDPC is the FEC scheme in FT8/FT4 |
+| FIR | Finite Impulse Response | `FirLowpass`, `FirDecimator` in `dsp/` |
+| FM | Frequency Modulation | Quadrature (discriminator) demod |
+| FMA | Fused Multiply-Add | `f32::mul_add`; used throughout inner loops |
+| FSK | Frequency-Shift Keying | Base modulation for FT8 (8-FSK) and FT4 (4-FSK) |
+| FT4 | Fast Telegraphy 4-FSK | 4-FSK weak-signal mode; 6-second transmit period |
+| FT8 | Fast Telegraphy 8-FSK | 8-FSK weak-signal mode; 15-second transmit period |
+| HF | High Frequency | 3–30 MHz; primary target band for FT8/FT4 |
+| IF | Intermediate Frequency | `rf_hz` parameter in modulators |
+| IIR | Infinite Impulse Response | `Biquad`, `LpCascade` in `dsp/` |
+| IQ | In-phase / Quadrature | Complex baseband representation; `Complex32` throughout |
+| LDPC | Low-Density Parity-Check | LDPC(174,91) code shared by FT8 and FT4 |
+| LLR | Log-Likelihood Ratio | `log(P(bit=0)/P(bit=1))`; positive ↔ bit more likely 0 |
+| LO | Local Oscillator | Receiver frequency reference; source of frequency offset |
+| LP | Low-Pass | `FirLowpass`, `LpCascade` filter types |
+| NCO | Numerically Controlled Oscillator | `Nco` in `dsp/nco.rs`; phasor recurrence |
+| PM | Phase Modulation | Quadrature (dφ) demod |
+| QAM | Quadrature Amplitude Modulation | 16/64/256-QAM implemented |
+| QPSK | Quadrature Phase-Shift Keying | 2 bits/symbol |
+| RF | Radio Frequency | Upconverted (non-baseband) signal |
+| RMS | Root Mean Square | Used by AGC and test SNR helpers |
+| SDR | Software-Defined Radio | — |
+| SNR | Signal-to-Noise Ratio | Expressed in dB throughout |
+| SSB | Single-Sideband | Phasing (Weaver) modulator; product demodulator |
+| TDF-II | Transposed Direct Form II | Biquad filter state-variable structure |
+| UHF | Ultra High Frequency | 300 MHz–3 GHz; secondary target band |
