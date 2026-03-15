@@ -386,6 +386,78 @@ fn roundtrip_ft4_all_tones() {
     assert_eq!(frame_in, frame_out, "FT4 all-tone-3 roundtrip failed");
 }
 
+// === Phase 2: full codec round-trips (codec → waveform → demod → codec) ==
+
+#[test]
+fn roundtrip_ft8_codec_noiseless() {
+    // Encode a 77-bit payload through the full stack:
+    //   Ft8Codec::encode → Ft8Mod → Ft8Demod → Ft8Codec::decode_hard
+    use crate::codec::ft8::{Ft8Codec, Ft8Bits};
+    use crate::modulate::Ft8Mod;
+    use crate::demodulate::Ft8Demod;
+
+    let payload: Ft8Bits = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01, 0x23, 0x45, 0x60];
+    let frame = Ft8Codec::encode(&payload);
+
+    let tx = Ft8Mod::new(12_000.0, 1_000.0, 0.0, 1.0);
+    let iq = tx.modulate(&frame);
+
+    let rx = Ft8Demod::new(12_000.0, 1_000.0);
+    let frame_out = rx.demodulate(&iq).expect("FT8 demodulate returned None");
+
+    let decoded = Ft8Codec::decode_hard(&frame_out)
+        .expect("FT8 codec decode failed (noiseless)");
+    assert_eq!(payload, decoded, "FT8 full-stack codec roundtrip failed");
+}
+
+#[test]
+fn roundtrip_ft8_codec_zeros() {
+    use crate::codec::ft8::{Ft8Codec, Ft8Bits};
+    use crate::modulate::Ft8Mod;
+    use crate::demodulate::Ft8Demod;
+
+    let payload: Ft8Bits = [0u8; 10];
+    let frame = Ft8Codec::encode(&payload);
+    let iq = Ft8Mod::new(12_000.0, 500.0, 0.0, 1.0).modulate(&frame);
+    let frame_out = Ft8Demod::new(12_000.0, 500.0).demodulate(&iq).unwrap();
+    let decoded = Ft8Codec::decode_hard(&frame_out).expect("FT8 codec decode failed (zeros)");
+    assert_eq!(payload, decoded);
+}
+
+#[test]
+fn roundtrip_ft4_codec_noiseless() {
+    use crate::codec::ft4::{Ft4Codec, Ft4Bits};
+    use crate::modulate::Ft4Mod;
+    use crate::demodulate::Ft4Demod;
+
+    let payload: Ft4Bits = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01, 0x23, 0x45, 0x60];
+    let frame = Ft4Codec::encode(&payload);
+
+    let tx = Ft4Mod::new(12_000.0, 1_000.0, 0.0, 1.0);
+    let iq = tx.modulate(&frame);
+
+    let rx = Ft4Demod::new(12_000.0, 1_000.0);
+    let frame_out = rx.demodulate(&iq).expect("FT4 demodulate returned None");
+
+    let decoded = Ft4Codec::decode_hard(&frame_out)
+        .expect("FT4 codec decode failed (noiseless)");
+    assert_eq!(payload, decoded, "FT4 full-stack codec roundtrip failed");
+}
+
+#[test]
+fn roundtrip_ft4_codec_zeros() {
+    use crate::codec::ft4::{Ft4Codec, Ft4Bits};
+    use crate::modulate::Ft4Mod;
+    use crate::demodulate::Ft4Demod;
+
+    let payload: Ft4Bits = [0u8; 10];
+    let frame = Ft4Codec::encode(&payload);
+    let iq = Ft4Mod::new(12_000.0, 500.0, 0.0, 1.0).modulate(&frame);
+    let frame_out = Ft4Demod::new(12_000.0, 500.0).demodulate(&iq).unwrap();
+    let decoded = Ft4Codec::decode_hard(&frame_out).expect("FT4 codec decode failed (zeros)");
+    assert_eq!(payload, decoded);
+}
+
 // === PM round-trip: PmDirectPhaseMod -> PmQuadratureDemod ================
 
 #[test]
