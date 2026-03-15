@@ -142,51 +142,74 @@ as `[[u8;7]; M]` with M=83, the compiler will catch the count mismatch.
 
 ---
 
-## Phase 3 — Frame synchronisation: timing and frequency offset [TODO]
+## Phase 3 — Frame synchronisation: timing and frequency offset [DONE]
 
 This phase enables decoding a raw IQ stream captured from the air, rather
 than a pre-aligned synthetic block.
 
-### Problem
+### What was built
 
-An over-the-air FT8 signal arrives:
-- At an unknown time offset within the 15-second window (up to ±2 s)
-- At an unknown frequency offset (receiver LO error, Doppler, etc.)
-- With unknown amplitude
+- `src/sync/waterfall.rs` — symbol-rate magnitude spectrogram
+  - `compute_waterfall(iq, fs, base_hz, tone_spacing_hz, samples_per_sym, num_syms, num_tones, time_offset) -> Waterfall`
+  - Uses same Goertzel/dot-product correlator as Phase 1 demodulator (4-sample inner-loop unroll)
+  - Stores `ln(energy + 1e-12)` per (symbol, tone) cell
+- `src/sync/costas.rs` — Costas difference-metric scorer and candidate search
+  - `costas_score(wf, costas, sync_pos, time_sym, freq_bin) -> f32`
+  - Difference metric: signal energy minus max(frequency neighbour, time neighbour) per Costas symbol
+  - `find_candidates(wf, costas, sync_pos, ...) -> Vec<Candidate>` — fixed-size min-heap, top-N by score
+- `src/sync/ft8_sync.rs` — FT8 sync pipeline
+  - `ft8_sync(iq, fs, base_hz, max_hz, t_min, t_max, max_cand) -> Vec<Ft8SyncResult>`
+  - Computes waterfall once, searches for top-N Costas-matching candidates
+  - Extracts 174 soft LLRs per candidate via max-log over Gray-indexed energies
+  - Normalises by sqrt(24/variance) before returning
+- `src/sync/ft4_sync.rs` — FT4 sync pipeline
+  - `ft4_sync(iq, fs, ...) -> Vec<Ft4SyncResult>` — same structure, 4 different Costas blocks
+  - FT4 data symbol offsets: k<29: sym=k+5; k<58: sym=k+9; k<87: sym=k+13
+- `src/sync/mod.rs` — module root
 
-The demodulator must find the frame, correct offsets, and produce per-symbol
-soft metrics (LLRs) for the LDPC decoder.
+### Integration tests in `src/tests/roundtrip.rs`
 
-### Tasks
+- `sync_ft8_noiseless_aligned` — frame at t=0, exact frequency
+- `sync_ft8_noiseless_time_offset` — frame starts 3 symbols into search window
+- `sync_ft8_noisy_high_snr` — frame + AWGN (noise_power=0.005, ~20 dB SNR)
+- `sync_ft4_noiseless_aligned`
+- `sync_ft4_noiseless_time_offset`
 
-- [ ] `src/sync/costas.rs` — 2-D Costas correlator
-  - Slide a time×frequency grid over the IQ block
-  - For each candidate (t_offset, f_offset): score = dot product of
-    received spectrum vs expected Costas template at all three positions
-  - Return top-N candidates ranked by score
-  - Search range: ±2 s in time (≈ ±15 symbol widths), ±4 kHz in freq
-- [ ] `src/sync/ft8_sync.rs` — `Ft8Sync` pipeline
-  - Input: arbitrary-length IQ slice at 12 kHz
-  - Stage 1: coarse Costas search → list of (t, f, score) candidates
-  - Stage 2: per-candidate fine refinement (sub-symbol timing, sub-bin freq)
-  - Output: `Ft8SyncResult { t_samples: i64, f_hz: f32, score: f32 }`
-- [ ] Soft-symbol extractor
-  - Given a sync result, extract per-symbol log-energy vectors `[f32; 8]`
-    (one energy per tone per symbol)
-  - Compute LLRs via: for each bit position, LLR = log(P(b=0)/P(b=1))
-    approximated by max-log over tones consistent with that bit value
-  - Output: `[f32; 174]` ready for `Ft8Decoder::decode_soft`
-- [ ] Integration test: synthesise frame with known message + AWGN at
-  several SNR levels (0 dB, −5 dB, −10 dB, −15 dB); verify decode success
-- [ ] FT4 equivalents
+### Implementation notes and gotchas
 
-### Notes
+**Waterfall starts at user-supplied `base_hz`.**
+The candidate `freq_bin` is relative to the waterfall grid.  When the signal
+tone-0 is at `base_hz`, its `freq_bin` = 0.  When searching from `base_hz - Δf`,
+the signal lands at `freq_bin = Δf / tone_spacing`.
 
-- The coarse Costas search is the computationally expensive step.
-  Consider a waterfall (time×frequency power grid) implementation using
-  the existing Goertzel correlator to avoid full FFT dependency.
-- Sync may be factored as a standalone `Block` or as a free function —
-  decide based on whether stateful streaming is needed.
+**FT8 Gray8 table is `[0,1,3,2,5,6,4,7]` (same as the codec).**
+An earlier version had `[0,1,3,2,7,6,4,5]` — wrong values at indices 4-7.
+The correct table is `FT8_GRAY = [0,1,3,2,5,6,4,7]` from ft8_lib `kFT8_Gray_map`.
+
+**LLR sign convention: negate ft8_lib output before feeding our LDPC decoder.**
+ft8_lib uses `LLR > 0 ↔ bit likely 1`; our decoder uses `LLR > 0 ↔ bit likely 0`.
+
+**LDPC soft decoder divergence fix (in `src/codec/ldpc.rs`).**
+With soft LLRs of moderate magnitude (~5, vs ±10 for hard decode), the belief-
+propagation can diverge — successive iterations increase syndrome errors.
+Two fixes applied:
+1. Early exit: check syndrome before any BP; if initial hard decisions already
+   satisfy all parity checks (0 errors), return immediately.
+2. Save best: track the minimum-error `plain[]` snapshot across all iterations
+   and return it, rather than the last iteration's `plain[]`.
+
+**FT4 data symbol positions in the 105-symbol frame:**
+Slots occupied by ramps (0, 104) and Costas (1-4, 34-37, 67-70, 100-103) are
+skipped.  The data symbols at frame-relative positions are:
+  k in [0,29): sym = k + 5   (positions 5..33)
+  k in [29,58): sym = k + 9  (positions 38..66)
+  k in [58,87): sym = k + 13 (positions 71..99)
+
+### What is explicitly NOT included
+
+- Sub-symbol (oversampled) timing / frequency refinement
+- Frequency offset search beyond the explicit waterfall bin grid
+  (the caller controls the search range via base_hz / max_hz)
 
 ---
 

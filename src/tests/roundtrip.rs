@@ -458,6 +458,237 @@ fn roundtrip_ft4_codec_zeros() {
     assert_eq!(payload, decoded);
 }
 
+// === Phase 3: sync → soft-decode round-trips ==============================
+//
+// These tests exercise the full pipeline:
+//   Ft8Codec::encode → Ft8Mod → [AWGN] → ft8_sync → Ft8Codec::decode_soft
+//
+// The frame is placed at a known time and frequency offset within a larger
+// buffer to verify that the Costas search finds it correctly.
+
+/// Add complex AWGN to an IQ buffer in-place.
+/// `noise_power` is the variance (power) of the additive noise.
+fn add_awgn(iq: &mut Vec<num_complex::Complex32>, noise_power: f32, seed: u64) {
+    // Simple deterministic PRNG (xorshift64) for reproducible tests.
+    let mut state = seed ^ 0xDEAD_BEEF_CAFE_0000;
+    let scale = (noise_power / 2.0).sqrt(); // split equally between I and Q
+
+    let next_f32 = |s: &mut u64| -> f32 {
+        // Box-Muller requires two uniform random numbers.
+        // Use a simple LCG-ish transformation to get approximately Gaussian.
+        // We use the sum of 12 uniform[−0.5, 0.5] samples as a CLT approximation.
+        let mut sum = 0.0f32;
+        for _ in 0..12 {
+            *s ^= *s << 13;
+            *s ^= *s >> 7;
+            *s ^= *s << 17;
+            sum += (*s as f32) / (u64::MAX as f32) - 0.5;
+        }
+        sum // approx N(0, 1)
+    };
+
+    for sample in iq.iter_mut() {
+        let n_i = next_f32(&mut state) * scale;
+        let n_q = next_f32(&mut state) * scale;
+        sample.re += n_i;
+        sample.im += n_q;
+    }
+}
+
+/// Build an IQ buffer with one FT8 frame embedded at `time_offset_samples`
+/// and return (buffer, payload).  Buffer is padded to at least 2× frame length.
+fn make_ft8_test_buffer(
+    time_offset_samples: usize,
+    base_hz: f32,
+    noise_power: f32,
+) -> (Vec<num_complex::Complex32>, crate::codec::ft8::Ft8Bits) {
+    use crate::codec::ft8::{Ft8Codec, Ft8Bits};
+    use crate::modulate::Ft8Mod;
+    use crate::modulate::ft8::FT8_FRAME_LEN;
+
+    let payload: Ft8Bits = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01, 0x23, 0x45, 0x60];
+    let frame = Ft8Codec::encode(&payload);
+    let iq_frame = Ft8Mod::new(12_000.0, base_hz, 0.0, 1.0).modulate(&frame);
+
+    let total_len = time_offset_samples + FT8_FRAME_LEN + FT8_FRAME_LEN / 4;
+    let mut buf = vec![num_complex::Complex32::new(0.0, 0.0); total_len];
+
+    for (i, s) in iq_frame.iter().enumerate() {
+        buf[time_offset_samples + i] = *s;
+    }
+
+    if noise_power > 0.0 {
+        add_awgn(&mut buf, noise_power, 0x1234_5678_ABCD_EF00);
+    }
+
+    (buf, payload)
+}
+
+/// Build an IQ buffer with one FT4 frame embedded at `time_offset_samples`.
+fn make_ft4_test_buffer(
+    time_offset_samples: usize,
+    base_hz: f32,
+    noise_power: f32,
+) -> (Vec<num_complex::Complex32>, crate::codec::ft4::Ft4Bits) {
+    use crate::codec::ft4::{Ft4Codec, Ft4Bits};
+    use crate::modulate::Ft4Mod;
+    use crate::modulate::ft4::FT4_FRAME_LEN;
+
+    let payload: Ft4Bits = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01, 0x23, 0x45, 0x60];
+    let frame = Ft4Codec::encode(&payload);
+    let iq_frame = Ft4Mod::new(12_000.0, base_hz, 0.0, 1.0).modulate(&frame);
+
+    let total_len = time_offset_samples + FT4_FRAME_LEN + FT4_FRAME_LEN / 4;
+    let mut buf = vec![num_complex::Complex32::new(0.0, 0.0); total_len];
+
+    for (i, s) in iq_frame.iter().enumerate() {
+        buf[time_offset_samples + i] = *s;
+    }
+
+    if noise_power > 0.0 {
+        add_awgn(&mut buf, noise_power, 0x9876_5432_FEDC_BA98);
+    }
+
+    (buf, payload)
+}
+
+// FT8 sync noiseless: frame at t=0, exact frequency.
+#[test]
+fn sync_ft8_noiseless_aligned() {
+    use crate::codec::ft8::Ft8Codec;
+    use crate::sync::ft8_sync;
+
+    let base_hz = 1_000.0_f32;
+    let (buf, payload) = make_ft8_test_buffer(0, base_hz, 0.0);
+
+    let results = ft8_sync(
+        &buf,
+        12_000.0,
+        base_hz - 6.25,          // search window includes the signal
+        base_hz + 50.0 + 6.25,
+        0,
+        0,
+        5,
+    );
+
+    assert!(!results.is_empty(), "FT8 sync returned no candidates");
+    let best = &results[0];
+    let decoded = Ft8Codec::decode_soft(&best.llr)
+        .expect("FT8 sync+decode_soft failed (noiseless, aligned)");
+    assert_eq!(payload, decoded, "FT8 sync noiseless aligned: payload mismatch");
+}
+
+// FT8 sync noiseless: frame starts 3 symbols into the search window.
+#[test]
+fn sync_ft8_noiseless_time_offset() {
+    use crate::codec::ft8::Ft8Codec;
+    use crate::sync::ft8_sync;
+    use crate::modulate::ft8::FT8_SAMPLES_PER_SYM;
+
+    let base_hz = 800.0_f32;
+    // Place frame 3 symbols into the buffer
+    let offset = 3 * FT8_SAMPLES_PER_SYM;
+    let (buf, payload) = make_ft8_test_buffer(offset, base_hz, 0.0);
+
+    let results = ft8_sync(
+        &buf,
+        12_000.0,
+        base_hz - 6.25,
+        base_hz + 50.0 + 6.25,
+        0,
+        5,   // search up to +5 symbol offsets
+        5,
+    );
+
+    assert!(!results.is_empty(), "FT8 sync (time offset) returned no candidates");
+    let best = &results[0];
+    let decoded = Ft8Codec::decode_soft(&best.llr)
+        .expect("FT8 sync+decode_soft failed (noiseless, time offset)");
+    assert_eq!(payload, decoded, "FT8 sync noiseless time-offset: payload mismatch");
+}
+
+// FT8 sync with AWGN noise (high SNR — should still decode reliably).
+#[test]
+fn sync_ft8_noisy_high_snr() {
+    use crate::codec::ft8::Ft8Codec;
+    use crate::sync::ft8_sync;
+
+    let base_hz = 1_200.0_f32;
+    // Signal amplitude 1.0 → power 0.5 (complex); noise power much smaller → ~20 dB SNR
+    let noise_power = 0.005_f32;
+    let (buf, payload) = make_ft8_test_buffer(0, base_hz, noise_power);
+
+    let results = ft8_sync(
+        &buf,
+        12_000.0,
+        base_hz - 6.25,
+        base_hz + 50.0 + 6.25,
+        0,
+        0,
+        5,
+    );
+
+    assert!(!results.is_empty(), "FT8 sync (high SNR) returned no candidates");
+    let best = &results[0];
+    let decoded = Ft8Codec::decode_soft(&best.llr)
+        .expect("FT8 sync+decode_soft failed (high SNR)");
+    assert_eq!(payload, decoded, "FT8 sync high-SNR: payload mismatch");
+}
+
+// FT4 sync noiseless: frame at t=0, exact frequency.
+#[test]
+fn sync_ft4_noiseless_aligned() {
+    use crate::codec::ft4::Ft4Codec;
+    use crate::sync::ft4_sync;
+
+    let base_hz = 1_000.0_f32;
+    let (buf, payload) = make_ft4_test_buffer(0, base_hz, 0.0);
+
+    let results = ft4_sync(
+        &buf,
+        12_000.0,
+        base_hz - 20.833,
+        base_hz + 100.0 + 20.833,
+        0,
+        0,
+        5,
+    );
+
+    assert!(!results.is_empty(), "FT4 sync returned no candidates");
+    let best = &results[0];
+    let decoded = Ft4Codec::decode_soft(&best.llr)
+        .expect("FT4 sync+decode_soft failed (noiseless, aligned)");
+    assert_eq!(payload, decoded, "FT4 sync noiseless aligned: payload mismatch");
+}
+
+// FT4 sync noiseless: frame starts 3 symbols into the search window.
+#[test]
+fn sync_ft4_noiseless_time_offset() {
+    use crate::codec::ft4::Ft4Codec;
+    use crate::sync::ft4_sync;
+    use crate::modulate::ft4::FT4_SAMPLES_PER_SYM;
+
+    let base_hz = 900.0_f32;
+    let offset = 3 * FT4_SAMPLES_PER_SYM;
+    let (buf, payload) = make_ft4_test_buffer(offset, base_hz, 0.0);
+
+    let results = ft4_sync(
+        &buf,
+        12_000.0,
+        base_hz - 20.833,
+        base_hz + 100.0 + 20.833,
+        0,
+        5,
+        5,
+    );
+
+    assert!(!results.is_empty(), "FT4 sync (time offset) returned no candidates");
+    let best = &results[0];
+    let decoded = Ft4Codec::decode_soft(&best.llr)
+        .expect("FT4 sync+decode_soft failed (noiseless, time offset)");
+    assert_eq!(payload, decoded, "FT4 sync noiseless time-offset: payload mismatch");
+}
+
 // === PM round-trip: PmDirectPhaseMod -> PmQuadratureDemod ================
 
 #[test]

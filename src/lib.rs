@@ -5,6 +5,7 @@ pub mod dsp;
 pub mod demodulate;
 pub mod modulate;
 pub mod codec;
+pub mod sync;
 pub mod util;
 pub mod python;
 

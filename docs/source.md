@@ -41,6 +41,11 @@ src/
     qam.rs            — QamMapper<BITS>, QamMod, Qam16/64/256Mapper
     qpsk.rs           — QpskMapper, QpskMod
     ssb.rs            — SsbPhasingMod
+  sync/
+    waterfall.rs      — symbol-rate magnitude spectrogram (Goertzel per tone per symbol)
+    costas.rs         — Costas difference-metric scorer and top-N candidate search
+    ft8_sync.rs       — ft8_sync() pipeline: waterfall → Costas search → soft LLRs
+    ft4_sync.rs       — ft4_sync() pipeline: FT4 equivalent (4 distinct Costas blocks)
   python/
     mod.rs            — PyO3 module entry point, class registration
     demodulate.rs     — Python wrappers for all 8 demodulators (5 analog + 3 digital)
