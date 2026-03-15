@@ -362,6 +362,19 @@ fn fast_atanh(x: f32) -> f32 {
 ///
 /// Returns the number of unsatisfied parity checks (0 = success).
 pub fn ldpc_decode_soft(llr: &[f32; N], max_iter: usize, plain: &mut [u8; N]) -> usize {
+    // Initial hard decision from raw channel LLRs.
+    // If the initial codeword already satisfies all parity checks, return immediately
+    // without running any BP iterations.  This handles the case where the input LLRs
+    // have correct signs but moderate magnitudes (e.g. from soft-metric extraction),
+    // where the belief-propagation can diverge despite the initial decision being valid.
+    for i in 0..N {
+        plain[i] = u8::from(llr[i] <= 0.0);
+    }
+    let init_errors = ldpc_count_errors(plain);
+    if init_errors == 0 {
+        return 0;
+    }
+
     // m[check][bit] and e[check][bit] — message arrays
     // Use heap-allocated vecs to avoid large stack frames
     let mut m = vec![[0.0f32; N]; M];
@@ -373,7 +386,10 @@ pub fn ldpc_decode_soft(llr: &[f32; N], max_iter: usize, plain: &mut [u8; N]) ->
         }
     }
 
-    let mut min_errors = M;
+    // Track the best (minimum-errors) plain word seen so far and save it.
+    // The BP may diverge on later iterations, so we must save the best snapshot.
+    let mut min_errors = init_errors;
+    let mut best_plain = *plain;
 
     for _iter in 0..max_iter {
         // Check-node update
@@ -404,6 +420,7 @@ pub fn ldpc_decode_soft(llr: &[f32; N], max_iter: usize, plain: &mut [u8; N]) ->
         let errors = ldpc_count_errors(plain);
         if errors < min_errors {
             min_errors = errors;
+            best_plain = *plain;
             if errors == 0 {
                 break;
             }
@@ -424,6 +441,8 @@ pub fn ldpc_decode_soft(llr: &[f32; N], max_iter: usize, plain: &mut [u8; N]) ->
         }
     }
 
+    // Copy the best plain word back to the output (in case BP diverged on later iterations).
+    *plain = best_plain;
     min_errors
 }
 
