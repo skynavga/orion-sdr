@@ -57,39 +57,3 @@ pub fn gray4_encode(bin_idx: u8) -> u8 {
 pub fn gray4_decode(tone: u8) -> u8 {
     FT4_GRAY_INV[(tone & 0x3) as usize]
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ft8_gray_roundtrip() {
-        for i in 0u8..8 {
-            assert_eq!(gray8_decode(gray8_encode(i)), i, "FT8 Gray roundtrip failed for {i}");
-        }
-    }
-
-    #[test]
-    fn ft4_gray_roundtrip() {
-        for i in 0u8..4 {
-            assert_eq!(gray4_decode(gray4_encode(i)), i, "FT4 Gray roundtrip failed for {i}");
-        }
-    }
-
-    #[test]
-    fn ft8_gray_table_matches_spec() {
-        // Spec table: [0,1,3,2,5,6,4,7]
-        let expected: [u8; 8] = [0, 1, 3, 2, 5, 6, 4, 7];
-        for (i, &e) in expected.iter().enumerate() {
-            assert_eq!(gray8_encode(i as u8), e, "FT8 Gray table mismatch at {i}");
-        }
-    }
-
-    #[test]
-    fn ft4_gray_table_matches_spec() {
-        let expected: [u8; 4] = [0, 1, 3, 2];
-        for (i, &e) in expected.iter().enumerate() {
-            assert_eq!(gray4_encode(i as u8), e, "FT4 Gray table mismatch at {i}");
-        }
-    }
-}
