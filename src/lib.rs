@@ -6,6 +6,7 @@ pub mod demodulate;
 pub mod modulate;
 pub mod codec;
 pub mod sync;
+pub mod message;
 pub mod util;
 pub mod python;
 
