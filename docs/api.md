@@ -35,12 +35,38 @@ All classes live in the flat `orion_sdr` namespace.
 Digital classes fuse the mapper/decider and waveform stage into a single `process()` call.
 Input bits are `uint8` arrays (one bit per byte, LSB used). Output IQ is `complex64`; output bits are `uint8`.
 
+#### FT8 / FT4
+
+| Class / function | Description |
+|---|---|
+| `Ft8Mod(fs, base_hz, rf_hz, gain)` | FT8 modulator: `modulate(tones: uint8[58]) → complex64[151680]` |
+| `Ft8Demod(fs, base_hz)` | FT8 demodulator: `demodulate(iq: complex64[≥151680]) → uint8[58]` |
+| `Ft8Codec` | Stateless; `encode(payload) → uint8[58]`, `decode_hard(tones) → bytes\|None`, `decode_soft(llr) → bytes\|None` |
+| `Ft4Mod(fs, base_hz, rf_hz, gain)` | FT4 modulator: `modulate(tones: uint8[87]) → complex64[60480]` |
+| `Ft4Demod(fs, base_hz)` | FT4 demodulator: `demodulate(iq: complex64[≥60480]) → uint8[87]` |
+| `Ft4Codec` | Same interface as `Ft8Codec`; includes FT4 XOR scramble |
+| `ft8_sync(iq, fs, base_hz, max_hz, t_min, t_max, max_cand)` | Returns `list[dict]` of sync candidates with soft LLRs |
+| `ft4_sync(...)` | Same signature and return shape as `ft8_sync` |
+| `ft8_pack_standard(call_to, call_de, extra)` | Pack standard QSO message → `bytes[10]` |
+| `ft8_pack_free_text(text)` | Pack free-text message → `bytes[10]` |
+| `ft8_pack_telemetry(data)` | Pack 9-byte telemetry blob → `bytes[10]` |
+| `ft8_unpack(payload)` | Unpack `bytes[10]` → typed `dict` |
+
+`ft8_sync` / `ft4_sync` candidate dicts contain:
+`{"time_sym": int, "freq_bin": int, "score": float, "llr": float32[174]}`.
+Pass `llr` to `Ft8Codec.decode_soft` / `Ft4Codec.decode_soft` to recover the payload.
+
+`ft8_unpack` returns a dict whose `"type"` key is one of
+`"standard"`, `"free_text"`, `"telemetry"`, `"nonstd"`, or `"unknown"`.
+
 ### Array Types
 
 | Domain | dtype | Notes |
 |---|---|---|
 | IQ | `numpy.ndarray[complex64]` | 1-D, C-contiguous |
 | Audio | `numpy.ndarray[float32]` | 1-D, C-contiguous |
+| Tones | `numpy.ndarray[uint8]` | 1-D, values 0–7 (FT8) or 0–3 (FT4) |
+| LLR | `numpy.ndarray[float32]` | 1-D, length 174; positive → bit likely 0 |
 
 A wrong `dtype` or non-contiguous layout raises `ValueError`.
 
@@ -107,3 +133,42 @@ for the full module layout.
 | `Qam16Mapper` / `Qam16Decider` | Type aliases for `QamMapper<4>` / `QamDecider<4>` |
 | `Qam64Mapper` / `Qam64Decider` | Type aliases for `QamMapper<6>` / `QamDecider<6>` |
 | `Qam256Mapper` / `Qam256Decider` | Type aliases for `QamMapper<8>` / `QamDecider<8>` |
+
+### FT8 / FT4 Waveform
+
+| Type | Description |
+|---|---|
+| `Ft8Frame` | `[u8; 58]` — 58 Gray-coded tone indices (0–7) |
+| `Ft8Mod` | Frame-at-a-time CPFSK modulator; `modulate(&Ft8Frame) → Vec<Complex32>` (151 680 samples) |
+| `Ft8Demod` | Dot-product energy demodulator; `demodulate(&[Complex32]) → Option<Ft8Frame>` |
+| `Ft4Frame` | `[u8; 87]` — 87 Gray-coded tone indices (0–3) |
+| `Ft4Mod` | Same as `Ft8Mod`; output is 60 480 samples |
+| `Ft4Demod` | Same as `Ft8Demod` for FT4 |
+
+### FT8 / FT4 Codec
+
+| Type | Description |
+|---|---|
+| `Ft8Codec` | `encode(&Ft8Bits) → Ft8Frame`, `decode_hard(&Ft8Frame) → Option<Ft8Bits>`, `decode_soft(&[f32; 174]) → Option<Ft8Bits>` |
+| `Ft4Codec` | Same interface; includes FT4 XOR scramble before CRC+LDPC |
+| `Ft8Bits` / `Ft4Bits` | `[u8; 10]` — 77-bit payload in 10 bytes (MSB-first, 3 slack bits) |
+
+### FT8 / FT4 Sync
+
+| Function / Type | Description |
+|---|---|
+| `ft8_sync(iq, fs, base_hz, max_hz, t_min, t_max, max_cand)` | Waterfall search → `Vec<Ft8SyncResult>` |
+| `ft4_sync(...)` | Same for FT4 |
+| `Ft8SyncResult` | `{time_sym: i32, freq_bin: usize, score: f32, llr: [f32; 174]}` |
+| `Ft4SyncResult` | Same fields |
+
+### FT8 / FT4 Message
+
+| Function / Type | Description |
+|---|---|
+| `Ft8Message` | Enum: `Standard`, `FreeText`, `NonStd`, `Telemetry`, `Unknown` |
+| `Payload77` | `[u8; 10]` — 77-bit payload |
+| `GridField` | Enum: `Grid(String)`, `Report(i8)`, `RReport(i8)`, `RRR`, `RR73`, `Seventy3`, `None` |
+| `pack77(msg, ht)` | `Ft8Message → Option<Payload77>` |
+| `unpack77(payload, ht)` | `Payload77 → Ft8Message` |
+| `CallsignHashTable` | In-memory hash table for nonstandard callsign resolution |
