@@ -67,7 +67,7 @@ the 58 tone indices consumed/produced by Phase 1.
 
 ```
 77-bit message
-  → append 14-bit CRC (poly 0x6757, no reflection, init 0)
+  → append 14-bit CRC (poly 0x2757, no reflection, init 0)
   → 91-bit augmented message
   → LDPC(174,91) encoding → 174-bit codeword
   → split into 58 × 3-bit groups
@@ -250,3 +250,28 @@ Phase 2 (codec) → Phase 3 (sync) → Phase 4a (Type 1 messages) → Phase 5 (b
 Phase 2 is self-contained and testable without real RF. Phase 3 depends on
 Phase 2 (needs LLRs → soft decode). Phase 4 is independent of 2 and 3 and
 could be parallelised. Phase 5 wraps everything at the end.
+
+---
+
+## References
+
+Primary sources consulted during implementation:
+
+- **ft8_lib** (Karlis Goba, MIT licence) — C reference implementation of the
+  complete FT8/FT4 encode/decode stack. The definitive source for all numeric
+  constants: CRC polynomial, LDPC matrices, Gray code tables, Costas arrays,
+  XOR scramble sequence, and frame structure.
+  https://github.com/kgoba/ft8_lib
+
+- **WSJT-X** (Joe Taylor K1JT et al., GPLv3) — original Fortran/C++ reference
+  implementation. Authoritative for protocol semantics and message packing.
+  https://sourceforge.net/p/wsjt/wsjtx/
+
+- **"The FT4 and FT8 Communication Protocols"** (Steven Franke K9AN and
+  Joe Taylor K1JT, QEX Jul/Aug 2020) — the protocol specification paper.
+  Describes frame structure, LDPC code, CRC, Gray mapping, and message types.
+  https://wsjt.sourceforge.io/FT4_FT8_QEX.pdf
+
+- **"The Coding Process for FT8"** (Andy Talbot G4JNT) — concise walkthrough
+  of the full encoding pipeline from message bits to transmitted tones.
+  http://www.g4jnt.com/WSJT-X_LdpcModesCodingProcess.pdf
