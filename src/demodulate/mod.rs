@@ -1,4 +1,10 @@
 
+pub mod ft8;
+pub use ft8::Ft8Demod;
+
+pub mod ft4;
+pub use ft4::Ft4Demod;
+
 pub mod bpsk;
 pub use bpsk::{BpskDemod, BpskDecider};
 

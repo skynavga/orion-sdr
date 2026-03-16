@@ -171,6 +171,54 @@ Qam256Mapper::new().process(&bits256, &mut syms);
 QamMod::new(1.0, 0.0, 1.0).process(&syms, &mut iq);
 ```
 
+---
+
+## FT8 / FT4 Modulators
+
+FT8 and FT4 are weak-signal digital modes used on HF amateur radio.  The
+modulator takes a frame of pre-encoded tone indices and produces a
+phase-continuous CPFSK IQ waveform at 12 kHz.  Costas synchronisation arrays
+are inserted automatically at fixed positions.
+
+### FT8
+
+8-FSK, 79 symbols total (58 data + 21 Costas), 1 920 samples/symbol → 151 680 samples/frame.
+
+```rust
+use orion_sdr::modulate::{Ft8Mod, Ft8Frame};
+use orion_sdr::codec::ft8::{Ft8Codec, Ft8Bits};
+
+let payload: Ft8Bits = [0u8; 10];   // 77-bit payload
+let frame: Ft8Frame = Ft8Codec::encode(&payload);
+
+let modulator = Ft8Mod::new(
+    12_000.0,   // fs: sample rate (Hz)
+    1_000.0,    // base_hz: frequency of tone 0
+    0.0,        // rf_hz: upconversion (0 = baseband)
+    1.0,        // gain
+);
+let iq = modulator.modulate(&frame);   // Vec<Complex32>, len = 151_680
+```
+
+### FT4
+
+4-FSK, 105 symbols total (87 data + 18 Costas/ramps), 576 samples/symbol → 60 480 samples/frame.
+
+```rust
+use orion_sdr::modulate::{Ft4Mod, Ft4Frame};
+use orion_sdr::codec::ft4::{Ft4Codec, Ft4Bits};
+
+let payload: Ft4Bits = [0u8; 10];
+let frame: Ft4Frame = Ft4Codec::encode(&payload);
+
+let modulator = Ft4Mod::new(12_000.0, 1_000.0, 0.0, 1.0);
+let iq = modulator.modulate(&frame);   // Vec<Complex32>, len = 60_480
+```
+
+Both modulators maintain phase continuity across symbol boundaries (CPFSK).
+The inner loop uses a 4-sample unrolled phasor recurrence with periodic
+renormalisation — no per-sample `sin`/`cos` calls.
+
 ### Carrier upconversion
 
 All waveform stages accept an `rf_hz` parameter.  When non-zero the symbols are
