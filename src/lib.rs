@@ -8,6 +8,7 @@ pub mod codec;
 pub mod sync;
 pub mod message;
 pub mod util;
+#[cfg(feature = "extension-module")]
 pub mod python;
 
 pub use core::{Block, WorkReport, AudioToIqChain, IqToAudioChain, IqToIqChain};
