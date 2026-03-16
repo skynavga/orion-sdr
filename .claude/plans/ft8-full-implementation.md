@@ -49,6 +49,58 @@ The initial FT4 frame structure did not match the reference (ft8_lib):
 Frame layout: `R S4_1 D29 S4_2 D29 S4_3 D29 S4_4 R`
 (2 ramps + 4×4 Costas + 87 data = 105 symbols)
 
+### Waveform choice: rectangular CPFSK vs Gaussian CPFSK (GFSK)
+
+GFSK is not an alternative to CPFSK — it is a variant of it. Both maintain phase
+continuity across symbol boundaries. The distinction is what happens to the
+instantaneous frequency at each transition:
+
+- **Rectangular CPFSK** (implemented here): frequency steps instantaneously at the
+  symbol boundary. The phasor recurrence loop runs at a fixed `w = exp(j·2πf/fs)`
+  for the entire symbol duration. No ISI between adjacent symbols.
+
+- **Gaussian CPFSK (GFSK)**: the frequency-deviation sequence is convolved with a
+  Gaussian FIR kernel (parametrised by bandwidth-time product BT) before the phase
+  integrator. The instantaneous frequency follows a smooth S-curve across each symbol
+  boundary rather than a step. This suppresses sinc-shaped spectral sidelobes at the
+  cost of introducing controlled inter-symbol interference (ISI).
+
+**Why rectangular is correct for FT8/FT4:**
+
+The protocol specification and every WSJT-X installation in the world use rectangular
+CPFSK. The Goertzel-based demodulator and Costas waterfall assume each symbol's energy
+is fully concentrated in its own `samples_per_sym` window — which is only true for
+rectangular shaping. The FT8 modulation index h = 1.0 (tone spacing = baud rate) gives
+enough margin between tones that sidelobe contamination is not a practical problem.
+
+**Where GFSK is used instead:**
+
+GFSK is chosen when the transmitted signal must fit within a tight channelised spectrum
+mask — typically wireless standards operating in shared, narrow bands:
+
+| Standard | BT | Notes |
+|---|---|---|
+| Bluetooth Classic / BLE | 0.5 | Largest GFSK deployment by volume |
+| GSM (GMSK) | 0.3 | Special case: h = 0.5 (minimum shift), needs Viterbi demod |
+| DECT | 0.5 | Cordless phones |
+| IEEE 802.15.4 / Zigbee FSK PHY | 0.5 | |
+| Z-Wave | 0.6 | |
+| ISM-band modules (nRF24L01, CC110x) | varies | Datasheet default to contain in-band |
+
+The common driver is a regulatory or co-existence requirement to stay within an assigned
+channel mask. FT8/FT4 has no such constraint: the entire amateur community uses the same
+rectangular waveform, and there is no adjacent-channel mask to satisfy.
+
+**Cost of switching to GFSK:**
+
+The modulator change is straightforward (add a Gaussian FIR on the frequency-deviation
+sequence, ~50–80 lines). The demodulator is the hard part: the Goertzel integrator and
+sync waterfall both assume rectangular symbol boundaries. At mild BT (≥ 2.0) the SNR
+penalty is small (~0.2–0.5 dB) and the Goertzel approach still works. At narrow BT
+(< 1.0, as used in Bluetooth/GSM) the ISI becomes severe and a proper Viterbi sequence
+detector or matched-filter demodulator is required. OTA interoperability with WSJT-X
+would be degraded at any BT value.
+
 ### What is explicitly NOT included
 
 - No channel coding (CRC, LDPC, Gray mapping)
