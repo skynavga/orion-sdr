@@ -13,6 +13,7 @@ dependencies = ["numpy>=1.24"]
 [tool.maturin]
 python-source = "python"
 module-name = "orion_sdr.orion_sdr"
+features = ["extension-module"]
 
 [tool.pytest.ini_options]
 testpaths = ["python/tests"]

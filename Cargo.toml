@@ -25,6 +25,7 @@ crate-type = ["cdylib", "rlib"]
 [features]
 simd = []
 throughput = []
+extension-module = ["dep:pyo3", "pyo3/extension-module", "dep:numpy"]
 
 [dependencies]
 num-complex = "0.4"
@@ -35,10 +36,12 @@ rustfft = "6"
 
 [dependencies.pyo3]
 version = "0.28"
-features = ["extension-module", "abi3-py312"]
+features = ["abi3-py312"]
+optional = true
 
 [dependencies.numpy]
 version = "0.28"
+optional = true
 
 [profile.release]
 opt-level = 3

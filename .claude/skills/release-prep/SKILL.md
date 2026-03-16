@@ -29,7 +29,7 @@ before editing it.
 | `pyproject.toml` | `version = "OLD_VERSION"` |
 | `README.md` | `Pre-alpha (vOLD_VERSION)` and `as of vOLD_VERSION` in the Features doc link |
 | `docs/features.md` | `# Features (as of vOLD_VERSION)` heading |
-| `docs/throughput.md` | `## vOLD_VERSION Results` heading |
+| `docs/performance.md` | `## vOLD_VERSION Results` heading |
 | `CLAUDE.md` | `vOLD_VERSION), edition 2024` in the project description |
 | `memory/MEMORY.md` at `~/.claude/projects/.../memory/MEMORY.md` | version in the Project Summary line |
 
@@ -73,7 +73,7 @@ Stage only the files changed in steps 2 and 3 (never `git add -A`):
 
 ```
 git add Cargo.toml Cargo.lock pyproject.toml README.md \
-        docs/features.md docs/throughput.md CLAUDE.md CHANGELOG.md
+        docs/features.md docs/performance.md CLAUDE.md CHANGELOG.md
 ```
 
 Commit with message: `Bump version to NEW_VERSION`

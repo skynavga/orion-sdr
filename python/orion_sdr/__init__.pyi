@@ -277,3 +277,177 @@ class QamMod:
     def __init__(self, order: int, fs: float, rf_hz: float, gain: float = 1.0) -> None: ...
     def set_gain(self, g: float) -> None: ...
     def process(self, bits: NDArray[np.uint8]) -> NDArray[np.complex64]: ...
+
+# ---------------------------------------------------------------------------
+# FT8/FT4 waveform classes
+# ---------------------------------------------------------------------------
+
+class Ft8Mod:
+    """FT8 frame modulator: 8-FSK CPFSK, 79 symbols, 151 680 samples at 12 kHz.
+
+    Input: uint8 array of 58 tone indices (0–7).
+    Output: complex64 IQ array of shape (151680,).
+    """
+
+    def __init__(self, fs: float, base_hz: float, rf_hz: float, gain: float = 1.0) -> None: ...
+    def modulate(self, tones: NDArray[np.uint8]) -> NDArray[np.complex64]: ...
+
+class Ft8Demod:
+    """FT8 frame demodulator: Goertzel/dot-product tone detector.
+
+    Input: complex64 IQ array of at least 151 680 samples.
+    Output: uint8 array of 58 tone indices.
+    Raises ``ValueError`` if input is too short or demodulation fails.
+    """
+
+    def __init__(self, fs: float, base_hz: float) -> None: ...
+    def demodulate(self, iq: NDArray[np.complex64]) -> NDArray[np.uint8]: ...
+
+class Ft8Codec:
+    """FT8 channel codec: CRC-14 + LDPC(174,91) + Gray code.
+
+    All methods are static; no per-instance state.
+    """
+
+    def __init__(self) -> None: ...
+    @staticmethod
+    def encode(payload: bytes) -> NDArray[np.uint8]:
+        """Encode a 10-byte payload → uint8[58] Gray-coded tone indices."""
+        ...
+    @staticmethod
+    def decode_hard(tones: NDArray[np.uint8]) -> bytes | None:
+        """Hard-decision decode 58 tone indices → bytes[10], or None on failure."""
+        ...
+    @staticmethod
+    def decode_soft(llr: NDArray[np.float32]) -> bytes | None:
+        """Soft-decision decode float32[174] LLRs → bytes[10], or None on failure."""
+        ...
+
+class Ft4Mod:
+    """FT4 frame modulator: 4-FSK CPFSK, 105 symbols, 60 480 samples at 12 kHz.
+
+    Input: uint8 array of 87 tone indices (0–3).
+    Output: complex64 IQ array of shape (60480,).
+    """
+
+    def __init__(self, fs: float, base_hz: float, rf_hz: float, gain: float = 1.0) -> None: ...
+    def modulate(self, tones: NDArray[np.uint8]) -> NDArray[np.complex64]: ...
+
+class Ft4Demod:
+    """FT4 frame demodulator: Goertzel/dot-product tone detector.
+
+    Input: complex64 IQ array of at least 60 480 samples.
+    Output: uint8 array of 87 tone indices.
+    Raises ``ValueError`` if input is too short or demodulation fails.
+    """
+
+    def __init__(self, fs: float, base_hz: float) -> None: ...
+    def demodulate(self, iq: NDArray[np.complex64]) -> NDArray[np.uint8]: ...
+
+class Ft4Codec:
+    """FT4 channel codec: XOR scramble + CRC-14 + LDPC(174,91) + Gray code.
+
+    All methods are static; no per-instance state.
+    """
+
+    def __init__(self) -> None: ...
+    @staticmethod
+    def encode(payload: bytes) -> NDArray[np.uint8]:
+        """Encode a 10-byte payload → uint8[87] Gray-coded tone indices."""
+        ...
+    @staticmethod
+    def decode_hard(tones: NDArray[np.uint8]) -> bytes | None:
+        """Hard-decision decode 87 tone indices → bytes[10], or None on failure."""
+        ...
+    @staticmethod
+    def decode_soft(llr: NDArray[np.float32]) -> bytes | None:
+        """Soft-decision decode float32[174] LLRs → bytes[10], or None on failure."""
+        ...
+
+# ---------------------------------------------------------------------------
+# FT8/FT4 sync functions
+# ---------------------------------------------------------------------------
+
+def ft8_sync(
+    iq: NDArray[np.complex64],
+    fs: float,
+    base_hz: float,
+    max_hz: float,
+    t_min: int,
+    t_max: int,
+    max_cand: int,
+) -> list[dict]:
+    """Synchronise an FT8 IQ buffer and return up to *max_cand* frame candidates.
+
+    Each candidate is a dict::
+
+        {
+            "time_sym": int,           # symbol offset of frame start
+            "freq_bin": int,           # frequency bin of tone-0
+            "score":    float,         # Costas match score
+            "llr":      float32[174],  # soft LLRs for Ft8Codec.decode_soft
+        }
+
+    Pass each result's ``"llr"`` to ``Ft8Codec.decode_soft`` to recover the
+    77-bit payload.
+    """
+    ...
+
+def ft4_sync(
+    iq: NDArray[np.complex64],
+    fs: float,
+    base_hz: float,
+    max_hz: float,
+    t_min: int,
+    t_max: int,
+    max_cand: int,
+) -> list[dict]:
+    """Synchronise an FT4 IQ buffer and return up to *max_cand* frame candidates.
+
+    Same return shape as ``ft8_sync``.
+    """
+    ...
+
+# ---------------------------------------------------------------------------
+# FT8/FT4 message packing functions
+# ---------------------------------------------------------------------------
+
+def ft8_pack_standard(call_to: str, call_de: str, extra: str) -> bytes:
+    """Pack a standard FT8/FT4 message → bytes[10].
+
+    *extra* may be a Maidenhead grid (``"FN31"``), signal report (``"+07"``,
+    ``"-12"``), R-prefixed report (``"R+05"``), or token
+    (``"RRR"``, ``"RR73"``, ``"73"``).  Pass ``""`` for no extra field.
+
+    Raises ``ValueError`` if the callsigns cannot be encoded.
+    """
+    ...
+
+def ft8_pack_free_text(text: str) -> bytes:
+    """Pack a free-text FT8/FT4 message (up to 13 chars) → bytes[10].
+
+    Raises ``ValueError`` if the text is too long or contains invalid characters.
+    """
+    ...
+
+def ft8_pack_telemetry(data: bytes) -> bytes:
+    """Pack a telemetry FT8/FT4 message (exactly 9 bytes) → bytes[10].
+
+    Raises ``ValueError`` if *data* is not exactly 9 bytes.
+    """
+    ...
+
+def ft8_unpack(payload: bytes) -> dict:
+    """Unpack a 10-byte FT8/FT4 payload → dict.
+
+    The ``"type"`` key indicates the message type:
+
+    * ``"standard"``  — ``{"type", "call_to", "call_de", "extra"}``
+    * ``"free_text"`` — ``{"type", "text"}``
+    * ``"telemetry"`` — ``{"type", "data"}`` (bytes[9])
+    * ``"nonstd"``    — ``{"type", "call_to", "call_de", "extra"}``
+    * ``"unknown"``   — ``{"type", "payload"}`` (bytes[10])
+
+    Raises ``ValueError`` if *payload* is not exactly 10 bytes.
+    """
+    ...

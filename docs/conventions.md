@@ -6,4 +6,4 @@
 - Throughput tests are feature-gated: `#[cfg(feature = "throughput")]` in `src/tests/mod.rs`
 - Benchmark assertions use `ORION_SDR_THROUGHPUT_MINSPS` env var as the floor
   (default per-test minimums are intentionally conservative)
-- When throughput numbers change, update `docs/throughput.md` and `memory/MEMORY.md`
+- When throughput numbers change, update `docs/performance.md` and `memory/MEMORY.md`
