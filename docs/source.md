@@ -71,5 +71,7 @@ src/
   tests/
     unit/             — per-module unit tests (one file per module)
     roundtrip/        — mod→demod→decode full-stack tests (one file per mode)
-    throughput/       — throughput benchmarks (feature-gated, one file per mode)
+    performance/
+      throughput/     — throughput benchmarks (feature-gated, one file per mode)
+      snr/            — SNR sensitivity sweeps (feature-gated, always pass, print curve)
 ```

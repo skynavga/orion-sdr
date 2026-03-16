@@ -10,4 +10,4 @@
 - [Source layout](docs/source.md) — module tree
 - [Design patterns](docs/design.md) — Block trait, inner-loop style, IIR structure
 - [Coding conventions](docs/conventions.md) — language, safety, feature flags, sync rules
-- [Throughput benchmarks](docs/throughput.md) — results and how to run them
+- [Performance benchmarks](docs/performance.md) — throughput results, SNR curves, and how to run them

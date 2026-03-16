@@ -85,7 +85,7 @@ Setting `rf_hz = 0.0` gives baseband passthrough.
 
 ## Throughput
 
-See [throughput.md](throughput.md) for benchmark results and how to run them.
+See [performance.md](performance.md) for benchmark results and how to run them.
 
 ---
 

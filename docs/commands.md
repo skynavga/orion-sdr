@@ -24,10 +24,14 @@ cargo test-roundtrip
 
 # Run throughput benchmarks
 cargo test-throughput
+
+# Run SNR sensitivity sweeps (prints full curve, always passes)
+cargo test --lib --features throughput "performance::snr" -- --nocapture --test-threads=1
 ```
 
 See `.cargo/config.toml` for the alias definitions. Always use `--release` for
 throughput runs — debug builds are ~10× slower and not representative.
+SNR sweeps can be run in debug; they are slow (~2 min) but the numbers are valid.
 
 ## Python Extension
 
