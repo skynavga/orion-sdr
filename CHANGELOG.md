@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.16] - 2026-03-15
+
+### Added
+
+- FT8/FT4 full stack: CPFSK waveform mod/demod, CRC-14 + LDPC(174,91) + Gray codec,
+  Costas-array frame sync with soft LLR extraction, and 77-bit message packing
+  (standard Type 1/2, free text, telemetry, non-standard callsigns)
+- Python bindings for the complete FT8/FT4 stack: `Ft8Mod`, `Ft8Demod`, `Ft8Codec`,
+  `Ft4Mod`, `Ft4Demod`, `Ft4Codec`, `ft8_sync`, `ft4_sync`, `ft8_pack_standard`,
+  `ft8_pack_free_text`, `ft8_pack_telemetry`, `ft8_unpack`
+- SNR sensitivity tests: sweeping characterisation (feature-gated, always passes,
+  prints curve) and fixed CI thresholds (FT8 −15 dB, FT4 −11 dB, SNR/2500 Hz)
+- `performance/` test module replacing `throughput/`, with `throughput/` and `snr/`
+  subdirectories; `cargo test-throughput` alias updated accordingly
+- Acronym glossary in `docs/design.md`
+
+### Changed
+
+- `pyo3` and `numpy` are now optional dependencies activated only by the
+  `extension-module` feature; `cargo test --release` no longer requires a Python
+  interpreter at build time
+- `docs/throughput.md` renamed to `docs/performance.md`; all references updated
+
 ## [0.0.15] - 2026-03-08
 
 ### Added
