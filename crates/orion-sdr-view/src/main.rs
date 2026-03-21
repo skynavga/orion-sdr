@@ -1,11 +1,13 @@
 mod persistence;
 mod signal;
 mod spectrum;
+mod waterfall;
 
 use eframe::egui;
 use persistence::PersistenceRenderer;
 use signal::TestSignalGen;
 use spectrum::{RingBuffer, SpectrumProcessor};
+use waterfall::WaterfallDisplay;
 
 const PANE_NAMES: [&str; 3] = ["Spectrum", "Persistence", "Waterfall"];
 const PANE_BG: [egui::Color32; 3] = [
@@ -37,6 +39,9 @@ struct ViewApp {
     // Pane 2: persistence density
     persistence: PersistenceRenderer,
     envelope_visible: bool,
+
+    // Pane 3: waterfall
+    waterfall: WaterfallDisplay,
 }
 
 impl ViewApp {
@@ -68,6 +73,8 @@ impl ViewApp {
 
             persistence: PersistenceRenderer::new(FFT_SIZE / 2 + 1, 100),
             envelope_visible: true,
+
+            waterfall: WaterfallDisplay::new(FFT_SIZE / 2 + 1, 512, -80.0, -20.0),
         }
     }
 
@@ -180,16 +187,7 @@ impl ViewApp {
             match i {
                 0 => self.draw_spectrum(&painter, rect),
                 1 => self.persistence.draw(&painter, rect, self.envelope_visible),
-                _ => {
-                    // Phase 4: placeholder label
-                    painter.text(
-                        rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        PANE_NAMES[i],
-                        self.mono_font_id.clone(),
-                        egui::Color32::from_gray(80),
-                    );
-                }
+                _ => self.waterfall.draw(&painter, rect),
             }
             y += h;
         }
@@ -308,6 +306,8 @@ impl eframe::App for ViewApp {
         self.persistence.map.accumulate(&self.spectrum.fft_out_db, self.db_min, self.db_max);
         self.persistence.map.decay();
         self.persistence.update_texture(ctx);
+        self.waterfall.push_row(&self.spectrum.fft_out_db);
+        self.waterfall.update_texture(ctx);
 
         self.handle_keys(ctx);
         self.draw_hud(ctx);
