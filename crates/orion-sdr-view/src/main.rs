@@ -1,7 +1,9 @@
+mod persistence;
 mod signal;
 mod spectrum;
 
 use eframe::egui;
+use persistence::PersistenceRenderer;
 use signal::TestSignalGen;
 use spectrum::{RingBuffer, SpectrumProcessor};
 
@@ -31,6 +33,9 @@ struct ViewApp {
     spectrum: SpectrumProcessor,
     db_min: f32,
     db_max: f32,
+
+    // Pane 2: persistence density
+    persistence: PersistenceRenderer,
 }
 
 impl ViewApp {
@@ -59,6 +64,8 @@ impl ViewApp {
             spectrum: SpectrumProcessor::new(FFT_SIZE),
             db_min: -100.0,
             db_max: 0.0,
+
+            persistence: PersistenceRenderer::new(FFT_SIZE / 2 + 1, 200),
         }
     }
 
@@ -160,8 +167,9 @@ impl ViewApp {
             painter.rect_filled(rect, 0.0, PANE_BG[i]);
             match i {
                 0 => self.draw_spectrum(&painter, rect),
+                1 => self.persistence.draw(&painter, rect),
                 _ => {
-                    // Phases 3 and 4: placeholder label
+                    // Phase 4: placeholder label
                     painter.text(
                         rect.center(),
                         egui::Align2::CENTER_CENTER,
@@ -283,6 +291,9 @@ impl eframe::App for ViewApp {
             self.ring_buf.push(s);
         }
         self.spectrum.process(&self.ring_buf);
+        self.persistence.map.accumulate(&self.spectrum.fft_out_db, self.db_min, self.db_max);
+        self.persistence.map.decay();
+        self.persistence.update_texture(ctx);
 
         self.handle_keys(ctx);
         self.draw_hud(ctx);
