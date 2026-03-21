@@ -62,10 +62,10 @@ impl ViewApp {
             signal_gen: TestSignalGen::new(3_000.0, SAMPLE_RATE),
             ring_buf: RingBuffer::new(FFT_SIZE),
             spectrum: SpectrumProcessor::new(FFT_SIZE),
-            db_min: -100.0,
-            db_max: 0.0,
+            db_min: -80.0,
+            db_max: -20.0,
 
-            persistence: PersistenceRenderer::new(FFT_SIZE / 2 + 1, 200),
+            persistence: PersistenceRenderer::new(FFT_SIZE / 2 + 1, 100),
         }
     }
 
