@@ -40,6 +40,9 @@ impl ViewApp {
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
+        // Capture quit intent outside the closure to avoid deadlock:
+        // ctx.input() holds a read lock; send_viewport_cmd() needs a write lock.
+        let mut quit = false;
         ctx.input(|i| {
             if i.key_pressed(egui::Key::Num1) {
                 self.pane_visible[0] ^= true;
@@ -65,9 +68,12 @@ impl ViewApp {
                 self.show_help = false;
             }
             if i.key_pressed(egui::Key::Q) {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                quit = true;
             }
         });
+        if quit {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
     }
 
     fn draw_hud(&self, ctx: &egui::Context) {
