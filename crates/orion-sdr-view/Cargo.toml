@@ -14,4 +14,6 @@ eframe = { version = "0.33", default-features = false, features = [
     "glow",
 ] }
 egui = "0.33"
+num-complex = "0.4"
+rustfft = "6"
 orion-sdr = { path = "../.." }

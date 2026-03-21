@@ -1,11 +1,21 @@
+mod signal;
+mod spectrum;
+
 use eframe::egui;
+use signal::TestSignalGen;
+use spectrum::{RingBuffer, SpectrumProcessor};
 
 const PANE_NAMES: [&str; 3] = ["Spectrum", "Persistence", "Waterfall"];
-const PANE_COLORS: [egui::Color32; 3] = [
-    egui::Color32::from_rgb(30, 40, 60),
+const PANE_BG: [egui::Color32; 3] = [
+    egui::Color32::from_rgb(10, 10, 20),
     egui::Color32::from_rgb(20, 50, 40),
     egui::Color32::from_rgb(40, 30, 60),
 ];
+
+const FFT_SIZE: usize = 1024;
+const SAMPLE_RATE: f32 = 48_000.0;
+// Number of new samples fed per frame, targeting ~60 fps.
+const SAMPLES_PER_FRAME: usize = (SAMPLE_RATE / 60.0) as usize;
 
 struct ViewApp {
     pane_visible: [bool; 3],
@@ -14,6 +24,13 @@ struct ViewApp {
     pane_frac: [f32; 3],
     show_help: bool,
     mono_font_id: egui::FontId,
+
+    // Signal source and spectrum processing
+    signal_gen: TestSignalGen,
+    ring_buf: RingBuffer,
+    spectrum: SpectrumProcessor,
+    db_min: f32,
+    db_max: f32,
 }
 
 impl ViewApp {
@@ -36,6 +53,12 @@ impl ViewApp {
             pane_frac: [1.0 / 3.0; 3],
             show_help: false,
             mono_font_id: egui::FontId::new(14.0, egui::FontFamily::Monospace),
+
+            signal_gen: TestSignalGen::new(3_000.0, SAMPLE_RATE),
+            ring_buf: RingBuffer::new(FFT_SIZE),
+            spectrum: SpectrumProcessor::new(FFT_SIZE),
+            db_min: -100.0,
+            db_max: 0.0,
         }
     }
 
@@ -134,16 +157,81 @@ impl ViewApp {
                 egui::vec2(avail.width(), h),
             );
             let painter = ui.painter_at(rect);
-            painter.rect_filled(rect, 0.0, PANE_COLORS[i]);
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                PANE_NAMES[i],
-                self.mono_font_id.clone(),
-                egui::Color32::WHITE,
-            );
+            painter.rect_filled(rect, 0.0, PANE_BG[i]);
+            match i {
+                0 => self.draw_spectrum(&painter, rect),
+                _ => {
+                    // Phases 3 and 4: placeholder label
+                    painter.text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        PANE_NAMES[i],
+                        self.mono_font_id.clone(),
+                        egui::Color32::from_gray(80),
+                    );
+                }
+            }
             y += h;
         }
+    }
+
+    fn draw_spectrum(&self, painter: &egui::Painter, rect: egui::Rect) {
+        let bins = &self.spectrum.fft_out_db;
+        let n = bins.len();
+        if n < 2 {
+            return;
+        }
+
+        let x_for_bin =
+            |b: usize| rect.left() + (b as f32 / (n - 1) as f32) * rect.width();
+        let y_for_db = |db: f32| {
+            let t = (db - self.db_min) / (self.db_max - self.db_min);
+            rect.bottom() - t.clamp(0.0, 1.0) * rect.height()
+        };
+
+        // Horizontal dB grid lines
+        let grid_stroke = egui::Stroke::new(0.5, egui::Color32::from_gray(45));
+        let label_font = egui::FontId::new(10.0, egui::FontFamily::Monospace);
+        let mut db = (self.db_min / 10.0).ceil() * 10.0;
+        while db <= self.db_max {
+            let y = y_for_db(db);
+            painter.hline(rect.x_range(), y, grid_stroke);
+            painter.text(
+                egui::pos2(rect.left() + 4.0, y - 2.0),
+                egui::Align2::LEFT_BOTTOM,
+                format!("{:.0}dB", db),
+                label_font.clone(),
+                egui::Color32::from_gray(110),
+            );
+            db += 10.0;
+        }
+
+        // Vertical frequency grid lines + labels
+        let nyquist = SAMPLE_RATE / 2.0;
+        for frac in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
+            let hz = frac * nyquist;
+            let b = (frac * (n - 1) as f32) as usize;
+            let x = x_for_bin(b);
+            painter.vline(x, rect.y_range(), grid_stroke);
+            let label = if hz >= 1000.0 {
+                format!("{:.1}kHz", hz / 1000.0)
+            } else {
+                format!("{:.0}Hz", hz)
+            };
+            painter.text(
+                egui::pos2(x + 3.0, rect.bottom() - 2.0),
+                egui::Align2::LEFT_BOTTOM,
+                label,
+                label_font.clone(),
+                egui::Color32::from_gray(110),
+            );
+        }
+
+        // Spectrum line
+        let points: Vec<egui::Pos2> = (0..n)
+            .map(|b| egui::pos2(x_for_bin(b), y_for_db(bins[b])))
+            .collect();
+        painter.line(points, egui::Stroke::new(1.5, egui::Color32::from_rgb(0, 220, 180)));
     }
 
     fn draw_help_overlay(&self, ui: &mut egui::Ui) {
@@ -189,6 +277,13 @@ impl ViewApp {
 
 impl eframe::App for ViewApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Feed new samples and process spectrum before drawing.
+        for _ in 0..SAMPLES_PER_FRAME {
+            let s = self.signal_gen.next_sample();
+            self.ring_buf.push(s);
+        }
+        self.spectrum.process(&self.ring_buf);
+
         self.handle_keys(ctx);
         self.draw_hud(ctx);
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -197,6 +292,9 @@ impl eframe::App for ViewApp {
                 self.draw_help_overlay(ui);
             }
         });
+
+        // Request continuous repaints for live animation.
+        ctx.request_repaint();
     }
 }
 

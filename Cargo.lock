@@ -1542,7 +1542,9 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "egui",
+ "num-complex",
  "orion-sdr",
+ "rustfft",
 ]
 
 [[package]]
