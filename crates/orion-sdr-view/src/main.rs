@@ -86,7 +86,11 @@ impl ViewApp {
                 self.pane_visible[2] ^= true;
             }
             if i.key_pressed(egui::Key::C) {
-                self.signal_gen.cycling ^= true;
+                if self.signal_gen.cycling {
+                    self.signal_gen.stop_cycling();
+                } else {
+                    self.signal_gen.start_cycling();
+                }
             }
             if i.key_pressed(egui::Key::E) {
                 self.envelope_visible ^= true;

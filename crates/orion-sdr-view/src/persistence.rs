@@ -88,15 +88,24 @@ impl PersistenceMap {
         self.max_count = new_max;
     }
 
-    /// For each frequency column, return the highest power bin (0 = db_min) that has
-    /// any accumulated counts, or `None` if the column is empty.
-    pub fn peak_power_bins(&self) -> Vec<Option<usize>> {
+    /// For each frequency column, return the density-weighted mean power bin,
+    /// or `None` if the column is empty. This follows the current amplitude
+    /// as it cycles rather than being pinned to the historical peak.
+    pub fn mean_power_bins(&self) -> Vec<Option<usize>> {
         (0..self.freq_bins)
             .map(|fb| {
-                // Scan from highest power bin down to find the first non-zero count.
-                (0..self.power_bins)
-                    .rev()
-                    .find(|&pb| self.counts[pb * self.freq_bins + fb] > 0)
+                let mut weight_sum = 0u64;
+                let mut bin_sum = 0u64;
+                for pb in 0..self.power_bins {
+                    let c = self.counts[pb * self.freq_bins + fb] as u64;
+                    weight_sum += c;
+                    bin_sum += c * pb as u64;
+                }
+                if weight_sum == 0 {
+                    None
+                } else {
+                    Some((bin_sum / weight_sum) as usize)
+                }
             })
             .collect()
     }
@@ -159,8 +168,8 @@ impl PersistenceRenderer {
             return;
         }
 
-        // Envelope: connect the peak power bin of each frequency column.
-        let peaks = self.map.peak_power_bins();
+        // Envelope: connect the density-weighted mean power bin of each frequency column.
+        let peaks = self.map.mean_power_bins();
         let n = peaks.len();
         if n < 2 {
             return;
