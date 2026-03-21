@@ -1,21 +1,25 @@
 use eframe::egui;
 
 /// Maps a normalized density value [0, 1] to a color.
-/// Gradient: black → dark blue → cyan → green → yellow → white.
-fn density_color(t: f32) -> egui::Color32 {
+/// t=0 (no hits) → pane background (dark navy).
+/// t>0: dark blue → cyan → green → yellow → white.
+fn density_color(t: f32, count: u32) -> egui::Color32 {
+    if count == 0 {
+        return egui::Color32::from_rgb(10, 10, 20); // matches PANE_BG[1] background
+    }
     let t = t.clamp(0.0, 1.0);
     let (r, g, b) = if t < 0.25 {
         let s = t / 0.25;
-        (0, 0, (s * 180.0) as u8)
+        (0, 0, (80.0 + s * 175.0) as u8)
     } else if t < 0.5 {
         let s = (t - 0.25) / 0.25;
-        (0, (s * 200.0) as u8, 180)
+        (0, (s * 220.0) as u8, 255)
     } else if t < 0.75 {
         let s = (t - 0.5) / 0.25;
-        (0, 200, (180.0 * (1.0 - s)) as u8)
+        (0, 220, (255.0 * (1.0 - s)) as u8)
     } else {
         let s = (t - 0.75) / 0.25;
-        ((s * 255.0) as u8, 200, 0)
+        ((s * 255.0) as u8, 220, 0)
     };
     egui::Color32::from_rgb(r, g, b)
 }
@@ -29,8 +33,12 @@ pub struct PersistenceMap {
     pub power_bins: usize,
     counts: Vec<u32>,
     max_count: u32,
-    /// Fraction subtracted from each count per frame. ~0.005 → ~3 s persistence at 60 fps.
-    pub decay_rate: f32,
+    /// Fraction multiplied into each count on each decay step (e.g. 0.85 → 15% drop per step).
+    pub decay_factor: f32,
+    /// Decay is applied once every this many frames to avoid wiping counts faster than
+    /// accumulation can build them up.
+    pub decay_every_n_frames: u32,
+    frame_counter: u32,
 }
 
 impl PersistenceMap {
@@ -40,7 +48,9 @@ impl PersistenceMap {
             power_bins,
             counts: vec![0; freq_bins * power_bins],
             max_count: 1,
-            decay_rate: 0.005,
+            decay_factor: 0.75,
+            decay_every_n_frames: 30,
+            frame_counter: 0,
         }
     }
 
@@ -60,12 +70,17 @@ impl PersistenceMap {
         }
     }
 
-    /// Apply exponential decay to all counts.
+    /// Apply decay once every `decay_every_n_frames` frames.
+    /// Call this once per frame; it handles its own rate limiting.
     pub fn decay(&mut self) {
-        let scale = 1.0 - self.decay_rate;
+        self.frame_counter += 1;
+        if self.frame_counter < self.decay_every_n_frames {
+            return;
+        }
+        self.frame_counter = 0;
         let mut new_max = 1u32;
         for c in &mut self.counts {
-            *c = (*c as f32 * scale) as u32;
+            *c = (*c as f32 * self.decay_factor) as u32;
             if *c > new_max {
                 new_max = *c;
             }
@@ -81,7 +96,7 @@ impl PersistenceMap {
             for fb in 0..self.freq_bins {
                 let count = self.counts[pb * self.freq_bins + fb];
                 let t = count as f32 / self.max_count as f32;
-                pixels.push(density_color(t));
+                pixels.push(density_color(t, count));
             }
         }
         egui::ColorImage::from_rgba_unmultiplied(
