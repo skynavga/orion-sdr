@@ -85,6 +85,9 @@ impl ViewApp {
             if i.key_pressed(egui::Key::Num3) {
                 self.pane_visible[2] ^= true;
             }
+            if i.key_pressed(egui::Key::C) {
+                self.signal_gen.cycling ^= true;
+            }
             if i.key_pressed(egui::Key::E) {
                 self.envelope_visible ^= true;
             }
@@ -251,7 +254,7 @@ impl ViewApp {
         let screen = ui.ctx().content_rect();
         let overlay_rect = egui::Rect::from_center_size(
             screen.center(),
-            egui::vec2(520.0, 242.0),
+            egui::vec2(520.0, 264.0),
         );
         let painter = ui.painter();
         painter.rect_filled(
@@ -269,6 +272,7 @@ impl ViewApp {
         let lines: &[(&str, bool)] = &[
             ("Keyboard shortcuts", true),
             ("1 / 2 / 3   toggle Spectrum / Persistence / Waterfall panes", false),
+            ("C           toggle signal amplitude cycling (ramp up/down)", false),
             ("E           toggle persistence envelope overlay", false),
             ("? or H      toggle this help overlay", false),
             ("Escape      dismiss overlays", false),
