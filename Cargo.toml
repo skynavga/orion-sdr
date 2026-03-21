@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "crates/orion-sdr-view"]
+resolver = "2"
+
 [package]
 name = "orion-sdr"
 version = "0.0.16"
