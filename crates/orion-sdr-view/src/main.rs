@@ -36,6 +36,7 @@ struct ViewApp {
 
     // Pane 2: persistence density
     persistence: PersistenceRenderer,
+    envelope_visible: bool,
 }
 
 impl ViewApp {
@@ -66,6 +67,7 @@ impl ViewApp {
             db_max: -20.0,
 
             persistence: PersistenceRenderer::new(FFT_SIZE / 2 + 1, 100),
+            envelope_visible: true,
         }
     }
 
@@ -82,6 +84,9 @@ impl ViewApp {
             }
             if i.key_pressed(egui::Key::Num3) {
                 self.pane_visible[2] ^= true;
+            }
+            if i.key_pressed(egui::Key::E) {
+                self.envelope_visible ^= true;
             }
             if i.key_pressed(egui::Key::H) {
                 self.show_help ^= true;
@@ -167,7 +172,7 @@ impl ViewApp {
             painter.rect_filled(rect, 0.0, PANE_BG[i]);
             match i {
                 0 => self.draw_spectrum(&painter, rect),
-                1 => self.persistence.draw(&painter, rect),
+                1 => self.persistence.draw(&painter, rect, self.envelope_visible),
                 _ => {
                     // Phase 4: placeholder label
                     painter.text(
@@ -246,7 +251,7 @@ impl ViewApp {
         let screen = ui.ctx().content_rect();
         let overlay_rect = egui::Rect::from_center_size(
             screen.center(),
-            egui::vec2(520.0, 220.0),
+            egui::vec2(520.0, 242.0),
         );
         let painter = ui.painter();
         painter.rect_filled(
@@ -264,6 +269,7 @@ impl ViewApp {
         let lines: &[(&str, bool)] = &[
             ("Keyboard shortcuts", true),
             ("1 / 2 / 3   toggle Spectrum / Persistence / Waterfall panes", false),
+            ("E           toggle persistence envelope overlay", false),
             ("? or H      toggle this help overlay", false),
             ("Escape      dismiss overlays", false),
             ("Q           quit", false),

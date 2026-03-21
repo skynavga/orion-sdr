@@ -88,6 +88,19 @@ impl PersistenceMap {
         self.max_count = new_max;
     }
 
+    /// For each frequency column, return the highest power bin (0 = db_min) that has
+    /// any accumulated counts, or `None` if the column is empty.
+    pub fn peak_power_bins(&self) -> Vec<Option<usize>> {
+        (0..self.freq_bins)
+            .map(|fb| {
+                // Scan from highest power bin down to find the first non-zero count.
+                (0..self.power_bins)
+                    .rev()
+                    .find(|&pb| self.counts[pb * self.freq_bins + fb] > 0)
+            })
+            .collect()
+    }
+
     /// Build a ColorImage from the current histogram.
     /// Row 0 = highest power (db_max), last row = lowest power (db_min).
     pub fn to_color_image(&self) -> egui::ColorImage {
@@ -135,11 +148,47 @@ impl PersistenceRenderer {
         }
     }
 
-    /// Draw the persistence heatmap into `rect`.
-    pub fn draw(&self, painter: &egui::Painter, rect: egui::Rect) {
+    /// Draw the persistence heatmap into `rect`, optionally with an envelope outline on top.
+    pub fn draw(&self, painter: &egui::Painter, rect: egui::Rect, show_envelope: bool) {
         if let Some(tex) = &self.texture {
             let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
             painter.image(tex.id(), rect, uv, egui::Color32::WHITE);
+        }
+
+        if !show_envelope {
+            return;
+        }
+
+        // Envelope: connect the peak power bin of each frequency column.
+        let peaks = self.map.peak_power_bins();
+        let n = peaks.len();
+        if n < 2 {
+            return;
+        }
+
+        // power_bin → Y pixel: bin (power_bins-1) = db_max = rect.top(),
+        //                       bin 0             = db_min = rect.bottom().
+        let y_for_pb = |pb: usize| {
+            let t = pb as f32 / (self.map.power_bins - 1) as f32;
+            rect.bottom() - t * rect.height()
+        };
+        let x_for_fb =
+            |fb: usize| rect.left() + (fb as f32 / (n - 1) as f32) * rect.width();
+
+        let stroke = egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 160));
+
+        // Walk columns, emitting line segments between consecutive non-empty columns.
+        let mut prev: Option<egui::Pos2> = None;
+        for fb in 0..n {
+            let pt = peaks[fb].map(|pb| egui::pos2(x_for_fb(fb), y_for_pb(pb)));
+            match (prev, pt) {
+                (Some(a), Some(b)) => {
+                    painter.line_segment([a, b], stroke);
+                    prev = Some(b);
+                }
+                (_, Some(b)) => prev = Some(b),
+                (_, None) => prev = None,
+            }
         }
     }
 }
