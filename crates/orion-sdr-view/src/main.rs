@@ -1,10 +1,12 @@
 mod persistence;
+mod settings;
 mod signal;
 mod spectrum;
 mod waterfall;
 
 use eframe::egui;
 use persistence::PersistenceRenderer;
+use settings::SettingsState;
 use signal::TestSignalGen;
 use spectrum::{RingBuffer, SpectrumProcessor};
 use waterfall::WaterfallDisplay;
@@ -42,6 +44,9 @@ struct ViewApp {
 
     // Pane 3: waterfall
     waterfall: WaterfallDisplay,
+
+    // Settings popover
+    settings: SettingsState,
 }
 
 impl ViewApp {
@@ -75,10 +80,28 @@ impl ViewApp {
             envelope_visible: true,
 
             waterfall: WaterfallDisplay::new(FFT_SIZE / 2 + 1, 512, -80.0, -20.0),
+
+            settings: SettingsState::new(
+                -80.0, -20.0,           // db_min, db_max
+                3_000.0,                // freq_hz
+                0.05,                   // noise_amp
+                0.65,                   // amp_max
+                3.0,                    // ramp_secs
+                7.0,                    // pause_secs
+            ),
         }
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
+        // Settings popover consumes arrow/tab/escape/R keys when visible.
+        // Handle it first so those keys don't bleed into global bindings.
+        if self.settings.visible {
+            self.settings.handle_keys(ctx);
+            // Sync settings values back to live state after any change.
+            self.sync_settings();
+            return;
+        }
+
         // Capture quit intent outside the closure to avoid deadlock:
         // ctx.input() holds a read lock; send_viewport_cmd() needs a write lock.
         let mut quit = false;
@@ -102,6 +125,9 @@ impl ViewApp {
             if i.key_pressed(egui::Key::E) {
                 self.envelope_visible ^= true;
             }
+            if i.key_pressed(egui::Key::S) {
+                self.settings.visible ^= true;
+            }
             if i.key_pressed(egui::Key::H) {
                 self.show_help ^= true;
             }
@@ -115,6 +141,7 @@ impl ViewApp {
             }
             if i.key_pressed(egui::Key::Escape) {
                 self.show_help = false;
+                self.settings.visible = false;
             }
             if i.key_pressed(egui::Key::Q) {
                 quit = true;
@@ -123,6 +150,19 @@ impl ViewApp {
         if quit {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
+    }
+
+    /// Push current settings values into live signal/display state.
+    fn sync_settings(&mut self) {
+        self.db_min = self.settings.db_min();
+        self.db_max = self.settings.db_max();
+        self.waterfall.db_min = self.settings.db_min();
+        self.waterfall.db_max = self.settings.db_max();
+        self.signal_gen.freq_hz = self.settings.freq_hz();
+        self.signal_gen.noise_amp = self.settings.noise_amp();
+        self.signal_gen.amp_max = self.settings.amp_max();
+        self.signal_gen.ramp_secs = self.settings.ramp_secs();
+        self.signal_gen.pause_secs = self.settings.pause_secs();
     }
 
     fn draw_hud(&self, ctx: &egui::Context) {
@@ -148,7 +188,7 @@ impl ViewApp {
                 }
                 ui.separator();
                 ui.label(
-                    egui::RichText::new("? help  Q quit")
+                    egui::RichText::new("S settings  ? help  Q quit")
                         .font(self.mono_font_id.clone())
                         .color(egui::Color32::GRAY),
                 );
@@ -256,7 +296,7 @@ impl ViewApp {
         let screen = ui.ctx().content_rect();
         let overlay_rect = egui::Rect::from_center_size(
             screen.center(),
-            egui::vec2(520.0, 264.0),
+            egui::vec2(520.0, 286.0),
         );
         let painter = ui.painter();
         painter.rect_filled(
@@ -276,6 +316,7 @@ impl ViewApp {
             ("1 / 2 / 3   toggle Spectrum / Persistence / Waterfall panes", false),
             ("C           toggle signal amplitude cycling (ramp up/down)", false),
             ("E           toggle persistence envelope overlay", false),
+            ("S           open/close settings popover", false),
             ("? or H      toggle this help overlay", false),
             ("Escape      dismiss overlays", false),
             ("Q           quit", false),
@@ -316,6 +357,8 @@ impl eframe::App for ViewApp {
             if self.show_help {
                 self.draw_help_overlay(ui);
             }
+            let mono = self.mono_font_id.clone();
+            self.settings.draw(ui, &mono);
         });
 
         // Request continuous repaints for live animation.
