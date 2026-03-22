@@ -1,4 +1,5 @@
 use eframe::egui;
+use crate::config::ViewConfig;
 
 const OVERLAY_W: f32 = 520.0;
 const OVERLAY_H: f32 = 446.0;
@@ -200,7 +201,7 @@ impl SettingsState {
                     step: 0.1, min: 0.1, max: 2.0, unit: "",
                 }),
                 Row::Num(NumField {
-                    label: "Loop gap s", value: 2.0, default: 2.0,
+                    label: "Loop gap s", value: 7.0, default: 7.0,
                     step: 0.5, min: 0.0, max: 30.0, unit: " s",
                 }),
                 Row::Num(NumField {
@@ -214,6 +215,43 @@ impl SettingsState {
                 }),
             ],
         }
+    }
+
+    /// Build a `SettingsState` from a loaded `ViewConfig`, patching all
+    /// configurable fields and updating `default` so the **R** key resets to
+    /// the configured value rather than the hard-coded built-in default.
+    pub fn from_config(cfg: &ViewConfig) -> Self {
+        let mut s = Self::new(
+            cfg.db_min(), cfg.db_max(),
+            cfg.freq_hz(), cfg.noise_amp(), cfg.amp_max(),
+            cfg.ramp_secs(), cfg.pause_secs(),
+        );
+
+        fn patch(row: &mut Row, v: f32) {
+            if let Row::Num(f) = row {
+                let clamped = v.clamp(f.min, f.max);
+                f.value   = clamped;
+                f.default = clamped;
+            }
+        }
+
+        patch(&mut s.source_rows[SRC_CARRIER],  cfg.carrier_hz());
+        patch(&mut s.source_rows[SRC_MOD_IDX],  cfg.mod_index());
+        patch(&mut s.source_rows[SRC_LOOP_GAP], cfg.loop_gap_secs());
+        patch(&mut s.source_rows[SRC_AM_NOISE], cfg.am_noise_amp());
+
+        // Also update display row defaults to match configured values
+        fn patch_display(row: &mut Row, v: f32) {
+            if let Row::Num(f) = row {
+                let clamped = v.clamp(f.min, f.max);
+                f.value   = clamped;
+                f.default = clamped;
+            }
+        }
+        patch_display(&mut s.display_rows[0], cfg.db_min());
+        patch_display(&mut s.display_rows[1], cfg.db_max());
+
+        s
     }
 
     // ── Source-mode helpers ───────────────────────────────────────────────
@@ -263,6 +301,13 @@ impl SettingsState {
     }
 
     // ── Public write methods ──────────────────────────────────────────────
+
+    pub fn set_db_min(&mut self, v: f32) {
+        if let Row::Num(f) = &mut self.display_rows[0] { f.value = v.clamp(f.min, f.max); }
+    }
+    pub fn set_db_max(&mut self, v: f32) {
+        if let Row::Num(f) = &mut self.display_rows[1] { f.value = v.clamp(f.min, f.max); }
+    }
 
     pub fn set_source_mode(&mut self, idx: usize) {
         if let Row::Toggle(f) = &mut self.source_rows[SRC_SOURCE] {

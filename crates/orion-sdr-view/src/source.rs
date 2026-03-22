@@ -240,10 +240,15 @@ impl SignalSource for AmDsbSource {
 
         while i < n {
             if self.gap_remaining > 0 {
-                // PTT released — emit silence directly, bypass modulator
+                // PTT released — no carrier, but AWGN is always present
                 let gap_now = self.gap_remaining.min(n - i);
                 for _ in 0..gap_now {
-                    out.push(0.0);
+                    let noise = if self.noise_amp > 0.0 {
+                        self.noise_amp * self.xorshift()
+                    } else {
+                        0.0
+                    };
+                    out.push(noise);
                 }
                 self.gap_remaining -= gap_now;
                 i += gap_now;

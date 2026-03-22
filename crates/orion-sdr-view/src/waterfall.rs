@@ -84,7 +84,12 @@ impl WaterfallDisplay {
         }
     }
 
-    /// Draw the waterfall into `rect`.
+    /// Expose the texture handle for UV-cropped rendering by the caller.
+    pub fn texture_handle(&self) -> Option<&egui::TextureHandle> {
+        self.texture.as_ref()
+    }
+
+    /// Draw the waterfall into `rect` (full UV, no zoom).
     pub fn draw(&self, painter: &egui::Painter, rect: egui::Rect) {
         if let Some(tex) = &self.texture {
             let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
