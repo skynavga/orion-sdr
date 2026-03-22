@@ -1,0 +1,14 @@
+[workspace]
+
+[package]
+name = "gen-audio"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "gen-audio"
+path = "main.rs"
+
+[dependencies]
+hound = "3"

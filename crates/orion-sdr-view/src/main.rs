@@ -1,6 +1,7 @@
 mod persistence;
 mod settings;
 mod signal;
+mod source;
 mod spectrum;
 mod waterfall;
 
@@ -8,6 +9,7 @@ use eframe::egui;
 use persistence::PersistenceRenderer;
 use settings::SettingsState;
 use signal::TestSignalGen;
+use source::{AmDsbSource, BuiltinAudio, SignalSource, TestToneSource, load_builtin};
 use spectrum::{RingBuffer, SpectrumProcessor};
 use waterfall::WaterfallDisplay;
 
@@ -23,6 +25,36 @@ const SAMPLE_RATE: f32 = 48_000.0;
 // Number of new samples fed per frame, targeting ~60 fps.
 const SAMPLES_PER_FRAME: usize = (SAMPLE_RATE / 60.0) as usize;
 
+// ── Source mode ───────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SourceMode {
+    TestTone,
+    AmDsb,
+}
+
+impl SourceMode {
+    const ALL: &'static [SourceMode] = &[SourceMode::TestTone, SourceMode::AmDsb];
+
+    fn label(self) -> &'static str {
+        match self {
+            SourceMode::TestTone => "Test Tone",
+            SourceMode::AmDsb => "AM DSB",
+        }
+    }
+
+    fn index(self) -> usize {
+        Self::ALL.iter().position(|&m| m == self).unwrap_or(0)
+    }
+
+    fn next(self) -> Self {
+        let idx = (self.index() + 1) % Self::ALL.len();
+        Self::ALL[idx]
+    }
+}
+
+// ── ViewApp ───────────────────────────────────────────────────────────────────
+
 struct ViewApp {
     pane_visible: [bool; 3],
     // Fractional height per pane — stored even when hidden so proportions are
@@ -31,8 +63,14 @@ struct ViewApp {
     show_help: bool,
     mono_font_id: egui::FontId,
 
-    // Signal source and spectrum processing
+    // Active signal source (Box<dyn SignalSource> for easy future extension)
+    source_mode: SourceMode,
+    source: Box<dyn SignalSource>,
+
+    // Test tone generator — kept alive so its state (cycling, settings) persists
+    // across source switches. TestToneSource borrows it when active.
     signal_gen: TestSignalGen,
+
     ring_buf: RingBuffer,
     spectrum: SpectrumProcessor,
     db_min: f32,
@@ -64,13 +102,21 @@ impl ViewApp {
             .insert(0, "DejaVuSansMono".to_owned());
         cc.egui_ctx.set_fonts(fonts);
 
+        let signal_gen = TestSignalGen::new(3_000.0, SAMPLE_RATE);
+        // The active source starts as TestTone; we clone the gen's initial state.
+        let source: Box<dyn SignalSource> =
+            Box::new(TestToneSource::new(TestSignalGen::new(3_000.0, SAMPLE_RATE)));
+
         Self {
             pane_visible: [true; 3],
             pane_frac: [1.0 / 3.0; 3],
             show_help: false,
             mono_font_id: egui::FontId::new(14.0, egui::FontFamily::Monospace),
 
-            signal_gen: TestSignalGen::new(3_000.0, SAMPLE_RATE),
+            source_mode: SourceMode::TestTone,
+            source,
+            signal_gen,
+
             ring_buf: RingBuffer::new(FFT_SIZE),
             spectrum: SpectrumProcessor::new(FFT_SIZE),
             db_min: -80.0,
@@ -92,63 +138,144 @@ impl ViewApp {
         }
     }
 
+    /// Build a fresh AmDsbSource from current settings values.
+    fn make_am_source(&self) -> AmDsbSource {
+        let (audio, audio_rate) = if self.settings.am_audio_is_custom() {
+            // Custom with no path yet — start silent; audio loaded on WAV entry
+            (Vec::new(), SAMPLE_RATE)
+        } else {
+            let builtin = BuiltinAudio::ALL[self.settings.am_audio_idx().min(BuiltinAudio::ALL.len() - 1)];
+            load_builtin(builtin)
+        };
+        AmDsbSource::new(
+            audio,
+            audio_rate,
+            self.settings.am_carrier_hz(),
+            self.settings.am_mod_index(),
+            self.settings.am_loop_gap_secs(),
+            self.settings.am_noise_amp(),
+            SAMPLE_RATE,
+        )
+    }
+
+    /// Switch the active source to `mode`, constructing a new source box.
+    fn switch_source(&mut self, mode: SourceMode) {
+        self.source_mode = mode;
+        self.source = match mode {
+            SourceMode::TestTone => {
+                // Re-create from signal_gen's current settings
+                Box::new(TestToneSource::new(TestSignalGen::new(
+                    self.signal_gen.freq_hz,
+                    SAMPLE_RATE,
+                )))
+            }
+            SourceMode::AmDsb => Box::new(self.make_am_source()),
+        };
+        self.settings.set_source_mode(mode as usize);
+    }
+
     fn handle_keys(&mut self, ctx: &egui::Context) {
         // Settings popover consumes arrow/tab/escape/R keys when visible.
-        // Handle it first so those keys don't bleed into global bindings.
         if self.settings.visible {
-            self.settings.handle_keys(ctx);
-            // Sync settings values back to live state after any change.
+            let result = self.settings.handle_keys(ctx);
+            if result.source_switched {
+                let idx = self.settings.source_mode_idx().min(SourceMode::ALL.len() - 1);
+                let new_mode = SourceMode::ALL[idx];
+                if new_mode != self.source_mode {
+                    self.switch_source(new_mode);
+                }
+            }
+            if result.am_audio_changed {
+                self.reload_builtin_audio();
+            }
+            if result.wav_load_requested {
+                self.try_load_wav();
+            }
             self.sync_settings();
             return;
         }
 
-        // Capture quit intent outside the closure to avoid deadlock:
-        // ctx.input() holds a read lock; send_viewport_cmd() needs a write lock.
         let mut quit = false;
+        let mut toggle_source = false;
         ctx.input(|i| {
-            if i.key_pressed(egui::Key::Num1) {
-                self.pane_visible[0] ^= true;
-            }
-            if i.key_pressed(egui::Key::Num2) {
-                self.pane_visible[1] ^= true;
-            }
-            if i.key_pressed(egui::Key::Num3) {
-                self.pane_visible[2] ^= true;
-            }
+            if i.key_pressed(egui::Key::Num1) { self.pane_visible[0] ^= true; }
+            if i.key_pressed(egui::Key::Num2) { self.pane_visible[1] ^= true; }
+            if i.key_pressed(egui::Key::Num3) { self.pane_visible[2] ^= true; }
+            if i.key_pressed(egui::Key::I) { toggle_source = true; }
             if i.key_pressed(egui::Key::C) {
                 if self.signal_gen.cycling {
                     self.signal_gen.stop_cycling();
                 } else {
                     self.signal_gen.start_cycling();
                 }
+                // Propagate to active TestToneSource if applicable
+                if let Some(tts) = self.source.as_any_mut().downcast_mut::<TestToneSource>() {
+                    if tts.signal_gen.cycling {
+                        tts.signal_gen.stop_cycling();
+                    } else {
+                        tts.signal_gen.start_cycling();
+                    }
+                }
             }
-            if i.key_pressed(egui::Key::E) {
-                self.envelope_visible ^= true;
-            }
-            if i.key_pressed(egui::Key::S) {
-                self.settings.visible ^= true;
-            }
-            if i.key_pressed(egui::Key::H) {
-                self.show_help ^= true;
-            }
-            // '?' — match via Event::Text for cross-layout reliability
+            if i.key_pressed(egui::Key::E) { self.envelope_visible ^= true; }
+            if i.key_pressed(egui::Key::S) { self.settings.visible ^= true; }
+            if i.key_pressed(egui::Key::H) { self.show_help ^= true; }
             for e in &i.events {
                 if let egui::Event::Text(s) = e {
-                    if s == "?" {
-                        self.show_help ^= true;
-                    }
+                    if s == "?" { self.show_help ^= true; }
                 }
             }
             if i.key_pressed(egui::Key::Escape) {
                 self.show_help = false;
                 self.settings.visible = false;
             }
-            if i.key_pressed(egui::Key::Q) {
-                quit = true;
-            }
+            if i.key_pressed(egui::Key::Q) { quit = true; }
         });
+
+        if toggle_source {
+            self.switch_source(self.source_mode.next());
+        }
         if quit {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    /// Reload the built-in audio buffer into the active AmDsbSource after the
+    /// AM audio toggle changes (Morse ↔ Voice). No-op if source is not AM DSB
+    /// or if Custom is selected (user WAV takes precedence).
+    fn reload_builtin_audio(&mut self) {
+        if self.source_mode != SourceMode::AmDsb {
+            return;
+        }
+        if self.settings.am_audio_is_custom() {
+            return;
+        }
+        let builtin = BuiltinAudio::ALL[self.settings.am_audio_idx()];
+        let (audio, rate) = load_builtin(builtin);
+        if let Some(am) = self.source.as_any_mut().downcast_mut::<AmDsbSource>() {
+            am.set_audio(audio, rate);
+        }
+    }
+
+    /// Attempt to load the WAV path from settings into the AM DSB source.
+    fn try_load_wav(&mut self) {
+        let path_str = self.settings.wav_path().to_owned();
+        if path_str.is_empty() {
+            self.settings.set_wav_status(false);
+            return;
+        }
+        match source::load_wav_file(std::path::Path::new(&path_str)) {
+            Ok((audio, rate)) => {
+                if self.source_mode == SourceMode::AmDsb {
+                    if let Some(am) = self.source.as_any_mut().downcast_mut::<AmDsbSource>() {
+                        am.set_audio(audio, rate);
+                    }
+                }
+                self.settings.set_wav_status(true);
+            }
+            Err(_) => {
+                self.settings.set_wav_status(false);
+            }
         }
     }
 
@@ -163,6 +290,32 @@ impl ViewApp {
         self.signal_gen.amp_max = self.settings.amp_max();
         self.signal_gen.ramp_secs = self.settings.ramp_secs();
         self.signal_gen.pause_secs = self.settings.pause_secs();
+
+        // Propagate test-tone settings into the active source if applicable
+        if let Some(tts) = self.source.as_any_mut().downcast_mut::<TestToneSource>() {
+            tts.signal_gen.freq_hz = self.settings.freq_hz();
+            tts.signal_gen.noise_amp = self.settings.noise_amp();
+            tts.signal_gen.amp_max = self.settings.amp_max();
+            tts.signal_gen.ramp_secs = self.settings.ramp_secs();
+            tts.signal_gen.pause_secs = self.settings.pause_secs();
+        }
+
+        // Propagate AM DSB settings into the active source if applicable
+        if let Some(am) = self.source.as_any_mut().downcast_mut::<AmDsbSource>() {
+            let carrier_changed = (am.carrier_hz - self.settings.am_carrier_hz()).abs() > 0.5;
+            let index_changed = (am.mod_index - self.settings.am_mod_index()).abs() > 0.001;
+            am.carrier_hz = self.settings.am_carrier_hz();
+            am.mod_index = self.settings.am_mod_index();
+            if carrier_changed || index_changed {
+                am.rebuild_mod();
+            }
+            let gap_changed = (am.loop_gap_secs - self.settings.am_loop_gap_secs()).abs() > 0.01;
+            if gap_changed {
+                am.loop_gap_secs = self.settings.am_loop_gap_secs();
+                am.update_loop_gap();
+            }
+            am.noise_amp = self.settings.am_noise_amp();
+        }
     }
 
     fn draw_hud(&self, ctx: &egui::Context) {
@@ -188,9 +341,12 @@ impl ViewApp {
                 }
                 ui.separator();
                 ui.label(
-                    egui::RichText::new("S settings  ? help  Q quit")
-                        .font(self.mono_font_id.clone())
-                        .color(egui::Color32::GRAY),
+                    egui::RichText::new(format!(
+                        "SRC: {}  I input  S settings  ? help  Q quit",
+                        self.source_mode.label()
+                    ))
+                    .font(self.mono_font_id.clone())
+                    .color(egui::Color32::GRAY),
                 );
             });
         });
@@ -296,7 +452,7 @@ impl ViewApp {
         let screen = ui.ctx().content_rect();
         let overlay_rect = egui::Rect::from_center_size(
             screen.center(),
-            egui::vec2(520.0, 286.0),
+            egui::vec2(540.0, 308.0),
         );
         let painter = ui.painter();
         painter.rect_filled(
@@ -314,7 +470,8 @@ impl ViewApp {
         let lines: &[(&str, bool)] = &[
             ("Keyboard shortcuts", true),
             ("1 / 2 / 3   toggle Spectrum / Persistence / Waterfall panes", false),
-            ("C           toggle signal amplitude cycling (ramp up/down)", false),
+            ("I           select next input source", false),
+            ("C           toggle signal amplitude cycling (Test Tone only)", false),
             ("E           toggle persistence envelope overlay", false),
             ("S           open/close settings popover", false),
             ("? or H      toggle this help overlay", false),
@@ -336,11 +493,13 @@ impl ViewApp {
     }
 }
 
+// ── eframe::App ───────────────────────────────────────────────────────────────
+
 impl eframe::App for ViewApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Feed new samples and process spectrum before drawing.
-        for _ in 0..SAMPLES_PER_FRAME {
-            let s = self.signal_gen.next_sample();
+        let samples = self.source.next_samples(SAMPLES_PER_FRAME);
+        for s in samples {
             self.ring_buf.push(s);
         }
         self.spectrum.process(&self.ring_buf);
@@ -361,7 +520,6 @@ impl eframe::App for ViewApp {
             self.settings.draw(ui, &mono);
         });
 
-        // Request continuous repaints for live animation.
         ctx.request_repaint();
     }
 }

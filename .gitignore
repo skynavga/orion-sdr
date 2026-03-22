@@ -11,6 +11,7 @@
 /target
 /tmp
 /.mypy_cache
+/crates/orion-sdr-view/gen_audio/target
 
 # python specific
 .pytest_cache/
