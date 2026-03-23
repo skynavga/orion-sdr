@@ -1,9 +1,8 @@
 ---
 name: release-prep
 description: Bump orion-sdr version, update CHANGELOG, run tests, commit, and create a signed tag — but do not push or publish.
-disable-model-invocation: true
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep
-argument-hint: <new-version>  (e.g. 0.0.15)
+argument-hint: <new-version>  (e.g. 0.0.17)
 ---
 
 Prepare an orion-sdr release for version $ARGUMENTS.
@@ -14,6 +13,7 @@ call it NEW_VERSION.
 
 ## Step 1 — Verify preconditions
 
+- Confirm current branch is not `main`. If it is, stop and tell the user.
 - Confirm the working tree is clean (`git status`). If there are uncommitted
   changes, stop and tell the user.
 - Confirm NEW_VERSION > OLD_VERSION (simple string check is fine).
@@ -78,12 +78,49 @@ git add Cargo.toml Cargo.lock pyproject.toml README.md \
 
 Commit with message: `Bump version to NEW_VERSION`
 
-Include the standard co-author trailer:
+Do not include a co-author trailer.
+
+## Step 6 — Merge to main via PR
+
+Push the current branch to origin if it has no upstream yet:
+
 ```
-Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+git push -u origin HEAD
 ```
 
-## Step 6 — Create signed tag
+Check whether a PR already exists for the current branch:
+
+```
+gh pr list --head CURRENT_BRANCH --state open
+```
+
+If no open PR exists, create one. Inspect `git log main..HEAD --oneline` to
+understand all changes in the branch, then write a concise BLUF-style summary
+(one short paragraph) covering all significant changes. Follow it with a
+"Release prep for NEW_VERSION." line. Example format:
+
+```
+<One short paragraph summarizing all significant changes in the branch.>
+
+Release prep for NEW_VERSION.
+```
+
+Merge the PR:
+
+```
+gh pr merge --merge --delete-branch
+```
+
+Switch to `main` and pull so the local branch is up to date:
+
+```
+git checkout main
+git pull
+```
+
+Confirm the current branch is now `main` before proceeding.
+
+## Step 7 — Create signed tag
 
 ```
 git tag -s vNEW_VERSION -m "Release NEW_VERSION"
@@ -96,7 +133,7 @@ git tag -v vNEW_VERSION
 
 Confirm the GPG signature is good before reporting success.
 
-## Step 7 — Report
+## Step 8 — Report
 
 Tell the user:
 - What version was bumped (OLD → NEW)
