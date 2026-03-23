@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.17] - 2026-03-23
+
+### Changed
+
+- Synchronized release-prep and release skills from orion-sdr-view: added branch
+  guard, PR-merge workflow, and removed co-author trailer from release commits
+- Updated GitHub Actions workflow to use Node.js 24
+
 ## [0.0.16] - 2026-03-15
 
 ### Added
