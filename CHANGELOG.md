@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.19] - 2026-03-24
+
+### Added
+
+- PSK31 Python and Rust API reference in `docs/api.md`; fixed all compact table
+  separator rows in the file to comply with MD060.
+
 ## [0.0.18] - 2026-03-23
 
 ### Added
