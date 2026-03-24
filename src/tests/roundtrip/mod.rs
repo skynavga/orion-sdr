@@ -118,6 +118,7 @@ pub mod ft8;
 pub mod ft8_snr;
 pub mod message;
 pub mod pm;
+pub mod psk31;
 pub mod qam;
 pub mod qpsk;
 pub mod ssb;

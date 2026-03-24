@@ -42,6 +42,7 @@ pub mod fm;
 pub mod ft4;
 pub mod ft8;
 pub mod pm;
+pub mod psk31;
 pub mod qam;
 pub mod qpsk;
 pub mod ssb;

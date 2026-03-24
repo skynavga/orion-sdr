@@ -31,6 +31,7 @@ src/
     ft4.rs            — Ft4Demod (Goertzel energy per tone per symbol)
     ft8.rs            — Ft8Demod (same, 8 tones)
     pm.rs             — PmQuadratureDemod
+    psk31.rs          — Bpsk31Demod, Bpsk31Decider, Qpsk31Demod, Qpsk31Decider
     qam.rs            — QamDemod, QamDecider<BITS>, Qam16/64/256Decider
     qpsk.rs           — QpskDemod, QpskDecider
     ssb.rs            — SsbProductDemod
@@ -42,20 +43,24 @@ src/
     ft4.rs            — Ft4Mod, Ft4Frame (CPFSK, 4-FSK, 12 kHz)
     ft8.rs            — Ft8Mod, Ft8Frame (CPFSK, 8-FSK, 12 kHz)
     pm.rs             — PmDirectPhaseMod
+    psk31.rs          — Bpsk31Mod, Qpsk31Mod (DBPSK/DQPSK, 31.25 baud, Hann pulse shaping)
     qam.rs            — QamMapper<BITS>, QamMod, Qam16/64/256Mapper
     qpsk.rs           — QpskMapper, QpskMod
     ssb.rs            — SsbPhasingMod
   codec/
     crc.rs            — ft8_crc14, ft8_add_crc, ft8_extract_crc (poly 0x2757)
-    ldpc.rs           — ldpc_encode, ldpc_decode_soft (LDPC(174,91), BP 20 iter)
-    gray.rs           — gray8_encode/decode (FT8), gray4_encode/decode (FT4)
-    ft8.rs            — Ft8Codec: encode, decode_hard, decode_soft, frame_to_llr_hard
     ft4.rs            — Ft4Codec: same interface; includes FT4 XOR scramble
+    ft8.rs            — Ft8Codec: encode, decode_hard, decode_soft, frame_to_llr_hard
+    gray.rs           — gray8_encode/decode (FT8), gray4_encode/decode (FT4)
+    ldpc.rs           — ldpc_encode, ldpc_decode_soft (LDPC(174,91), BP 20 iter)
+    psk31_conv.rs     — conv_encode, viterbi_decode (rate-1/2 K=5 convolutional codec)
+    varicode.rs       — varicode_encode/decode, VaricodeEncoder, VaricodeDecoder (IZ8BLY)
   sync/
-    waterfall.rs      — symbol-rate magnitude spectrogram (Goertzel per tone per symbol)
     costas.rs         — Costas difference-metric scorer and top-N candidate search
-    ft8_sync.rs       — ft8_sync() → Vec<Ft8SyncResult> (each has .llr: [f32; 174])
     ft4_sync.rs       — ft4_sync() → Vec<Ft4SyncResult>
+    ft8_sync.rs       — ft8_sync() → Vec<Ft8SyncResult> (each has .llr: [f32; 174])
+    psk31_sync.rs     — psk31_sync() → Vec<Psk31SyncResult> (energy persistence carrier search)
+    waterfall.rs      — symbol-rate magnitude spectrogram (Goertzel per tone per symbol)
   message/
     tables.rs         — Table enum, nchar/charn (6 char tables matching ft8_lib)
     callsign.rs       — pack_basecall, pack28/unpack28, pack58/unpack58,
@@ -66,8 +71,9 @@ src/
   python/
     mod.rs            — PyO3 module entry point, class registration
     demodulate.rs     — Python wrappers for demodulators
-    modulate.rs       — Python wrappers for modulators
     ft8.rs            — Python wrappers for FT8/FT4 waveform, codec, sync, and message
+    modulate.rs       — Python wrappers for modulators
+    psk31.rs          — Python wrappers for PSK31 mod/demod, Varicode, and psk31_sync
   tests/
     unit/             — per-module unit tests (one file per module)
     roundtrip/        — mod→demod→decode full-stack tests (one file per mode)
