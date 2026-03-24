@@ -31,10 +31,22 @@ multiply-heavy with no transcendentals.  QAM decider throughput decreases with
 order because the threshold scan is O(M) per axis (M = levels/axis = 2^(BITS/2)):
 QAM-256 (M=16) does 4× more comparisons per symbol than QAM-16 (M=4).
 
+### PSK31 (10-run mean ±stdev, 4096 sym × 256 sps × 20 passes)
+
+| Mode   | Msps    |
+|--------|---------|
+| BPSK31 | 817 ±7  |
+| QPSK31 | 810 ±2  |
+
+Both modes measure the full roundtrip: `modulate_bits` → `process` (demod) → `process`
+(decider / Viterbi flush).  BPSK31 and QPSK31 have nearly identical throughput because
+the bottleneck is the Hann-windowed pulse shaping in `write_symbol`, which is the same
+for both.  The Viterbi decoder in QPSK31 adds negligible cost at 4096 symbols.
+
 ### FT8/FT4 (frame-at-a-time, 20 passes; "Msps" = frame samples / wall time)
 
 | Stage | FT8 Msps | FT4 Msps |
-|---|---:|---:|
+| --- | ---: | ---: |
 | mod only | 266 | 222 |
 | demod only | 29 | 45 |
 | codec encode only | — | — |
@@ -54,7 +66,7 @@ compensating for the extra Costas blocks.
 SNR is relative to noise in a 2500 Hz reference bandwidth, matching the WSJT-X convention.
 
 | SNR (dB/2500 Hz) | FT8 success% | FT4 success% |
-|---:|---:|---:|
+| ---: | ---: | ---: |
 | −26 | 0% | 0% |
 | −22 | 0% | 0% |
 | −20 | 8% | 0% |
@@ -93,6 +105,12 @@ To run only FT8/FT4 throughput tests:
 
 ```bash
 cargo test --release --features throughput "performance::throughput::ft" -- --nocapture --test-threads=1
+```
+
+To run only PSK31 throughput tests:
+
+```bash
+cargo test --release --features throughput "performance::throughput::psk31" -- --nocapture --test-threads=1
 ```
 
 To run the SNR sensitivity sweep (prints full curve, always passes):

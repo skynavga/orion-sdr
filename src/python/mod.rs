@@ -3,6 +3,7 @@ use pyo3::prelude::*;
 mod demodulate;
 mod ft8;
 mod modulate;
+mod psk31;
 
 #[pymodule]
 fn orion_sdr(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -41,5 +42,16 @@ fn orion_sdr(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(ft8::ft8_pack_free_text, m)?)?;
     m.add_function(wrap_pyfunction!(ft8::ft8_pack_telemetry, m)?)?;
     m.add_function(wrap_pyfunction!(ft8::ft8_unpack, m)?)?;
+    // PSK31 codec
+    m.add_class::<psk31::PyVaricodeEncoder>()?;
+    m.add_class::<psk31::PyVaricodeDecoder>()?;
+    // PSK31 modulators
+    m.add_class::<psk31::PyBpsk31Mod>()?;
+    m.add_class::<psk31::PyQpsk31Mod>()?;
+    // PSK31 demodulators
+    m.add_class::<psk31::PyBpsk31Demod>()?;
+    m.add_class::<psk31::PyQpsk31Demod>()?;
+    // PSK31 sync
+    m.add_function(wrap_pyfunction!(psk31::psk31_sync, m)?)?;
     Ok(())
 }
