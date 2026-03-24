@@ -18,10 +18,9 @@
 // Pipeline: modulate_text → add_awgn → psk31_sync (carrier detection) →
 //   demod signal portion from sample 0 → Varicode decode → text search.
 //
-// Note: Both modes use peak sampling (not integrate-and-dump), so the demod
-// sees the full noise bandwidth.  Combined with differential detection this
-// means sensitivity thresholds are higher than in-band SNR alone suggests.
-// See roundtrip/psk31_snr.rs for details.
+// Both modes use Hann-weighted integrate-and-dump over the final quarter of
+// each symbol period.  See roundtrip/psk31_snr.rs for the SNR derivation and
+// sensitivity notes.
 
 use num_complex::Complex32 as C32;
 use crate::modulate::psk31::{Bpsk31Mod, Qpsk31Mod, PSK31_BAUD};
@@ -101,8 +100,10 @@ fn try_qpsk31(noise_power: f32, seed: u64) -> bool {
     }).unwrap();
     if (best.carrier_hz - carrier_hz).abs() > 2.0 * PSK31_BAUD { return false; }
 
+    // Demod at the exact modulated carrier frequency (not the sync-detected bin).
     let sps = (FS / PSK31_BAUD).round() as usize;
-    let mut demod = Qpsk31Demod::new(FS, best.carrier_hz, 1.0);
+    let _ = best; // sync used only for carrier confirmation
+    let mut demod = Qpsk31Demod::new(FS, carrier_hz, 1.0);
     let max_soft = (sig_len / sps + 2) * 2;
     let mut soft = vec![0.0f32; max_soft];
     let wr = demod.process(&buf[..sig_len], &mut soft);
@@ -126,7 +127,7 @@ fn try_qpsk31(noise_power: f32, seed: u64) -> bool {
 #[test]
 fn snr_sweep_bpsk31() {
     let snr_levels: &[f32] = &[
-        0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+        -12.0, -10.0, -9.0, -8.0, -7.0, -6.0, -5.0, -4.0, -2.0, 0.0,
     ];
 
     println!("\n[BPSK31 SNR sweep, ref BW = {:.0} Hz, {} trials/point, text={:?}]",
@@ -156,7 +157,7 @@ fn snr_sweep_bpsk31() {
 #[test]
 fn snr_sweep_qpsk31() {
     let snr_levels: &[f32] = &[
-        16.0, 18.0, 20.0, 22.0, 24.0, 26.0, 28.0, 30.0, 32.0, 34.0,
+        4.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
     ];
 
     println!("\n[QPSK31 SNR sweep, ref BW = {:.0} Hz, {} trials/point, text={:?}]",

@@ -2,8 +2,13 @@
 //
 // PSK31 demodulators: BPSK31 and QPSK31.
 //
-// Both modes use integrate-and-dump over `sps` samples to produce one symbol
-// estimate per symbol period, then apply differential detection:
+// Both modes use Hann-weighted integrate-and-dump over the final quarter of
+// each symbol period (n ∈ [3·sps/4, sps)) to form the symbol estimate, then
+// apply differential detection.  By the 75% point of the half-cosine crossfade,
+// hann[n] ≥ 0.85, so the phasor has settled close to p1 and the weighted
+// average is a reliable complex symbol estimate for both BPSK31 and QPSK31.
+//
+//   sym = (Σ hann[n] · s[n]) / Σ hann[n]   over n ∈ [3·sps/4, sps)
 //
 //   decision = sym · conj(prev_sym)
 //
@@ -14,7 +19,7 @@ use num_complex::Complex32 as C32;
 use crate::core::{Block, WorkReport};
 use crate::dsp::Rotator;
 use crate::codec::psk31_conv::viterbi_decode;
-use crate::modulate::psk31::psk31_sps;
+use crate::modulate::psk31::{psk31_sps, make_hann_demod};
 
 // ── BPSK31 demodulator ────────────────────────────────────────────────────────
 
@@ -26,8 +31,12 @@ use crate::modulate::psk31::psk31_sps;
 #[derive(Debug, Clone)]
 pub struct Bpsk31Demod {
     sps: usize,
+    sps_start: usize,   // 3*sps/4 — accumulation starts here
     gain: f32,
     count: usize,
+    acc: C32,
+    hann_sum: f32,      // Σ hann[n] for n ∈ [sps_start, sps)
+    hann: Vec<f32>,
     prev_sym: C32,
     rot: Option<Rotator>,
 }
@@ -45,10 +54,17 @@ impl Bpsk31Demod {
         let rot = if rf_hz != 0.0 { Some(Rotator::new(-rf_hz, fs)) } else { None };
         // Set count so the first dump occurs after `sps - offset` samples.
         let count = if offset % sps == 0 { 0 } else { sps - (offset % sps) };
+        let hann = make_hann_demod(sps);
+        let sps_start = 3 * sps / 4;
+        let hann_sum: f32 = hann[sps_start..].iter().sum();
         Self {
             sps,
+            sps_start,
             gain,
             count,
+            acc: C32::new(0.0, 0.0),
+            hann_sum,
+            hann,
             prev_sym: C32::new(1.0, 0.0),
             rot,
         }
@@ -58,6 +74,7 @@ impl Bpsk31Demod {
 
     pub fn reset(&mut self) {
         self.count = 0;
+        self.acc = C32::new(0.0, 0.0);
         self.prev_sym = C32::new(1.0, 0.0);
         if let Some(r) = &mut self.rot { r.reset_phase(); }
     }
@@ -80,19 +97,25 @@ impl Block for Bpsk31Demod {
                 let im = s.im * r.re + s.re * r.im;
                 s = C32::new(re, im);
             }
+            // Accumulate only the settled final quarter of the symbol period.
+            if self.count >= self.sps_start {
+                let w = self.hann[self.count];
+                self.acc.re += w * s.re;
+                self.acc.im += w * s.im;
+            }
             self.count += 1;
 
-            // Sample at the last sample of each symbol period.
-            // With the half-cosine crossfade, the last sample of symbol k
-            // (at index sps-1 within the period) equals gain * p1 (the current phasor).
+            // Dump at the end of each symbol period.
             if self.count == self.sps {
-                let sym = C32::new(s.re * self.gain, s.im * self.gain);
+                let scale = self.gain / self.hann_sum;
+                let sym = C32::new(self.acc.re * scale, self.acc.im * scale);
+                self.acc = C32::new(0.0, 0.0);
+                self.count = 0;
                 // Differential detection: sym * conj(prev_sym).
                 let d_re = sym.re * self.prev_sym.re + sym.im * self.prev_sym.im;
                 output[out_pos] = d_re;
                 out_pos += 1;
                 self.prev_sym = sym;
-                self.count = 0;
             }
 
             in_pos += 1;
@@ -148,8 +171,12 @@ impl Block for Bpsk31Decider {
 #[derive(Debug, Clone)]
 pub struct Qpsk31Demod {
     sps: usize,
+    sps_start: usize,
     gain: f32,
     count: usize,
+    acc: C32,
+    hann_sum: f32,
+    hann: Vec<f32>,
     prev_sym: C32,
     rot: Option<Rotator>,
 }
@@ -158,10 +185,17 @@ impl Qpsk31Demod {
     pub fn new(fs: f32, rf_hz: f32, gain: f32) -> Self {
         let sps = psk31_sps(fs);
         let rot = if rf_hz != 0.0 { Some(Rotator::new(-rf_hz, fs)) } else { None };
+        let hann = make_hann_demod(sps);
+        let sps_start = 3 * sps / 4;
+        let hann_sum: f32 = hann[sps_start..].iter().sum();
         Self {
             sps,
+            sps_start,
             gain,
             count: 0,
+            acc: C32::new(0.0, 0.0),
+            hann_sum,
+            hann,
             prev_sym: C32::new(1.0, 0.0),
             rot,
         }
@@ -171,6 +205,7 @@ impl Qpsk31Demod {
 
     pub fn reset(&mut self) {
         self.count = 0;
+        self.acc = C32::new(0.0, 0.0);
         self.prev_sym = C32::new(1.0, 0.0);
         if let Some(r) = &mut self.rot { r.reset_phase(); }
     }
@@ -193,12 +228,21 @@ impl Block for Qpsk31Demod {
                 let im = s.im * r.re + s.re * r.im;
                 s = C32::new(re, im);
             }
+            // Accumulate only the settled final quarter of the symbol period.
+            if self.count >= self.sps_start {
+                let w = self.hann[self.count];
+                self.acc.re += w * s.re;
+                self.acc.im += w * s.im;
+            }
             self.count += 1;
             in_pos += 1;
 
-            // Sample at the last sample of each symbol period.
+            // Dump at the end of each symbol period.
             if self.count == self.sps {
-                let sym = C32::new(s.re * self.gain, s.im * self.gain);
+                let scale = self.gain / self.hann_sum;
+                let sym = C32::new(self.acc.re * scale, self.acc.im * scale);
+                self.acc = C32::new(0.0, 0.0);
+                self.count = 0;
                 // Differential: d = sym * conj(prev_sym)
                 let d_re = sym.re * self.prev_sym.re + sym.im * self.prev_sym.im;
                 let d_im = sym.im * self.prev_sym.re - sym.re * self.prev_sym.im;
@@ -206,7 +250,6 @@ impl Block for Qpsk31Demod {
                 output[out_pos+1] = d_im;
                 out_pos += 2;
                 self.prev_sym = sym;
-                self.count = 0;
             }
         }
 
