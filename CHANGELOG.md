@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.22] - 2026-03-24
+
+### Changed
+
+- Replaced Hann-weighted integrate-and-dump (final quarter) in `Bpsk31Demod` and
+  `Qpsk31Demod` with decision-feedback matched filtering over the full 256-sample
+  symbol period: `corrected[n] = s[n] − prev_sym·(1−h[n])`, `sym = Σ h[n]·corrected[n] / Σ h[n]²`
+- Improved sensitivity by ~1–2 dB: BPSK31 100% decode at −5 dB, QPSK31 at +13 dB SNR/2500 Hz
+- Updated CI regression thresholds and `docs/performance.md` SNR table accordingly
+
+### Added
+
+- `HalfCosineMf` in `src/dsp/fir.rs`: complex-split FIR with unit-energy half-cosine taps,
+  exported as `orion_sdr::dsp::HalfCosineMf`
+
 ## [0.0.21] - 2026-03-24
 
 ### Changed

@@ -11,7 +11,7 @@ pub mod decim;
 pub use decim::FirDecimator;
 
 pub mod fir;
-pub use fir::FirLowpass;
+pub use fir::{FirLowpass, HalfCosineMf};
 
 pub mod iir;
 pub use iir::{Biquad, LpCascade, LpDcCascade};

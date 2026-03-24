@@ -3,7 +3,7 @@
 Measurements taken on Apple M2 Pro, release build (`opt-level=3`, `lto=fat`,
 `codegen-units=1`), no SIMD.  Results are ordered by throughput (descending).
 
-## v0.0.21 Results
+## v0.0.22 Results
 
 ### Analog modes (9-run mean ±stdev, 65536 samples × 30 passes)
 
@@ -52,34 +52,36 @@ Pipeline: `psk31_sync` (carrier detection) → `Bpsk31Demod` or `Qpsk31Demod` (w
 
 | SNR (dB/2500 Hz) | BPSK31 success% | QPSK31 success% |
 | ---: | ---: | ---: |
-| −12 | 0% | — |
-| −10 | 0% | — |
-| −9 | 12% | — |
-| −8 | 20% | — |
-| **−7** | 42% | — |
-| −6 | 66% | — |
-| −5 | 84% | — |
-| **−4** | **100%** | — |
-| 4 | 100% | 4% |
-| 6 | 100% | 4% |
-| 7 | 100% | 16% |
-| 8 | 100% | 18% |
-| **9** | 100% | 38% |
-| 10 | 100% | 72% |
-| 12 | 100% | 94% |
-| **14** | 100% | **100%** |
+| −12 | 4% | — |
+| −10 | 18% | — |
+| **−8** | 60% | — |
+| −7 | 84% | — |
+| −6 | 98% | — |
+| **−5** | **100%** | — |
+| 4 | 100% | 0% |
+| 6 | 100% | 26% |
+| **7** | 100% | 52% |
+| 8 | 100% | 80% |
+| 9 | 100% | 88% |
+| 10 | 100% | 92% |
+| 11 | 100% | 96% |
+| 12 | 100% | 96% |
+| **13** | 100% | **100%** |
+| 14 | 100% | 100% |
 
-50% decode points: BPSK31 ≈ −7 dB, QPSK31 ≈ +9 dB.
-100% decode points: BPSK31 = −4 dB, QPSK31 = +14 dB (used as CI regression thresholds).
+50% decode points: BPSK31 ≈ −8 dB, QPSK31 ≈ +7 dB.
+100% decode points: BPSK31 = −5 dB, QPSK31 = +13 dB (used as CI regression thresholds).
 
-The demodulator uses Hann-weighted integrate-and-dump over the final quarter of each
-symbol period (n ∈ [3·sps/4, sps), 64 samples at 8 kHz).  Relative to the previous
-peak-sampling design, this yields approximately 18 dB improvement for both modes.
-QPSK31 now outperforms BPSK31 as the G3PLX specification predicts (its rate-1/2
+The demodulator uses decision-feedback matched filtering over the full sps=256 symbol
+period.  For each sample n in the symbol, the known previous-phasor contribution is
+subtracted before accumulation (`corrected[n] = s[n] − prev_sym·(1−h[n])`), yielding
+a clean estimate of the current phasor.  Relative to the previous Hann-weighted I&D
+over the final quarter, this yields approximately 1–2 dB additional improvement.
+QPSK31 outperforms BPSK31 as the G3PLX specification predicts (its rate-1/2
 convolutional code recovers the 3 dB DQPSK penalty with coding gain to spare).
 The remaining gap to the published G3PLX reference (BPSK31 −10 dB, QPSK31 ~−11 dB)
-is due to the integration window covering only 25% of the symbol period; a full
-matched filter (Phase 2) would close the remaining ~6 dB.
+is primarily due to frequency offset sensitivity and propagation effects not modelled
+in this AWGN-only test.
 
 ### FT8/FT4 (frame-at-a-time, 20 passes; "Msps" = frame samples / wall time)
 

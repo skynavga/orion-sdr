@@ -31,16 +31,18 @@
 //
 // Note on SNR thresholds
 // ──────────────────────
-// Both modes use Hann-weighted integrate-and-dump over the final quarter of each
-// symbol period (n ∈ [3·sps/4, sps)).  This narrows the effective noise bandwidth
-// from fs/2 = 4 kHz (peak sampling) to approximately the integration window
-// bandwidth, yielding ~18 dB sensitivity improvement over the previous
-// peak-sampling design.  QPSK31 now outperforms BPSK31 as theory predicts.
+// Both modes use decision-feedback matched filtering over the full symbol
+// period:
+//   corrected[n] = s[n] − prev_sym·(1−h[n])
+//   sym = Σ h[n]·corrected[n] / Σ h[n]²
+// This integrates all sps=256 samples per symbol, maximising SNR while
+// cleanly cancelling the previous-phasor contribution from the crossfade.
+// QPSK31 now outperforms BPSK31 as theory predicts.
 //
 // Measured sensitivity (50-trial Monte Carlo, see performance/snr/psk31.rs):
 // ──────────────────────────────────────────────────────────────────────────
-//   BPSK31: 50% decode at ≈−7 dB, 100% at −4 dB SNR/2500 Hz
-//   QPSK31: 50% decode at ≈+9 dB,  100% at +14 dB SNR/2500 Hz
+//   BPSK31: 50% decode at ≈−8 dB, 100% at −5 dB SNR/2500 Hz
+//   QPSK31: 50% decode at ≈+7 dB,  100% at +13 dB SNR/2500 Hz
 //
 // CI thresholds are anchored at the observed 100% success level so they
 // pass reliably on every platform without being noise-sensitive.
@@ -158,10 +160,10 @@ fn try_qpsk31(text: &[u8], snr_db: f32, seed: u64) -> bool {
 
 // ── BPSK31 CI regression ──────────────────────────────────────────────────────
 
-/// BPSK31 must decode at −4 dB SNR/2500 Hz (measured 100% success level).
+/// BPSK31 must decode at −5 dB SNR/2500 Hz (measured 100% success level).
 #[test]
-fn bpsk31_decodes_at_minus_4db_snr_2500hz() {
-    let snr_db = -4.0_f32;
+fn bpsk31_decodes_at_minus_5db_snr_2500hz() {
+    let snr_db = -5.0_f32;
     let text = b"CQ TEST";
     let noise_power = snr_to_noise_power(snr_db);
     assert!(
@@ -173,10 +175,10 @@ fn bpsk31_decodes_at_minus_4db_snr_2500hz() {
 
 // ── QPSK31 CI regression ──────────────────────────────────────────────────────
 
-/// QPSK31 must decode at +14 dB SNR/2500 Hz (measured 100% success level).
+/// QPSK31 must decode at +13 dB SNR/2500 Hz (measured 100% success level).
 #[test]
-fn qpsk31_decodes_at_plus_14db_snr_2500hz() {
-    let snr_db = 14.0_f32;
+fn qpsk31_decodes_at_plus_13db_snr_2500hz() {
+    let snr_db = 13.0_f32;
     let text = b"CQ TEST";
     let noise_power = snr_to_noise_power(snr_db);
     assert!(
