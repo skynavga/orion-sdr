@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.18] - 2026-03-23
+
+### Added
+
+- PSK31 full stack (BPSK31 + QPSK31) at 31.25 baud:
+  - Varicode codec: IZ8BLY/G3PLX canonical table, `VaricodeEncoder`, `VaricodeDecoder`
+    (`src/codec/varicode.rs`)
+  - Convolutional codec: rate-1/2 K=5 (G0=25, G1=23) encoder and soft Viterbi decoder
+    (`src/codec/psk31_conv.rs`)
+  - BPSK31/QPSK31 modulators with Hann-windowed half-cosine crossfade pulse shaping
+    (`src/modulate/psk31.rs`)
+  - BPSK31/QPSK31 demodulators using peak-sampling differential detection
+    (`src/demodulate/psk31.rs`)
+  - Waterfall-based energy-persistence carrier sync (`psk31_sync`,
+    `src/sync/psk31_sync.rs`)
+  - PyO3 bindings: `VaricodeEncoder`, `VaricodeDecoder`, `Bpsk31Mod`, `Bpsk31Demod`,
+    `Qpsk31Mod`, `Qpsk31Demod`, `psk31_sync` (`src/python/psk31.rs`)
+  - 122 Rust tests (unit, roundtrip, throughput) and 20 new Python tests
+
 ## [0.0.17] - 2026-03-23
 
 ### Changed
