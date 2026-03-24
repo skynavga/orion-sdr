@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.20] - 2026-03-24
+
+### Added
+
+- PSK31 SNR sensitivity characterisation: 50-trial Monte Carlo sweep for BPSK31
+  and QPSK31, feature-gated (`src/tests/performance/snr/psk31.rs`)
+- PSK31 SNR CI regression tests: fixed thresholds at 100% success level (BPSK31
+  +14 dB, QPSK31 +32 dB, SNR/2500 Hz) (`src/tests/roundtrip/psk31_snr.rs`)
+- SNR sensitivity table and explanatory notes added to `docs/performance.md`
+
 ## [0.0.19] - 2026-03-24
 
 ### Added

@@ -3,7 +3,7 @@
 Measurements taken on Apple M2 Pro, release build (`opt-level=3`, `lto=fat`,
 `codegen-units=1`), no SIMD.  Results are ordered by throughput (descending).
 
-## v0.0.19 Results
+## v0.0.20 Results
 
 ### Analog modes (9-run mean ±stdev, 65536 samples × 30 passes)
 
@@ -42,6 +42,36 @@ Both modes measure the full roundtrip: `modulate_bits` → `process` (demod) →
 (decider / Viterbi flush).  BPSK31 and QPSK31 have nearly identical throughput because
 the bottleneck is the Hann-windowed pulse shaping in `write_symbol`, which is the same
 for both.  The Viterbi decoder in QPSK31 adds negligible cost at 4096 symbols.
+
+### PSK31 SNR sensitivity (50 trials/point, release build)
+
+SNR is relative to noise in a 2500 Hz reference bandwidth (same convention as FT8/FT4).
+Both modes modulate a 7-character text string with preamble=64 and postamble=32 bits.
+Pipeline: `psk31_sync` (carrier detection) → `Bpsk31Demod` or `Qpsk31Demod` (whole signal)
+→ Varicode decode → text search.
+
+| SNR (dB/2500 Hz) | BPSK31 success% | QPSK31 success% |
+| ---: | ---: | ---: |
+| 0 | 0% | 0% |
+| 10 | 32% | 0% |
+| 11 | 52% | 0% |
+| 12 | 78% | 0% |
+| 13 | 96% | 0% |
+| **14** | **100%** | 0% |
+| 24 | 100% | 12% |
+| 26 | 100% | 52% |
+| 28 | 100% | 90% |
+| 30 | 100% | 94% |
+| **32** | **100%** | **100%** |
+
+50% decode points: BPSK31 ≈ +11 dB, QPSK31 ≈ +26 dB.
+100% decode points: BPSK31 = +14 dB, QPSK31 = +32 dB (used as CI regression thresholds).
+
+The high SNR requirement relative to the narrow PSK31 signal bandwidth (31.25 Hz) is expected:
+the demodulator uses peak sampling (one sample per symbol, no narrowband filtering), so it
+sees the full noise bandwidth (fs/2 = 4 kHz) at each decision point.  QPSK31's rate-1/2
+convolutional code provides some noise immunity, but the per-symbol SNR after differential
+detection is limited by peak-sampling and the full-bandwidth noise floor.
 
 ### FT8/FT4 (frame-at-a-time, 20 passes; "Msps" = frame samples / wall time)
 
@@ -123,6 +153,7 @@ To run the CI SNR regression tests (fixed thresholds, included in `cargo test --
 
 ```bash
 cargo test --lib "roundtrip::ft8_snr"
+cargo test --lib "roundtrip::psk31_snr"
 ```
 
 Always use `--release` for throughput benchmarks — debug builds are ~10× slower and
