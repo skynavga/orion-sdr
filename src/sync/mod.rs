@@ -9,12 +9,14 @@
 //   - `Waterfall` / `compute_waterfall` — low-level spectrogram (exposed for testing)
 //   - `Candidate` — sync candidate (time_sym, freq_bin, score)
 
-pub mod waterfall;
 pub mod costas;
-pub mod ft8_sync;
 pub mod ft4_sync;
+pub mod ft8_sync;
+pub mod psk31_sync;
+pub mod waterfall;
 
-pub use waterfall::{Waterfall, compute_waterfall};
 pub use costas::Candidate;
-pub use ft8_sync::{ft8_sync, Ft8SyncResult};
 pub use ft4_sync::{ft4_sync, Ft4SyncResult};
+pub use ft8_sync::{ft8_sync, Ft8SyncResult};
+pub use psk31_sync::{psk31_sync, Psk31SyncResult};
+pub use waterfall::{Waterfall, compute_waterfall};

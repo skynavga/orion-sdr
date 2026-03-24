@@ -1,4 +1,4 @@
-# Features (as of v0.0.17)
+# Features (as of v0.0.18)
 
 - Core traits and runner
 - Basic, IQ→IQ, IQ→Audio, Audio→IQ graph schedulers
@@ -10,5 +10,10 @@
   - Channel codec: CRC-14 + LDPC(174,91) + Gray code (`Ft8Codec`, `Ft4Codec`)
   - Frame sync: Costas-array waterfall search, soft-LLR extraction (`ft8_sync`, `ft4_sync`)
   - Message packing: standard QSO, free text, telemetry, nonstandard callsigns (`pack77`/`unpack77`)
+- PSK31 full stack (BPSK31 + QPSK31):
+  - Varicode codec: IZ8BLY/G3PLX table, `VaricodeEncoder`, `VaricodeDecoder`
+  - Convolutional codec: rate-1/2 K=5 encoder + soft Viterbi decoder (`conv_encode`, `viterbi_decode`)
+  - Waveform mod/demod: Hann-windowed DBPSK/DQPSK at 31.25 baud (`Bpsk31Mod`, `Bpsk31Demod`, `Qpsk31Mod`, `Qpsk31Demod`)
+  - Carrier sync: waterfall energy-persistence search (`psk31_sync`)
 - Unit, roundtrip, and throughput tests
-- Python bindings (28 classes/functions total, including full FT8/FT4 stack)
+- Python bindings (35 classes/functions total, including full PSK31 stack)

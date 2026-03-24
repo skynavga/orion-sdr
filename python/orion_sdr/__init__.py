@@ -27,6 +27,13 @@ from orion_sdr.orion_sdr import (
     ft8_pack_free_text,
     ft8_pack_telemetry,
     ft8_unpack,
+    VaricodeEncoder,
+    VaricodeDecoder,
+    Bpsk31Mod,
+    Bpsk31Demod,
+    Qpsk31Mod,
+    Qpsk31Demod,
+    psk31_sync,
 )
 
 __all__ = [
@@ -58,4 +65,11 @@ __all__ = [
     "ft8_pack_free_text",
     "ft8_pack_telemetry",
     "ft8_unpack",
+    "VaricodeEncoder",
+    "VaricodeDecoder",
+    "Bpsk31Mod",
+    "Bpsk31Demod",
+    "Qpsk31Mod",
+    "Qpsk31Demod",
+    "psk31_sync",
 ]
