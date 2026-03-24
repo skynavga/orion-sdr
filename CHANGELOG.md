@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.21] - 2026-03-24
+
+### Changed
+
+- Replaced peak sampling in `Bpsk31Demod` and `Qpsk31Demod` with Hann-weighted
+  integrate-and-dump over the final quarter of each symbol period (`n ∈
+  [3·sps/4, sps)`), improving sensitivity by ~18 dB for both modes
+- Updated CI regression thresholds: BPSK31 −4 dB, QPSK31 +14 dB SNR/2500 Hz
+  (previously +14 dB and +32 dB); QPSK31 now correctly outperforms BPSK31
+- Updated PSK31 SNR sweep ranges and `docs/performance.md` sensitivity table
+  to reflect the improved demodulator
+
 ## [0.0.20] - 2026-03-24
 
 ### Added
