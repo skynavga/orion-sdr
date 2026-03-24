@@ -18,8 +18,8 @@
 // Pipeline: modulate_text → add_awgn → psk31_sync (carrier detection) →
 //   demod signal portion from sample 0 → Varicode decode → text search.
 //
-// Both modes use Hann-weighted integrate-and-dump over the final quarter of
-// each symbol period.  See roundtrip/psk31_snr.rs for the SNR derivation and
+// Both modes use decision-feedback matched filtering over the full symbol
+// period.  See roundtrip/psk31_snr.rs for the SNR derivation and
 // sensitivity notes.
 
 use num_complex::Complex32 as C32;

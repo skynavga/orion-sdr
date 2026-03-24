@@ -1,6 +1,8 @@
 #[cfg(feature = "simd")]
 use core::simd::{Simd, SimdFloat};
 
+use num_complex::Complex32 as C32;
+
 #[derive(Debug, Clone)]
 pub struct FirLowpass {
     taps: Vec<f32>,
@@ -87,4 +89,79 @@ impl FirLowpass {
         }
     }
 
+}
+
+// ── Half-cosine matched filter ────────────────────────────────────────────────
+
+/// Complex-input FIR matched filter for the PSK31 half-cosine pulse shape.
+///
+/// Taps are `hann[n] / sqrt(Σhann[n]²)` (unit-energy normalised), so the
+/// filter's peak output equals the signal amplitude when the input is an
+/// ideal noiseless pulse.
+///
+/// Design: feed every down-mixed complex sample into `push`; call `out()`
+/// at the end of each symbol period (every `sps` samples) to get the
+/// matched-filter symbol estimate.  The filter has `sps` taps so its group
+/// delay is `(sps−1)/2` samples.  Since we call `out()` at sample `sps−1`
+/// (the last sample of the period), the output corresponds to the aligned
+/// peak of the cross-correlation — no additional latency management needed.
+///
+/// I and Q channels share the same real taps with a split delay line,
+/// matching the pattern used by `FirDecimator`.
+#[derive(Debug, Clone)]
+pub struct HalfCosineMf {
+    taps:     Vec<f32>,
+    delay_re: Vec<f32>,
+    delay_im: Vec<f32>,
+    idx:      usize,
+}
+
+impl HalfCosineMf {
+    /// Construct a half-cosine MF for a given number of samples per symbol.
+    pub fn new(sps: usize) -> Self {
+        // Half-cosine pulse: hann[n] = 0.5 − 0.5·cos(π·n / (sps−1))
+        let hann: Vec<f32> = if sps <= 1 {
+            vec![1.0f32; sps.max(1)]
+        } else {
+            let denom = (sps - 1) as f32;
+            (0..sps)
+                .map(|i| 0.5 - 0.5 * (core::f32::consts::PI * i as f32 / denom).cos())
+                .collect()
+        };
+        // Normalise to unit energy.
+        let energy: f32 = hann.iter().map(|&h| h * h).sum();
+        let scale = if energy > 0.0 { energy.sqrt().recip() } else { 1.0 };
+        let taps: Vec<f32> = hann.iter().map(|&h| h * scale).collect();
+        let len = taps.len();
+        Self {
+            taps,
+            delay_re: vec![0.0f32; len],
+            delay_im: vec![0.0f32; len],
+            idx: 0,
+        }
+    }
+
+    /// Push one complex sample and return the current filter output.
+    #[inline(always)]
+    pub fn push(&mut self, s: C32) -> C32 {
+        let len = self.taps.len();
+        self.delay_re[self.idx] = s.re;
+        self.delay_im[self.idx] = s.im;
+        let mut re = 0.0f32;
+        let mut im = 0.0f32;
+        for t_idx in 0..len {
+            let d_idx = (self.idx + len - t_idx) % len;
+            let w = self.taps[t_idx];
+            re += self.delay_re[d_idx] * w;
+            im += self.delay_im[d_idx] * w;
+        }
+        self.idx = (self.idx + 1) % len;
+        C32::new(re, im)
+    }
+
+    pub fn reset(&mut self) {
+        self.delay_re.fill(0.0);
+        self.delay_im.fill(0.0);
+        self.idx = 0;
+    }
 }

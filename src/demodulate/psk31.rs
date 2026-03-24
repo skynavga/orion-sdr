@@ -2,13 +2,19 @@
 //
 // PSK31 demodulators: BPSK31 and QPSK31.
 //
-// Both modes use Hann-weighted integrate-and-dump over the final quarter of
-// each symbol period (n ∈ [3·sps/4, sps)) to form the symbol estimate, then
-// apply differential detection.  By the 75% point of the half-cosine crossfade,
-// hann[n] ≥ 0.85, so the phasor has settled close to p1 and the weighted
-// average is a reliable complex symbol estimate for both BPSK31 and QPSK31.
+// Both modes use decision-feedback matched filtering over the full symbol
+// period.  The half-cosine crossfade mixes the previous and current phasors:
 //
-//   sym = (Σ hann[n] · s[n]) / Σ hann[n]   over n ∈ [3·sps/4, sps)
+//   s[n] = p0·(1−h[n]) + p1·h[n],   h[n] = 0.5 − 0.5·cos(π·n/(sps−1))
+//
+// By subtracting the known contribution of the previous symbol estimate
+// (`prev_sym`) and weighting by h[n], we recover a clean estimate of p1:
+//
+//   corrected[n] = s[n] − prev_sym·(1−h[n])
+//   sym = Σ h[n]·corrected[n] / Σ h[n]²
+//       = p1   (exactly, in the noiseless case)
+//
+// This integrates all sps samples, maximising SNR.  Differential detection:
 //
 //   decision = sym · conj(prev_sym)
 //
@@ -19,31 +25,39 @@ use num_complex::Complex32 as C32;
 use crate::core::{Block, WorkReport};
 use crate::dsp::Rotator;
 use crate::codec::psk31_conv::viterbi_decode;
-use crate::modulate::psk31::{psk31_sps, make_hann_demod};
+use crate::modulate::psk31::psk31_sps;
+
+fn make_hann(sps: usize) -> Vec<f32> {
+    if sps == 0 { return Vec::new(); }
+    if sps == 1 { return vec![1.0]; }
+    let denom = (sps - 1) as f32;
+    (0..sps)
+        .map(|i| 0.5 - 0.5 * (std::f32::consts::PI * i as f32 / denom).cos())
+        .collect()
+}
 
 // ── BPSK31 demodulator ────────────────────────────────────────────────────────
 
-/// BPSK31 integrate-and-dump + differential demodulator.
+/// BPSK31 decision-feedback matched-filter demodulator.
 ///
 /// Input: `C32` IQ samples.
 /// Output: one `f32` per symbol = `Re(sym · conj(prev_sym))`.
 ///   Positive → bit 1 (no phase change), negative → bit 0 (phase flip).
 #[derive(Debug, Clone)]
 pub struct Bpsk31Demod {
-    sps: usize,
-    sps_start: usize,   // 3*sps/4 — accumulation starts here
-    gain: f32,
-    count: usize,
-    acc: C32,
-    hann_sum: f32,      // Σ hann[n] for n ∈ [sps_start, sps)
-    hann: Vec<f32>,
-    prev_sym: C32,
-    rot: Option<Rotator>,
+    sps:         usize,
+    gain:        f32,
+    count:       usize,
+    acc:         C32,
+    hann:        Vec<f32>,
+    hann_sq_sum: f32,     // Σ h[n]²
+    prev_sym:    C32,
+    rot:         Option<Rotator>,
 }
 
 impl Bpsk31Demod {
     /// Create a new BPSK31 demodulator.
-    /// `rf_hz` = 0.0 → baseband input; non-zero → down-mix by `rf_hz` before integration.
+    /// `rf_hz` = 0.0 → baseband input; non-zero → down-mix by `rf_hz`.
     pub fn new(fs: f32, rf_hz: f32, gain: f32) -> Self {
         Self::new_with_offset(fs, rf_hz, gain, 0)
     }
@@ -52,19 +66,16 @@ impl Bpsk31Demod {
     pub fn new_with_offset(fs: f32, rf_hz: f32, gain: f32, offset: usize) -> Self {
         let sps = psk31_sps(fs);
         let rot = if rf_hz != 0.0 { Some(Rotator::new(-rf_hz, fs)) } else { None };
-        // Set count so the first dump occurs after `sps - offset` samples.
         let count = if offset % sps == 0 { 0 } else { sps - (offset % sps) };
-        let hann = make_hann_demod(sps);
-        let sps_start = 3 * sps / 4;
-        let hann_sum: f32 = hann[sps_start..].iter().sum();
+        let hann = make_hann(sps);
+        let hann_sq_sum: f32 = hann.iter().map(|&h| h * h).sum();
         Self {
             sps,
-            sps_start,
             gain,
             count,
             acc: C32::new(0.0, 0.0),
-            hann_sum,
             hann,
+            hann_sq_sum,
             prev_sym: C32::new(1.0, 0.0),
             rot,
         }
@@ -73,8 +84,8 @@ impl Bpsk31Demod {
     pub fn set_gain(&mut self, g: f32) { self.gain = g; }
 
     pub fn reset(&mut self) {
-        self.count = 0;
-        self.acc = C32::new(0.0, 0.0);
+        self.count    = 0;
+        self.acc      = C32::new(0.0, 0.0);
         self.prev_sym = C32::new(1.0, 0.0);
         if let Some(r) = &mut self.rot { r.reset_phase(); }
     }
@@ -85,7 +96,7 @@ impl Block for Bpsk31Demod {
     type Out = f32;
 
     fn process(&mut self, input: &[C32], output: &mut [f32]) -> WorkReport {
-        let mut in_pos = 0;
+        let mut in_pos  = 0;
         let mut out_pos = 0;
 
         while in_pos < input.len() && out_pos < output.len() {
@@ -97,21 +108,23 @@ impl Block for Bpsk31Demod {
                 let im = s.im * r.re + s.re * r.im;
                 s = C32::new(re, im);
             }
-            // Accumulate only the settled final quarter of the symbol period.
-            if self.count >= self.sps_start {
-                let w = self.hann[self.count];
-                self.acc.re += w * s.re;
-                self.acc.im += w * s.im;
-            }
+            // Decision-feedback cancellation: remove prev_sym·(1−h[n]) contribution.
+            let h = self.hann[self.count];
+            let one_minus_h = 1.0 - h;
+            let corr_re = s.re - self.prev_sym.re * one_minus_h;
+            let corr_im = s.im - self.prev_sym.im * one_minus_h;
+            // Accumulate h[n]·corrected[n].
+            self.acc.re += h * corr_re;
+            self.acc.im += h * corr_im;
             self.count += 1;
 
             // Dump at the end of each symbol period.
             if self.count == self.sps {
-                let scale = self.gain / self.hann_sum;
+                let scale = self.gain / self.hann_sq_sum;
                 let sym = C32::new(self.acc.re * scale, self.acc.im * scale);
-                self.acc = C32::new(0.0, 0.0);
+                self.acc  = C32::new(0.0, 0.0);
                 self.count = 0;
-                // Differential detection: sym * conj(prev_sym).
+                // Differential detection: Re(sym · conj(prev_sym)).
                 let d_re = sym.re * self.prev_sym.re + sym.im * self.prev_sym.im;
                 output[out_pos] = d_re;
                 out_pos += 1;
@@ -163,39 +176,36 @@ impl Block for Bpsk31Decider {
 
 // ── QPSK31 demodulator ────────────────────────────────────────────────────────
 
-/// QPSK31 integrate-and-dump + differential demodulator.
+/// QPSK31 decision-feedback matched-filter demodulator.
 ///
 /// Input: `C32` IQ samples.
 /// Output: two `f32` per symbol = `[Re(d), Im(d)]` where `d = sym·conj(prev)`.
 /// These are the soft dibit values for Viterbi decoding.
 #[derive(Debug, Clone)]
 pub struct Qpsk31Demod {
-    sps: usize,
-    sps_start: usize,
-    gain: f32,
-    count: usize,
-    acc: C32,
-    hann_sum: f32,
-    hann: Vec<f32>,
-    prev_sym: C32,
-    rot: Option<Rotator>,
+    sps:         usize,
+    gain:        f32,
+    count:       usize,
+    acc:         C32,
+    hann:        Vec<f32>,
+    hann_sq_sum: f32,
+    prev_sym:    C32,
+    rot:         Option<Rotator>,
 }
 
 impl Qpsk31Demod {
     pub fn new(fs: f32, rf_hz: f32, gain: f32) -> Self {
         let sps = psk31_sps(fs);
         let rot = if rf_hz != 0.0 { Some(Rotator::new(-rf_hz, fs)) } else { None };
-        let hann = make_hann_demod(sps);
-        let sps_start = 3 * sps / 4;
-        let hann_sum: f32 = hann[sps_start..].iter().sum();
+        let hann = make_hann(sps);
+        let hann_sq_sum: f32 = hann.iter().map(|&h| h * h).sum();
         Self {
             sps,
-            sps_start,
             gain,
             count: 0,
             acc: C32::new(0.0, 0.0),
-            hann_sum,
             hann,
+            hann_sq_sum,
             prev_sym: C32::new(1.0, 0.0),
             rot,
         }
@@ -204,8 +214,8 @@ impl Qpsk31Demod {
     pub fn set_gain(&mut self, g: f32) { self.gain = g; }
 
     pub fn reset(&mut self) {
-        self.count = 0;
-        self.acc = C32::new(0.0, 0.0);
+        self.count    = 0;
+        self.acc      = C32::new(0.0, 0.0);
         self.prev_sym = C32::new(1.0, 0.0);
         if let Some(r) = &mut self.rot { r.reset_phase(); }
     }
@@ -217,7 +227,7 @@ impl Block for Qpsk31Demod {
 
     /// Output: pairs of soft values `[Re(d), Im(d)]` per symbol.
     fn process(&mut self, input: &[C32], output: &mut [f32]) -> WorkReport {
-        let mut in_pos = 0;
+        let mut in_pos  = 0;
         let mut out_pos = 0;
 
         while in_pos < input.len() && out_pos + 1 < output.len() {
@@ -228,22 +238,23 @@ impl Block for Qpsk31Demod {
                 let im = s.im * r.re + s.re * r.im;
                 s = C32::new(re, im);
             }
-            // Accumulate only the settled final quarter of the symbol period.
-            if self.count >= self.sps_start {
-                let w = self.hann[self.count];
-                self.acc.re += w * s.re;
-                self.acc.im += w * s.im;
-            }
+            // Decision-feedback cancellation + Hann-weighted accumulation.
+            let h = self.hann[self.count];
+            let one_minus_h = 1.0 - h;
+            let corr_re = s.re - self.prev_sym.re * one_minus_h;
+            let corr_im = s.im - self.prev_sym.im * one_minus_h;
+            self.acc.re += h * corr_re;
+            self.acc.im += h * corr_im;
             self.count += 1;
             in_pos += 1;
 
             // Dump at the end of each symbol period.
             if self.count == self.sps {
-                let scale = self.gain / self.hann_sum;
+                let scale = self.gain / self.hann_sq_sum;
                 let sym = C32::new(self.acc.re * scale, self.acc.im * scale);
-                self.acc = C32::new(0.0, 0.0);
+                self.acc  = C32::new(0.0, 0.0);
                 self.count = 0;
-                // Differential: d = sym * conj(prev_sym)
+                // Differential: d = sym · conj(prev_sym)
                 let d_re = sym.re * self.prev_sym.re + sym.im * self.prev_sym.im;
                 let d_im = sym.im * self.prev_sym.re - sym.re * self.prev_sym.im;
                 output[out_pos]   = d_re;
