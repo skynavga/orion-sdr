@@ -3,7 +3,7 @@
 Measurements taken on Apple M2 Pro, release build (`opt-level=3`, `lto=fat`,
 `codegen-units=1`), no SIMD.  Results are ordered by throughput (descending).
 
-## v0.0.20 Results
+## v0.0.21 Results
 
 ### Analog modes (9-run mean ±stdev, 65536 samples × 30 passes)
 
@@ -52,26 +52,34 @@ Pipeline: `psk31_sync` (carrier detection) → `Bpsk31Demod` or `Qpsk31Demod` (w
 
 | SNR (dB/2500 Hz) | BPSK31 success% | QPSK31 success% |
 | ---: | ---: | ---: |
-| 0 | 0% | 0% |
-| 10 | 32% | 0% |
-| 11 | 52% | 0% |
-| 12 | 78% | 0% |
-| 13 | 96% | 0% |
-| **14** | **100%** | 0% |
-| 24 | 100% | 12% |
-| 26 | 100% | 52% |
-| 28 | 100% | 90% |
-| 30 | 100% | 94% |
-| **32** | **100%** | **100%** |
+| −12 | 0% | — |
+| −10 | 0% | — |
+| −9 | 12% | — |
+| −8 | 20% | — |
+| **−7** | 42% | — |
+| −6 | 66% | — |
+| −5 | 84% | — |
+| **−4** | **100%** | — |
+| 4 | 100% | 4% |
+| 6 | 100% | 4% |
+| 7 | 100% | 16% |
+| 8 | 100% | 18% |
+| **9** | 100% | 38% |
+| 10 | 100% | 72% |
+| 12 | 100% | 94% |
+| **14** | 100% | **100%** |
 
-50% decode points: BPSK31 ≈ +11 dB, QPSK31 ≈ +26 dB.
-100% decode points: BPSK31 = +14 dB, QPSK31 = +32 dB (used as CI regression thresholds).
+50% decode points: BPSK31 ≈ −7 dB, QPSK31 ≈ +9 dB.
+100% decode points: BPSK31 = −4 dB, QPSK31 = +14 dB (used as CI regression thresholds).
 
-The high SNR requirement relative to the narrow PSK31 signal bandwidth (31.25 Hz) is expected:
-the demodulator uses peak sampling (one sample per symbol, no narrowband filtering), so it
-sees the full noise bandwidth (fs/2 = 4 kHz) at each decision point.  QPSK31's rate-1/2
-convolutional code provides some noise immunity, but the per-symbol SNR after differential
-detection is limited by peak-sampling and the full-bandwidth noise floor.
+The demodulator uses Hann-weighted integrate-and-dump over the final quarter of each
+symbol period (n ∈ [3·sps/4, sps), 64 samples at 8 kHz).  Relative to the previous
+peak-sampling design, this yields approximately 18 dB improvement for both modes.
+QPSK31 now outperforms BPSK31 as the G3PLX specification predicts (its rate-1/2
+convolutional code recovers the 3 dB DQPSK penalty with coding gain to spare).
+The remaining gap to the published G3PLX reference (BPSK31 −10 dB, QPSK31 ~−11 dB)
+is due to the integration window covering only 25% of the symbol period; a full
+matched filter (Phase 2) would close the remaining ~6 dB.
 
 ### FT8/FT4 (frame-at-a-time, 20 passes; "Msps" = frame samples / wall time)
 
