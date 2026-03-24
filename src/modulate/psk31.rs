@@ -59,6 +59,9 @@ fn make_hann(sps: usize) -> Vec<f32> {
         .collect()
 }
 
+/// Pub(crate) alias used by the demodulator for Hann-weighted integration.
+pub(crate) fn make_hann_demod(sps: usize) -> Vec<f32> { make_hann(sps) }
+
 /// Write one pulse-shaped symbol into `out[0..sps]`.
 ///
 /// Computes a per-sample Hann-windowed linear interpolation between phasors
