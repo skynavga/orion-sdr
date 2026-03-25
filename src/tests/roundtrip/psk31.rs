@@ -265,3 +265,4 @@ fn roundtrip_psk31_sync_finds_qpsk31() {
         carrier_hz
     );
 }
+

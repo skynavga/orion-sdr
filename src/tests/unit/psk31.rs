@@ -170,3 +170,16 @@ fn qpsk31_modulate_preamble() {
 fn psk31_baud_constant() {
     assert!((PSK31_BAUD - 31.25).abs() < 1e-6);
 }
+
+// ── Hard-decision function tests ──────────────────────────────────────────────
+
+#[test]
+fn qpsk31_hard_decide_dqpsk_four_quadrants() {
+    use crate::demodulate::psk31::hard_decide_dqpsk;
+    assert_eq!(hard_decide_dqpsk( 0.8,  0.2), ( 1.0,  0.0)); // 0°
+    assert_eq!(hard_decide_dqpsk(-0.8,  0.2), (-1.0,  0.0)); // 180°
+    assert_eq!(hard_decide_dqpsk( 0.2,  0.8), ( 0.0,  1.0)); // +90°
+    assert_eq!(hard_decide_dqpsk( 0.2, -0.8), ( 0.0, -1.0)); // -90°
+    // Tie (|re| == |im|) → real axis wins
+    assert_eq!(hard_decide_dqpsk( 0.707,  0.707), (1.0, 0.0));
+}
