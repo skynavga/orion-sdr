@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.24] - 2026-03-25
+
+### Changed
+
+- `Qpsk31Demod` now outputs phase-corrected absolute phasors `[Re(sym_c), Im(sym_c)]`
+  instead of differential products `[Re(d), Im(d)]`; `Qpsk31Decider::flush()` calls
+  the new `viterbi_decode_coherent` decoder, eliminating the ~3 dB noise-product penalty
+  of differential detection.  QPSK31 50%/100% decode thresholds improve from −9/−6 dB
+  to ≈−12.5/−7 dB SNR/2500 Hz; CI regression threshold tightened to −7 dB.
+- AFC phase discriminant in `Qpsk31Demod` updated to operate on the absolute phasor
+  rather than the differential product, consistent with coherent mode.
+- Throughput: QPSK31 587 Msps (was 603); BPSK31 658 Msps (unchanged).
+
+### Added
+
+- `viterbi_decode_coherent(soft, phase_steps)` in `src/codec/psk31_conv.rs`: coherent
+  Viterbi MLSE that tracks a hypothesised absolute phasor per trellis state; branch
+  metric is `|sym_c − hyp|²` rather than a differential Euclidean distance.
+- `QPSK31_PHASE_STEP_F32` constant in `src/modulate/psk31.rs` (pub(crate)) for use
+  by the coherent Viterbi decoder.
+
 ## [0.0.23] - 2026-03-24
 
 ### Fixed
