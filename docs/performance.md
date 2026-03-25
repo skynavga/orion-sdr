@@ -5,43 +5,42 @@ Measurements taken on Apple M2 Pro, release build (`opt-level=3`, `lto=fat`,
 
 ## v0.0.22 Results
 
-### Analog modes (9-run mean ±stdev, 65536 samples × 30 passes)
+### Analog modes (2-run mean, 65536 samples × 30 passes)
 
-| Mode         | Msps    |
-|--------------|---------|
-| CW           | 149 ±3  |
-| AM-AbsApprox | 149 ±4  |
-| AM-PowerSqrt | 147 ±2  |
-| PM           | 127 ±3  |
-| FM           | 117 ±3  |
-| SSB-USB      | 117 ±4  |
+| Mode         | Msps |
+|--------------|-----:|
+| CW           |  163 |
+| AM-AbsApprox |  160 |
+| AM-PowerSqrt |  158 |
+| PM           |  138 |
+| SSB-USB      |  129 |
+| FM           |  123 |
 
 ### Digital modes (full pipeline: mapper → mod → demod → decider, 65536 sym × 30 passes)
 
 | Mode    | Msps |
 |---------|-----:|
-| QPSK    |  317 |
-| BPSK    |  253 |
-| QAM-16  |  209 |
-| QAM-64  |   92 |
-| QAM-256 |   73 |
+| QPSK    |  344 |
+| BPSK    |  328 |
+| QAM-16  |  258 |
+| QAM-64  |  134 |
+| QAM-256 |   95 |
 
 BPSK and QPSK are faster than the analog modes because the pipeline is purely
 multiply-heavy with no transcendentals.  QAM decider throughput decreases with
 order because the threshold scan is O(M) per axis (M = levels/axis = 2^(BITS/2)):
 QAM-256 (M=16) does 4× more comparisons per symbol than QAM-16 (M=4).
 
-### PSK31 (10-run mean ±stdev, 4096 sym × 256 sps × 20 passes)
+### PSK31 (2-run mean, 4096 sym × 256 sps × 20 passes)
 
-| Mode   | Msps    |
-|--------|---------|
-| BPSK31 | 817 ±7  |
-| QPSK31 | 810 ±2  |
+| Mode   | Msps |
+|--------|-----:|
+| BPSK31 |  670 |
+| QPSK31 |  603 |
 
 Both modes measure the full roundtrip: `modulate_bits` → `process` (demod) → `process`
-(decider / Viterbi flush).  BPSK31 and QPSK31 have nearly identical throughput because
-the bottleneck is the Hann-windowed pulse shaping in `write_symbol`, which is the same
-for both.  The Viterbi decoder in QPSK31 adds negligible cost at 4096 symbols.
+(decider / Viterbi flush).  The AFC loop adds a `sin_cos()` call per symbol dump; the
+Viterbi decoder accounts for the ~10% gap between BPSK31 and QPSK31.
 
 ### PSK31 SNR sensitivity (50 trials/point, release build)
 
@@ -84,11 +83,11 @@ is primarily due to coherent vs. differential detection and differences in test 
 
 | Stage | FT8 Msps | FT4 Msps |
 | --- | ---: | ---: |
-| mod only | 266 | 222 |
-| demod only | 29 | 45 |
+| mod only | 266 | 265 |
+| demod only | 30 | 60 |
 | codec encode only | — | — |
 | codec decode only | — | — |
-| full roundtrip (encode → mod → demod → decode) | 27 | 44 |
+| full roundtrip (encode → mod → demod → decode) | 27 | 49 |
 
 Frame sizes: FT8 = 151 680 samples (79 sym × 1920); FT4 = 60 480 samples
 (105 sym × 576).  The codec encode/decode times are sub-millisecond and
