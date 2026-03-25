@@ -68,10 +68,25 @@ fn next_state(s: u8, b: u8) -> u8 {
     (s >> 1) | ((b & 1) << 3)
 }
 
+// DQPSK expected phasors indexed by dibit = c0*2 + c1.
+// Matches the QPSK31_PHASE_STEP table in src/modulate/psk31.rs:
+//   dibit 0 (c0=0,c1=0): step = (+1,  0)
+//   dibit 1 (c0=0,c1=1): step = ( 0, -1)
+//   dibit 2 (c0=1,c1=0): step = ( 0, +1)
+//   dibit 3 (c0=1,c1=1): step = (-1,  0)
+const DQPSK_EXP: [(f32, f32); 4] = [
+    ( 1.0,  0.0), // dibit 0
+    ( 0.0, -1.0), // dibit 1
+    ( 0.0,  1.0), // dibit 2
+    (-1.0,  0.0), // dibit 3
+];
+
 /// Soft Viterbi decoder for the rate-1/2, K=5 code.
 ///
-/// `soft` is an interleaved slice `[re_0, im_0, re_1, im_1, …]` of soft
-/// dibit values where **positive = coded bit likely 0** (our sign convention).
+/// `soft` is an interleaved slice `[re_0, im_0, re_1, im_1, …]` of DQPSK
+/// differential-detection outputs.  The branch metric uses the actual DQPSK
+/// constellation phasors as expected values, matching the modulator's
+/// `QPSK31_PHASE_STEP` table.
 ///
 /// Returns a decoded bit slice of length `soft.len() / 2`.
 pub fn viterbi_decode(soft: &[f32]) -> Vec<u8> {
@@ -98,9 +113,11 @@ pub fn viterbi_decode(soft: &[f32]) -> Vec<u8> {
             if pm[prev] >= inf { continue; }
             for &bit in &[0u8, 1u8] {
                 let (c0, c1) = branch_bits(prev as u8, bit);
-                // Sign convention: positive soft = bit likely 0 → expected = +1.0 for bit=0.
-                let exp0 = if c0 == 0 { 1.0f32 } else { -1.0f32 };
-                let exp1 = if c1 == 0 { 1.0f32 } else { -1.0f32 };
+                // Expected soft values are the DQPSK phasor for this dibit,
+                // not ±1 on both axes — the DQPSK constellation places all
+                // energy on a single axis per symbol.
+                let dibit = (c0 & 1) * 2 + (c1 & 1);
+                let (exp0, exp1) = DQPSK_EXP[dibit as usize];
                 let bm = (s0 - exp0) * (s0 - exp0) + (s1 - exp1) * (s1 - exp1);
                 let ns = next_state(prev as u8, bit) as usize;
                 let cand = pm[prev] + bm;
@@ -138,7 +155,20 @@ pub fn viterbi_decode(soft: &[f32]) -> Vec<u8> {
 }
 
 /// Hard-decision Viterbi decoder (for testing with noiseless hard bits).
+///
+/// Input: interleaved coded bits `[c0_0, c1_0, c0_1, c1_1, …]`.
+/// Converts each (c0, c1) pair to the corresponding DQPSK phasor before
+/// calling the soft decoder, matching the branch metric convention.
 pub fn viterbi_decode_hard(bits: &[u8]) -> Vec<u8> {
-    let soft: Vec<f32> = bits.iter().map(|&b| if b == 0 { 1.0f32 } else { -1.0f32 }).collect();
+    let n_syms = bits.len() / 2;
+    let mut soft = Vec::with_capacity(n_syms * 2);
+    for i in 0..n_syms {
+        let c0 = bits[i * 2] & 1;
+        let c1 = bits[i * 2 + 1] & 1;
+        let dibit = c0 * 2 + c1;
+        let (re, im) = DQPSK_EXP[dibit as usize];
+        soft.push(re);
+        soft.push(im);
+    }
     viterbi_decode(&soft)
 }

@@ -32,17 +32,24 @@
 // Note on SNR thresholds
 // ──────────────────────
 // Both modes use decision-feedback matched filtering over the full symbol
-// period:
+// period combined with a symbol-rate decision-directed PLL (AFC, K=0.05):
 //   corrected[n] = s[n] − prev_sym·(1−h[n])
 //   sym = Σ h[n]·corrected[n] / Σ h[n]²
+//   phase_err   = Im(d · conj(decided)) / |d|     (cross-product discriminant)
+//   phase_acc  += K · phase_err                   (first-order loop, B_L ≈ 0.78 Hz)
 // This integrates all sps=256 samples per symbol, maximising SNR while
 // cleanly cancelling the previous-phasor contribution from the crossfade.
-// QPSK31 now outperforms BPSK31 as theory predicts.
+// The AFC has zero steady-state error in the zero-offset AWGN test case;
+// its benefit is primarily for real on-air use with residual carrier offset.
+// QPSK31 outperforms BPSK31 as theory predicts.
 //
 // Measured sensitivity (50-trial Monte Carlo, see performance/snr/psk31.rs):
 // ──────────────────────────────────────────────────────────────────────────
 //   BPSK31: 50% decode at ≈−8 dB, 100% at −5 dB SNR/2500 Hz
-//   QPSK31: 50% decode at ≈+7 dB,  100% at +13 dB SNR/2500 Hz
+//   QPSK31: 50% decode at ≈−9 dB, 100% at −6 dB SNR/2500 Hz
+//
+// QPSK31 now outperforms BPSK31 by ~2 dB as theory predicts (rate-1/2
+// convolutional coding gain exceeds the DQPSK differential detection penalty).
 //
 // CI thresholds are anchored at the observed 100% success level so they
 // pass reliably on every platform without being noise-sensitive.
@@ -175,15 +182,15 @@ fn bpsk31_decodes_at_minus_5db_snr_2500hz() {
 
 // ── QPSK31 CI regression ──────────────────────────────────────────────────────
 
-/// QPSK31 must decode at +13 dB SNR/2500 Hz (measured 100% success level).
+/// QPSK31 must decode at −6 dB SNR/2500 Hz (measured 100% success level).
 #[test]
-fn qpsk31_decodes_at_plus_13db_snr_2500hz() {
-    let snr_db = 13.0_f32;
+fn qpsk31_decodes_at_minus_6db_snr_2500hz() {
+    let snr_db = -6.0_f32;
     let text = b"CQ TEST";
     let noise_power = snr_to_noise_power(snr_db);
     assert!(
         try_qpsk31(text, snr_db, 0xFEDC_BA98_7654_3210),
-        "QPSK31 failed to decode at +{} dB SNR/2500 Hz (noise_power={:.5})",
+        "QPSK31 failed to decode at {} dB SNR/2500 Hz (noise_power={:.5})",
         snr_db, noise_power
     );
 }

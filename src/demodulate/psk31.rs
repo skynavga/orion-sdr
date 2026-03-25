@@ -14,9 +14,14 @@
 //   sym = Σ h[n]·corrected[n] / Σ h[n]²
 //       = p1   (exactly, in the noiseless case)
 //
-// This integrates all sps samples, maximising SNR.  Differential detection:
+// This integrates all sps samples, maximising SNR.  A first-order
+// decision-directed PLL then corrects residual carrier phase at each
+// symbol boundary (AFC):
 //
-//   decision = sym · conj(prev_sym)
+//   sym_c     = sym · exp(−j·phase_acc)          (phase correction)
+//   decision  = sym_c · conj(prev_sym)            (differential detection)
+//   phase_err = Im(decision · conj(decided)) / |decision|
+//   phase_acc += K · phase_err                   (loop update, K = 0.05)
 //
 // BPSK31: Re(decision) → soft bit (positive = bit 1, no phase change).
 // QPSK31: [Re(decision), Im(decision)] → soft dibit for Viterbi.
@@ -36,6 +41,27 @@ fn make_hann(sps: usize) -> Vec<f32> {
         .collect()
 }
 
+const BPSK31_LOOP_GAIN: f32 = 0.05;
+const QPSK31_LOOP_GAIN: f32 = 0.05;
+
+/// BPSK31 hard decision on a differential symbol.
+/// Returns ±1.0 based on the sign of the real component.
+#[inline(always)]
+pub(crate) fn hard_decide_dbpsk(d_re: f32) -> f32 {
+    if d_re >= 0.0 { 1.0 } else { -1.0 }
+}
+
+/// QPSK31 hard decision on a differential symbol.
+/// Returns the nearest unit-axis phasor: (±1,0) or (0,±1).
+#[inline(always)]
+pub(crate) fn hard_decide_dqpsk(d_re: f32, d_im: f32) -> (f32, f32) {
+    if d_re.abs() >= d_im.abs() {
+        if d_re >= 0.0 { (1.0, 0.0) } else { (-1.0, 0.0) }
+    } else {
+        if d_im >= 0.0 { (0.0, 1.0) } else { (0.0, -1.0) }
+    }
+}
+
 // ── BPSK31 demodulator ────────────────────────────────────────────────────────
 
 /// BPSK31 decision-feedback matched-filter demodulator.
@@ -53,6 +79,8 @@ pub struct Bpsk31Demod {
     hann_sq_sum: f32,     // Σ h[n]²
     prev_sym:    C32,
     rot:         Option<Rotator>,
+    phase_acc:   f32,     // accumulated phase correction (rad)
+    loop_gain:   f32,     // first-order loop gain K
 }
 
 impl Bpsk31Demod {
@@ -78,6 +106,8 @@ impl Bpsk31Demod {
             hann_sq_sum,
             prev_sym: C32::new(1.0, 0.0),
             rot,
+            phase_acc: 0.0,
+            loop_gain: BPSK31_LOOP_GAIN,
         }
     }
 
@@ -87,6 +117,7 @@ impl Bpsk31Demod {
         self.count    = 0;
         self.acc      = C32::new(0.0, 0.0);
         self.prev_sym = C32::new(1.0, 0.0);
+        self.phase_acc = 0.0;
         if let Some(r) = &mut self.rot { r.reset_phase(); }
     }
 }
@@ -122,13 +153,30 @@ impl Block for Bpsk31Demod {
             if self.count == self.sps {
                 let scale = self.gain / self.hann_sq_sum;
                 let sym = C32::new(self.acc.re * scale, self.acc.im * scale);
-                self.acc  = C32::new(0.0, 0.0);
+                self.acc   = C32::new(0.0, 0.0);
                 self.count = 0;
-                // Differential detection: Re(sym · conj(prev_sym)).
-                let d_re = sym.re * self.prev_sym.re + sym.im * self.prev_sym.im;
+
+                // Phase correction: rotate sym by -phase_acc.
+                let (sin_pa, cos_pa) = self.phase_acc.sin_cos();
+                let sym_re = sym.re * cos_pa + sym.im * sin_pa;
+                let sym_im = sym.im * cos_pa - sym.re * sin_pa;
+
+                // Differential detection: Re(sym_c · conj(prev_sym)).
+                let d_re = sym_re * self.prev_sym.re + sym_im * self.prev_sym.im;
                 output[out_pos] = d_re;
                 out_pos += 1;
-                self.prev_sym = sym;
+
+                // Decision-directed phase error.
+                let dec_re = hard_decide_dbpsk(d_re);
+                let d_im   = sym_im * self.prev_sym.re - sym_re * self.prev_sym.im;
+                let cross_im  = d_im * dec_re;   // dec_im = 0
+                let mag_sq    = d_re * d_re + d_im * d_im;
+                let phase_err = if mag_sq > 1e-6 { cross_im / mag_sq.sqrt() } else { 0.0 };
+                self.phase_acc += self.loop_gain * phase_err;
+                if self.phase_acc >  std::f32::consts::PI { self.phase_acc -= std::f32::consts::TAU; }
+                if self.phase_acc < -std::f32::consts::PI { self.phase_acc += std::f32::consts::TAU; }
+
+                self.prev_sym = C32::new(sym_re, sym_im);
             }
 
             in_pos += 1;
@@ -191,6 +239,8 @@ pub struct Qpsk31Demod {
     hann_sq_sum: f32,
     prev_sym:    C32,
     rot:         Option<Rotator>,
+    phase_acc:   f32,     // accumulated phase correction (rad)
+    loop_gain:   f32,     // first-order loop gain K
 }
 
 impl Qpsk31Demod {
@@ -208,6 +258,8 @@ impl Qpsk31Demod {
             hann_sq_sum,
             prev_sym: C32::new(1.0, 0.0),
             rot,
+            phase_acc: 0.0,
+            loop_gain: QPSK31_LOOP_GAIN,
         }
     }
 
@@ -217,6 +269,7 @@ impl Qpsk31Demod {
         self.count    = 0;
         self.acc      = C32::new(0.0, 0.0);
         self.prev_sym = C32::new(1.0, 0.0);
+        self.phase_acc = 0.0;
         if let Some(r) = &mut self.rot { r.reset_phase(); }
     }
 }
@@ -252,15 +305,31 @@ impl Block for Qpsk31Demod {
             if self.count == self.sps {
                 let scale = self.gain / self.hann_sq_sum;
                 let sym = C32::new(self.acc.re * scale, self.acc.im * scale);
-                self.acc  = C32::new(0.0, 0.0);
+                self.acc   = C32::new(0.0, 0.0);
                 self.count = 0;
-                // Differential: d = sym · conj(prev_sym)
-                let d_re = sym.re * self.prev_sym.re + sym.im * self.prev_sym.im;
-                let d_im = sym.im * self.prev_sym.re - sym.re * self.prev_sym.im;
+
+                // Phase correction: rotate sym by -phase_acc.
+                let (sin_pa, cos_pa) = self.phase_acc.sin_cos();
+                let sym_re = sym.re * cos_pa + sym.im * sin_pa;
+                let sym_im = sym.im * cos_pa - sym.re * sin_pa;
+
+                // Differential: d = sym_c · conj(prev_sym)
+                let d_re = sym_re * self.prev_sym.re + sym_im * self.prev_sym.im;
+                let d_im = sym_im * self.prev_sym.re - sym_re * self.prev_sym.im;
                 output[out_pos]   = d_re;
                 output[out_pos+1] = d_im;
                 out_pos += 2;
-                self.prev_sym = sym;
+
+                // Decision-directed phase error.
+                let (dec_re, dec_im) = hard_decide_dqpsk(d_re, d_im);
+                let cross_im  = d_im * dec_re - d_re * dec_im;
+                let mag_sq    = d_re * d_re + d_im * d_im;
+                let phase_err = if mag_sq > 1e-6 { cross_im / mag_sq.sqrt() } else { 0.0 };
+                self.phase_acc += self.loop_gain * phase_err;
+                if self.phase_acc >  std::f32::consts::PI { self.phase_acc -= std::f32::consts::TAU; }
+                if self.phase_acc < -std::f32::consts::PI { self.phase_acc += std::f32::consts::TAU; }
+
+                self.prev_sym = C32::new(sym_re, sym_im);
             }
         }
 

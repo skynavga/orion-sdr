@@ -52,36 +52,33 @@ Pipeline: `psk31_sync` (carrier detection) → `Bpsk31Demod` or `Qpsk31Demod` (w
 
 | SNR (dB/2500 Hz) | BPSK31 success% | QPSK31 success% |
 | ---: | ---: | ---: |
-| −12 | 4% | — |
-| −10 | 18% | — |
-| **−8** | 60% | — |
-| −7 | 84% | — |
-| −6 | 98% | — |
-| **−5** | **100%** | — |
-| 4 | 100% | 0% |
-| 6 | 100% | 26% |
-| **7** | 100% | 52% |
-| 8 | 100% | 80% |
-| 9 | 100% | 88% |
-| 10 | 100% | 92% |
-| 11 | 100% | 96% |
-| 12 | 100% | 96% |
-| **13** | 100% | **100%** |
-| 14 | 100% | 100% |
+| −12 | 2% | 0% |
+| −10 | 14% | 30% |
+| **−9** | 34% | **60%** |
+| **−8** | 58% | 86% |
+| −7 | 82% | 98% |
+| **−6** | 98% | **100%** |
+| **−5** | **100%** | 100% |
+| −4 | 100% | 100% |
+| −2 | 100% | 100% |
+| 0 | 100% | 100% |
 
-50% decode points: BPSK31 ≈ −8 dB, QPSK31 ≈ +7 dB.
-100% decode points: BPSK31 = −5 dB, QPSK31 = +13 dB (used as CI regression thresholds).
+50% decode points: BPSK31 ≈ −8 dB, QPSK31 ≈ −9 dB.
+100% decode points: BPSK31 = −5 dB, QPSK31 = −6 dB (used as CI regression thresholds).
+
+QPSK31 outperforms BPSK31 by ~2 dB as theory predicts: the rate-1/2 convolutional
+code's ~5 dB coding gain more than compensates the ~3 dB differential detection penalty.
 
 The demodulator uses decision-feedback matched filtering over the full sps=256 symbol
-period.  For each sample n in the symbol, the known previous-phasor contribution is
-subtracted before accumulation (`corrected[n] = s[n] − prev_sym·(1−h[n])`), yielding
-a clean estimate of the current phasor.  Relative to the previous Hann-weighted I&D
-over the final quarter, this yields approximately 1–2 dB additional improvement.
-QPSK31 outperforms BPSK31 as the G3PLX specification predicts (its rate-1/2
-convolutional code recovers the 3 dB DQPSK penalty with coding gain to spare).
+period combined with a symbol-rate decision-directed PLL (AFC).  For each sample n in
+the symbol, the known previous-phasor contribution is subtracted before accumulation
+(`corrected[n] = s[n] − prev_sym·(1−h[n])`), yielding a clean estimate of the current
+phasor.  A first-order AFC loop (K=0.05, B_L ≈ 0.78 Hz) tracks residual carrier phase
+drift at each symbol boundary.  The Viterbi branch metric uses the actual DQPSK
+constellation phasors as expected values — each symbol places all energy on a single
+axis, so the correct expected values are (±1, 0) or (0, ±1), not ±1 on both axes.
 The remaining gap to the published G3PLX reference (BPSK31 −10 dB, QPSK31 ~−11 dB)
-is primarily due to frequency offset sensitivity and propagation effects not modelled
-in this AWGN-only test.
+is primarily due to coherent vs. differential detection and differences in test methodology.
 
 ### FT8/FT4 (frame-at-a-time, 20 passes; "Msps" = frame samples / wall time)
 
