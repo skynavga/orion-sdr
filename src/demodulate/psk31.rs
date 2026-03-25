@@ -19,18 +19,19 @@
 // symbol boundary (AFC):
 //
 //   sym_c     = sym · exp(−j·phase_acc)          (phase correction)
-//   decision  = sym_c · conj(prev_sym)            (differential detection)
-//   phase_err = Im(decision · conj(decided)) / |decision|
+//   phase_err = Im(sym_c · conj(decided)) / |sym_c|   (abs-phasor discriminant)
 //   phase_acc += K · phase_err                   (loop update, K = 0.05)
 //
-// BPSK31: Re(decision) → soft bit (positive = bit 1, no phase change).
-// QPSK31: [Re(decision), Im(decision)] → soft dibit for Viterbi.
+// BPSK31: differential Re(sym_c · conj(prev_sym)) → soft bit.
+// QPSK31: coherent — sym_c = [Re, Im] fed directly to coherent Viterbi MLSE,
+//   which tracks a hypothesised absolute phasor per trellis state, eliminating
+//   the ~3 dB noise-product penalty of differential detection.
 
 use num_complex::Complex32 as C32;
 use crate::core::{Block, WorkReport};
 use crate::dsp::Rotator;
-use crate::codec::psk31_conv::viterbi_decode;
-use crate::modulate::psk31::psk31_sps;
+use crate::codec::psk31_conv::{viterbi_decode_coherent};
+use crate::modulate::psk31::{psk31_sps, QPSK31_PHASE_STEP_F32};
 
 fn make_hann(sps: usize) -> Vec<f32> {
     if sps == 0 { return Vec::new(); }
@@ -224,11 +225,11 @@ impl Block for Bpsk31Decider {
 
 // ── QPSK31 demodulator ────────────────────────────────────────────────────────
 
-/// QPSK31 decision-feedback matched-filter demodulator.
+/// QPSK31 decision-feedback matched-filter demodulator (coherent).
 ///
 /// Input: `C32` IQ samples.
-/// Output: two `f32` per symbol = `[Re(d), Im(d)]` where `d = sym·conj(prev)`.
-/// These are the soft dibit values for Viterbi decoding.
+/// Output: two `f32` per symbol = `[Re(sym_c), Im(sym_c)]` — the phase-corrected
+/// absolute phasor estimate, fed to the coherent Viterbi MLSE decoder.
 #[derive(Debug, Clone)]
 pub struct Qpsk31Demod {
     sps:         usize,
@@ -313,22 +314,21 @@ impl Block for Qpsk31Demod {
                 let sym_re = sym.re * cos_pa + sym.im * sin_pa;
                 let sym_im = sym.im * cos_pa - sym.re * sin_pa;
 
-                // Differential: d = sym_c · conj(prev_sym)
-                let d_re = sym_re * self.prev_sym.re + sym_im * self.prev_sym.im;
-                let d_im = sym_im * self.prev_sym.re - sym_re * self.prev_sym.im;
-                output[out_pos]   = d_re;
-                output[out_pos+1] = d_im;
+                // Coherent output: pass sym_c directly to the Viterbi MLSE.
+                output[out_pos]   = sym_re;
+                output[out_pos+1] = sym_im;
                 out_pos += 2;
 
-                // Decision-directed phase error.
-                let (dec_re, dec_im) = hard_decide_dqpsk(d_re, d_im);
-                let cross_im  = d_im * dec_re - d_re * dec_im;
-                let mag_sq    = d_re * d_re + d_im * d_im;
+                // Decision-directed phase error on absolute phasor.
+                let (dec_re, dec_im) = hard_decide_dqpsk(sym_re, sym_im);
+                let cross_im  = sym_im * dec_re - sym_re * dec_im;
+                let mag_sq    = sym_re * sym_re + sym_im * sym_im;
                 let phase_err = if mag_sq > 1e-6 { cross_im / mag_sq.sqrt() } else { 0.0 };
                 self.phase_acc += self.loop_gain * phase_err;
                 if self.phase_acc >  std::f32::consts::PI { self.phase_acc -= std::f32::consts::TAU; }
                 if self.phase_acc < -std::f32::consts::PI { self.phase_acc += std::f32::consts::TAU; }
 
+                // Keep prev_sym as phase-corrected absolute phasor for DFM cancellation.
                 self.prev_sym = C32::new(sym_re, sym_im);
             }
         }
@@ -339,10 +339,12 @@ impl Block for Qpsk31Demod {
 
 // ── QPSK31 Viterbi decider ────────────────────────────────────────────────────
 
-/// QPSK31 Viterbi decoder.
+/// QPSK31 coherent Viterbi decoder.
 ///
-/// Buffers soft dibits `[Re, Im]` from `Qpsk31Demod` and runs the Viterbi
-/// algorithm when `flush()` is called (or when the block is fully consumed).
+/// Buffers phase-corrected phasor estimates `[Re(sym_c), Im(sym_c)]` from
+/// `Qpsk31Demod` and runs coherent Viterbi MLSE when `flush()` is called.
+/// The coherent decoder tracks a hypothesised absolute phasor per trellis
+/// state, eliminating the ~3 dB noise-product penalty of differential detection.
 ///
 /// The `Block::process` implementation buffers all input and emits 0 bytes
 /// until `flush()` is called.
@@ -354,10 +356,11 @@ pub struct Qpsk31Decider {
 impl Qpsk31Decider {
     pub fn new() -> Self { Self::default() }
 
-    /// Run Viterbi on the accumulated soft dibits and append decoded bits to `output`.
+    /// Run coherent Viterbi on the accumulated symbol estimates and append
+    /// decoded bits to `output`.
     pub fn flush(&mut self, output: &mut Vec<u8>) {
         if !self.soft_buf.is_empty() {
-            let decoded = viterbi_decode(&self.soft_buf);
+            let decoded = viterbi_decode_coherent(&self.soft_buf, &QPSK31_PHASE_STEP_F32);
             output.extend_from_slice(&decoded);
             self.soft_buf.clear();
         }

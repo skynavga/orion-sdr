@@ -154,6 +154,88 @@ pub fn viterbi_decode(soft: &[f32]) -> Vec<u8> {
     bits_out
 }
 
+/// Coherent soft Viterbi decoder for the rate-1/2, K=5 code.
+///
+/// `soft` is an interleaved slice `[re_0, im_0, re_1, im_1, …]` of phase-
+/// corrected absolute symbol estimates from the DFM.  Each state tracks a
+/// hypothesised absolute phasor; the branch metric is the squared Euclidean
+/// distance between the received symbol and the hypothesis, eliminating the
+/// ~3 dB noise-product penalty of differential detection.
+///
+/// `phase_steps` is the DQPSK phase-step table indexed by dibit = c0*2+c1,
+/// matching the modulator's `QPSK31_PHASE_STEP`.
+///
+/// Returns a decoded bit slice of length `soft.len() / 2`.
+pub fn viterbi_decode_coherent(soft: &[f32], phase_steps: &[(f32, f32); 4]) -> Vec<u8> {
+    let n_syms = soft.len() / 2;
+    if n_syms == 0 {
+        return Vec::new();
+    }
+
+    let inf = f32::MAX / 2.0;
+    let mut pm = [inf; NUM_STATES];
+    pm[0] = 0.0;
+    // Hypothesised absolute phasor per state.  Initial phasor (1,0) matches
+    // Qpsk31Mod starting phase.
+    let mut hyp = [(1.0f32, 0.0f32); NUM_STATES];
+
+    let mut prev_state_table: Vec<[u8; NUM_STATES]> = vec![[0u8; NUM_STATES]; n_syms];
+    // Store hypothesised phasor that won each transition, for propagation.
+    let mut hyp_table: Vec<[(f32, f32); NUM_STATES]> = vec![[(0.0, 0.0); NUM_STATES]; n_syms];
+
+    for t in 0..n_syms {
+        let s_re = soft[t * 2];
+        let s_im = soft[t * 2 + 1];
+        let mut new_pm  = [inf; NUM_STATES];
+        let mut new_hyp = [(0.0f32, 0.0f32); NUM_STATES];
+
+        for prev in 0..NUM_STATES {
+            if pm[prev] >= inf { continue; }
+            let (h_re, h_im) = hyp[prev];
+            for &bit in &[0u8, 1u8] {
+                let (c0, c1) = branch_bits(prev as u8, bit);
+                let dibit = (c0 & 1) * 2 + (c1 & 1);
+                let (step_re, step_im) = phase_steps[dibit as usize];
+                // Hypothesised phasor after this transition: h * step.
+                let nh_re = h_re * step_re - h_im * step_im;
+                let nh_im = h_im * step_re + h_re * step_im;
+                // Coherent branch metric: |sym_c - hyp|².
+                let bm = (s_re - nh_re) * (s_re - nh_re)
+                       + (s_im - nh_im) * (s_im - nh_im);
+                let ns = next_state(prev as u8, bit) as usize;
+                let cand = pm[prev] + bm;
+                if cand < new_pm[ns] {
+                    new_pm[ns] = cand;
+                    new_hyp[ns] = (nh_re, nh_im);
+                    prev_state_table[t][ns] = prev as u8;
+                    hyp_table[t][ns] = (nh_re, nh_im);
+                }
+            }
+        }
+        pm  = new_pm;
+        hyp = new_hyp;
+    }
+
+    // Best final state.
+    let mut state = pm
+        .iter()
+        .enumerate()
+        .min_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+
+    // Traceback.
+    let mut bits_out = vec![0u8; n_syms];
+    for t in (0..n_syms).rev() {
+        let prev = prev_state_table[t][state] as usize;
+        let b = (state >> 3) as u8 & 1;
+        bits_out[t] = b;
+        state = prev;
+    }
+
+    bits_out
+}
+
 /// Hard-decision Viterbi decoder (for testing with noiseless hard bits).
 ///
 /// Input: interleaved coded bits `[c0_0, c1_0, c0_1, c1_1, …]`.

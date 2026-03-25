@@ -44,7 +44,7 @@ Input bits are `uint8` arrays (one bit per byte, LSB used). Output IQ is `comple
 | `Bpsk31Mod(fs, rf_hz, gain)` | BPSK31 modulator; `modulate_text(text, preamble_bits, postamble_bits) → complex64[N]`, `modulate_bits(bits) → complex64[N]` |
 | `Bpsk31Demod(fs, rf_hz, gain)` | BPSK31 demodulator; `process(iq) → float32[N]` (one soft value per symbol; positive = bit 1) |
 | `Qpsk31Mod(fs, rf_hz, gain)` | QPSK31 modulator; same API as `Bpsk31Mod` |
-| `Qpsk31Demod(fs, rf_hz, gain)` | QPSK31 demodulator; `process(iq) → float32[N]` (buffers soft dibits), `flush() → uint8[N]` (runs Viterbi) |
+| `Qpsk31Demod(fs, rf_hz, gain)` | QPSK31 demodulator; `process(iq) → float32[N]` (buffers phase-corrected phasor estimates), `flush() → uint8[N]` (runs coherent Viterbi MLSE) |
 | `psk31_sync(iq, fs, base_hz, max_hz, ...)` | Waterfall carrier search → `list[dict]` of candidates with soft bits |
 
 `psk31_sync` candidate dicts contain:
@@ -158,8 +158,8 @@ for the full module layout.
 | `Bpsk31Demod` | `process(iq, soft) → WorkReport` — one `f32` per symbol; positive = bit 1 (no phase flip) |
 | `Bpsk31Decider` | `process(soft, bits) → WorkReport` — threshold at 0.0 |
 | `Qpsk31Mod` | Same API as `Bpsk31Mod`; convolutional-encodes input bits before modulation |
-| `Qpsk31Demod` | `process(iq, soft) → WorkReport` — two `f32` per symbol `[Re(d), Im(d)]` |
-| `Qpsk31Decider` | Buffers soft dibits; `flush(output)` runs Viterbi decoder |
+| `Qpsk31Demod` | `process(iq, soft) → WorkReport` — two `f32` per symbol `[Re(sym_c), Im(sym_c)]` (phase-corrected absolute phasor) |
+| `Qpsk31Decider` | Buffers phasor estimates; `flush(output)` runs coherent Viterbi MLSE |
 
 ### PSK31 Codec
 
@@ -168,7 +168,8 @@ for the full module layout.
 | `VaricodeEncoder` | `push_preamble(n)`, `push_byte(b)`, `push_postamble(n)`, `next_bit() → Option<u8>`, `drain_bits() → Vec<u8>` |
 | `VaricodeDecoder` | `push_bit(bit)`, `pop_char() → Option<u8>` |
 | `conv_encode(bits)` | Rate-1/2 K=5 encoder (G0=25, G1=23) → interleaved `Vec<u8>` |
-| `viterbi_decode(soft)` | Soft Viterbi decoder; positive input = coded bit likely 0 |
+| `viterbi_decode(soft)` | Differential soft Viterbi decoder; input `[Re(d), Im(d)]` pairs, positive = coded bit likely 0 |
+| `viterbi_decode_coherent(soft, phase_steps)` | Coherent MLSE Viterbi; input `[Re(sym_c), Im(sym_c)]` pairs; tracks hypothesised absolute phasor per trellis state |
 | `viterbi_decode_hard(bits)` | Hard-decision wrapper around `viterbi_decode` |
 
 ### PSK31 Sync

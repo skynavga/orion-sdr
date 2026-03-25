@@ -35,12 +35,14 @@ QAM-256 (M=16) does 4× more comparisons per symbol than QAM-16 (M=4).
 
 | Mode   | Msps |
 |--------|-----:|
-| BPSK31 |  670 |
-| QPSK31 |  603 |
+| BPSK31 |  658 |
+| QPSK31 |  587 |
 
 Both modes measure the full roundtrip: `modulate_bits` → `process` (demod) → `process`
-(decider / Viterbi flush).  The AFC loop adds a `sin_cos()` call per symbol dump; the
-Viterbi decoder accounts for the ~10% gap between BPSK31 and QPSK31.
+(decider / Viterbi flush).  The AFC loop adds a `sin_cos()` call per symbol dump.
+QPSK31 uses the coherent Viterbi (`viterbi_decode_coherent`), which allocates a
+`hyp_table` (hypothesised phasor per state per symbol) in addition to the
+`prev_state_table`; this accounts for the ~11% gap between BPSK31 and QPSK31.
 
 ### PSK31 SNR sensitivity (50 trials/point, release build)
 
@@ -51,33 +53,38 @@ Pipeline: `psk31_sync` (carrier detection) → `Bpsk31Demod` or `Qpsk31Demod` (w
 
 | SNR (dB/2500 Hz) | BPSK31 success% | QPSK31 success% |
 | ---: | ---: | ---: |
-| −12 | 2% | 0% |
-| −10 | 14% | 30% |
-| **−9** | 34% | **60%** |
-| **−8** | 58% | 86% |
-| −7 | 82% | 98% |
-| **−6** | 98% | **100%** |
+| −16 | 0% | 0% |
+| −14 | 0% | 14% |
+| −13 | 0% | 42% |
+| −12 | 2% | 70% |
+| −11 | 0% | 86% |
+| −10 | 14% | 94% |
+| **−9** | 34% | 96% |
+| **−8** | 58% | 98% |
+| −7 | 82% | **100%** |
+| −6 | 98% | 100% |
 | **−5** | **100%** | 100% |
 | −4 | 100% | 100% |
 | −2 | 100% | 100% |
 | 0 | 100% | 100% |
 
-50% decode points: BPSK31 ≈ −8 dB, QPSK31 ≈ −9 dB.
-100% decode points: BPSK31 = −5 dB, QPSK31 = −6 dB (used as CI regression thresholds).
+50% decode points: BPSK31 ≈ −8 dB, QPSK31 ≈ −12.5 dB.
+100% decode points: BPSK31 = −5 dB, QPSK31 = −7 dB (used as CI regression thresholds).
 
-QPSK31 outperforms BPSK31 by ~2 dB as theory predicts: the rate-1/2 convolutional
-code's ~5 dB coding gain more than compensates the ~3 dB differential detection penalty.
+QPSK31 coherent outperforms BPSK31 by ~4.5 dB at the 100% point and ~4.5 dB at
+the 50% point.  BPSK31 uses differential detection; QPSK31 uses coherent Viterbi MLSE
+(`viterbi_decode_coherent`) which tracks a hypothesised absolute phasor per trellis
+state, eliminating the ~3 dB noise-product penalty of differential detection.
 
-The demodulator uses decision-feedback matched filtering over the full sps=256 symbol
+Both demodulators use decision-feedback matched filtering over the full sps=256 symbol
 period combined with a symbol-rate decision-directed PLL (AFC).  For each sample n in
 the symbol, the known previous-phasor contribution is subtracted before accumulation
 (`corrected[n] = s[n] − prev_sym·(1−h[n])`), yielding a clean estimate of the current
 phasor.  A first-order AFC loop (K=0.05, B_L ≈ 0.78 Hz) tracks residual carrier phase
-drift at each symbol boundary.  The Viterbi branch metric uses the actual DQPSK
-constellation phasors as expected values — each symbol places all energy on a single
-axis, so the correct expected values are (±1, 0) or (0, ±1), not ±1 on both axes.
+drift at each symbol boundary.  The QPSK31 AFC discriminant operates on the absolute
+phasor (not the differential product), consistent with coherent mode.
 The remaining gap to the published G3PLX reference (BPSK31 −10 dB, QPSK31 ~−11 dB)
-is primarily due to coherent vs. differential detection and differences in test methodology.
+is due to differences in test methodology (single-frame vs. multi-frame averaging).
 
 ### FT8/FT4 (frame-at-a-time, 20 passes; "Msps" = frame samples / wall time)
 

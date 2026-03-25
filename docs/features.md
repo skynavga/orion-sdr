@@ -12,8 +12,8 @@
   - Message packing: standard QSO, free text, telemetry, nonstandard callsigns (`pack77`/`unpack77`)
 - PSK31 full stack (BPSK31 + QPSK31):
   - Varicode codec: IZ8BLY/G3PLX table, `VaricodeEncoder`, `VaricodeDecoder`
-  - Convolutional codec: rate-1/2 K=5 encoder + soft Viterbi decoder (`conv_encode`, `viterbi_decode`)
-  - Waveform mod/demod: Hann-windowed DBPSK/DQPSK at 31.25 baud (`Bpsk31Mod`, `Bpsk31Demod`, `Qpsk31Mod`, `Qpsk31Demod`)
+  - Convolutional codec: rate-1/2 K=5 encoder + differential soft Viterbi + coherent MLSE Viterbi (`conv_encode`, `viterbi_decode`, `viterbi_decode_coherent`)
+  - Waveform mod/demod: Hann-windowed DBPSK/DQPSK at 31.25 baud with decision-feedback matched filtering and AFC (`Bpsk31Mod`, `Bpsk31Demod`, `Qpsk31Mod`, `Qpsk31Demod`)
   - Carrier sync: waterfall energy-persistence search (`psk31_sync`)
 - Unit, roundtrip, and throughput tests
 - Python bindings (35 classes/functions total, including full PSK31 stack)
