@@ -157,7 +157,7 @@ fn snr_sweep_bpsk31() {
 #[test]
 fn snr_sweep_qpsk31() {
     let snr_levels: &[f32] = &[
-        -12.0, -10.0, -9.0, -8.0, -7.0, -6.0, -5.0, -4.0, -2.0, 0.0,
+        -16.0, -14.0, -13.0, -12.0, -11.0, -10.0, -9.0, -8.0, -7.0, -6.0, -4.0, -2.0, 0.0,
     ];
 
     println!("\n[QPSK31 SNR sweep, ref BW = {:.0} Hz, {} trials/point, text={:?}]",

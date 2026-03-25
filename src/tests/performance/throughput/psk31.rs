@@ -1,5 +1,4 @@
 
-use num_complex::Complex32 as C32;
 use crate::modulate::psk31::{Bpsk31Mod, Qpsk31Mod, psk31_sps};
 use crate::demodulate::psk31::{Bpsk31Demod, Bpsk31Decider, Qpsk31Demod, Qpsk31Decider};
 use crate::core::Block;
