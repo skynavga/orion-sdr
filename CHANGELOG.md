@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.23] - 2026-03-24
+
+### Fixed
+
+- QPSK31 Viterbi branch metric now uses DQPSK constellation phasors `(±1, 0)` /
+  `(0, ±1)` as expected values instead of `(±1, ±1)`.  The DQPSK constellation
+  places all energy on a single axis per symbol; the old metric made half the coded
+  bits undecidable from current evidence alone, costing ~19 dB.  QPSK31 100% decode
+  threshold improves from +13 dB to −6 dB SNR/2500 Hz; QPSK31 now outperforms
+  BPSK31 by ~2 dB as theory predicts.
+
+### Added
+
+- Decision-directed AFC (first-order PLL, K=0.05, B_L ≈ 0.78 Hz) to `Bpsk31Demod`
+  and `Qpsk31Demod`: tracks residual carrier phase drift at each symbol boundary,
+  keeping the differential detector coherent across the frame.
+- `hard_decide_dbpsk` and `hard_decide_dqpsk` helper functions in
+  `src/demodulate/psk31.rs` (used by the AFC loop; also unit-tested).
+
+### Changed
+
+- Updated CI regression threshold: QPSK31 −6 dB SNR/2500 Hz (was +13 dB).
+- Updated throughput table in `docs/performance.md` with current measurements
+  (BPSK31 ~670 Msps, QPSK31 ~603 Msps; ~20% reduction from pre-AFC baseline
+  due to `sin_cos()` per symbol dump).
+
 ## [0.0.22] - 2026-03-24
 
 ### Changed
