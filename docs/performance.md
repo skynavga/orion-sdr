@@ -3,45 +3,44 @@
 Measurements taken on Apple M2 Pro, release build (`opt-level=3`, `lto=fat`,
 `codegen-units=1`), no SIMD.  Results are ordered by throughput (descending).
 
-## v0.0.22 Results
+## v0.0.23 Results
 
-### Analog modes (9-run mean ±stdev, 65536 samples × 30 passes)
+### Analog modes (2-run mean, 65536 samples × 30 passes)
 
-| Mode         | Msps    |
-|--------------|---------|
-| CW           | 149 ±3  |
-| AM-AbsApprox | 149 ±4  |
-| AM-PowerSqrt | 147 ±2  |
-| PM           | 127 ±3  |
-| FM           | 117 ±3  |
-| SSB-USB      | 117 ±4  |
+| Mode         | Msps |
+|--------------|-----:|
+| CW           |  163 |
+| AM-AbsApprox |  160 |
+| AM-PowerSqrt |  158 |
+| PM           |  138 |
+| SSB-USB      |  129 |
+| FM           |  123 |
 
 ### Digital modes (full pipeline: mapper → mod → demod → decider, 65536 sym × 30 passes)
 
 | Mode    | Msps |
 |---------|-----:|
-| QPSK    |  317 |
-| BPSK    |  253 |
-| QAM-16  |  209 |
-| QAM-64  |   92 |
-| QAM-256 |   73 |
+| QPSK    |  344 |
+| BPSK    |  328 |
+| QAM-16  |  258 |
+| QAM-64  |  134 |
+| QAM-256 |   95 |
 
 BPSK and QPSK are faster than the analog modes because the pipeline is purely
 multiply-heavy with no transcendentals.  QAM decider throughput decreases with
 order because the threshold scan is O(M) per axis (M = levels/axis = 2^(BITS/2)):
 QAM-256 (M=16) does 4× more comparisons per symbol than QAM-16 (M=4).
 
-### PSK31 (10-run mean ±stdev, 4096 sym × 256 sps × 20 passes)
+### PSK31 (2-run mean, 4096 sym × 256 sps × 20 passes)
 
-| Mode   | Msps    |
-|--------|---------|
-| BPSK31 | 817 ±7  |
-| QPSK31 | 810 ±2  |
+| Mode   | Msps |
+|--------|-----:|
+| BPSK31 |  670 |
+| QPSK31 |  603 |
 
 Both modes measure the full roundtrip: `modulate_bits` → `process` (demod) → `process`
-(decider / Viterbi flush).  BPSK31 and QPSK31 have nearly identical throughput because
-the bottleneck is the Hann-windowed pulse shaping in `write_symbol`, which is the same
-for both.  The Viterbi decoder in QPSK31 adds negligible cost at 4096 symbols.
+(decider / Viterbi flush).  The AFC loop adds a `sin_cos()` call per symbol dump; the
+Viterbi decoder accounts for the ~10% gap between BPSK31 and QPSK31.
 
 ### PSK31 SNR sensitivity (50 trials/point, release build)
 
@@ -52,46 +51,43 @@ Pipeline: `psk31_sync` (carrier detection) → `Bpsk31Demod` or `Qpsk31Demod` (w
 
 | SNR (dB/2500 Hz) | BPSK31 success% | QPSK31 success% |
 | ---: | ---: | ---: |
-| −12 | 4% | — |
-| −10 | 18% | — |
-| **−8** | 60% | — |
-| −7 | 84% | — |
-| −6 | 98% | — |
-| **−5** | **100%** | — |
-| 4 | 100% | 0% |
-| 6 | 100% | 26% |
-| **7** | 100% | 52% |
-| 8 | 100% | 80% |
-| 9 | 100% | 88% |
-| 10 | 100% | 92% |
-| 11 | 100% | 96% |
-| 12 | 100% | 96% |
-| **13** | 100% | **100%** |
-| 14 | 100% | 100% |
+| −12 | 2% | 0% |
+| −10 | 14% | 30% |
+| **−9** | 34% | **60%** |
+| **−8** | 58% | 86% |
+| −7 | 82% | 98% |
+| **−6** | 98% | **100%** |
+| **−5** | **100%** | 100% |
+| −4 | 100% | 100% |
+| −2 | 100% | 100% |
+| 0 | 100% | 100% |
 
-50% decode points: BPSK31 ≈ −8 dB, QPSK31 ≈ +7 dB.
-100% decode points: BPSK31 = −5 dB, QPSK31 = +13 dB (used as CI regression thresholds).
+50% decode points: BPSK31 ≈ −8 dB, QPSK31 ≈ −9 dB.
+100% decode points: BPSK31 = −5 dB, QPSK31 = −6 dB (used as CI regression thresholds).
+
+QPSK31 outperforms BPSK31 by ~2 dB as theory predicts: the rate-1/2 convolutional
+code's ~5 dB coding gain more than compensates the ~3 dB differential detection penalty.
 
 The demodulator uses decision-feedback matched filtering over the full sps=256 symbol
-period.  For each sample n in the symbol, the known previous-phasor contribution is
-subtracted before accumulation (`corrected[n] = s[n] − prev_sym·(1−h[n])`), yielding
-a clean estimate of the current phasor.  Relative to the previous Hann-weighted I&D
-over the final quarter, this yields approximately 1–2 dB additional improvement.
-QPSK31 outperforms BPSK31 as the G3PLX specification predicts (its rate-1/2
-convolutional code recovers the 3 dB DQPSK penalty with coding gain to spare).
+period combined with a symbol-rate decision-directed PLL (AFC).  For each sample n in
+the symbol, the known previous-phasor contribution is subtracted before accumulation
+(`corrected[n] = s[n] − prev_sym·(1−h[n])`), yielding a clean estimate of the current
+phasor.  A first-order AFC loop (K=0.05, B_L ≈ 0.78 Hz) tracks residual carrier phase
+drift at each symbol boundary.  The Viterbi branch metric uses the actual DQPSK
+constellation phasors as expected values — each symbol places all energy on a single
+axis, so the correct expected values are (±1, 0) or (0, ±1), not ±1 on both axes.
 The remaining gap to the published G3PLX reference (BPSK31 −10 dB, QPSK31 ~−11 dB)
-is primarily due to frequency offset sensitivity and propagation effects not modelled
-in this AWGN-only test.
+is primarily due to coherent vs. differential detection and differences in test methodology.
 
 ### FT8/FT4 (frame-at-a-time, 20 passes; "Msps" = frame samples / wall time)
 
 | Stage | FT8 Msps | FT4 Msps |
 | --- | ---: | ---: |
-| mod only | 266 | 222 |
-| demod only | 29 | 45 |
+| mod only | 266 | 265 |
+| demod only | 30 | 60 |
 | codec encode only | — | — |
 | codec decode only | — | — |
-| full roundtrip (encode → mod → demod → decode) | 27 | 44 |
+| full roundtrip (encode → mod → demod → decode) | 27 | 49 |
 
 Frame sizes: FT8 = 151 680 samples (79 sym × 1920); FT4 = 60 480 samples
 (105 sym × 576).  The codec encode/decode times are sub-millisecond and
