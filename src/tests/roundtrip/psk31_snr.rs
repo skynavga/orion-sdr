@@ -35,21 +35,23 @@
 // period combined with a symbol-rate decision-directed PLL (AFC, K=0.05):
 //   corrected[n] = s[n] − prev_sym·(1−h[n])
 //   sym = Σ h[n]·corrected[n] / Σ h[n]²
-//   phase_err   = Im(d · conj(decided)) / |d|     (cross-product discriminant)
 //   phase_acc  += K · phase_err                   (first-order loop, B_L ≈ 0.78 Hz)
-// This integrates all sps=256 samples per symbol, maximising SNR while
-// cleanly cancelling the previous-phasor contribution from the crossfade.
-// The AFC has zero steady-state error in the zero-offset AWGN test case;
-// its benefit is primarily for real on-air use with residual carrier offset.
-// QPSK31 outperforms BPSK31 as theory predicts.
+//
+// BPSK31: differential Re(sym_c · conj(prev_sym)) → hard bit.
+// QPSK31: coherent Viterbi MLSE — sym_c passed directly to viterbi_decode_coherent,
+//   which tracks a hypothesised absolute phasor per trellis state, eliminating the
+//   ~3 dB noise-product penalty of differential detection.
+// AFC phase discriminant:
+//   BPSK31: Im(d · conj(decided)) / |d|     (differential, d = sym_c·conj(prev))
+//   QPSK31: Im(sym_c · conj(decided)) / |sym_c|  (absolute phasor)
 //
 // Measured sensitivity (50-trial Monte Carlo, see performance/snr/psk31.rs):
 // ──────────────────────────────────────────────────────────────────────────
 //   BPSK31: 50% decode at ≈−8 dB, 100% at −5 dB SNR/2500 Hz
-//   QPSK31: 50% decode at ≈−9 dB, 100% at −6 dB SNR/2500 Hz
+//   QPSK31: 50% decode at ≈−12.5 dB, 100% at −7 dB SNR/2500 Hz
 //
-// QPSK31 now outperforms BPSK31 by ~2 dB as theory predicts (rate-1/2
-// convolutional coding gain exceeds the DQPSK differential detection penalty).
+// QPSK31 coherent outperforms BPSK31 by ~5.5 dB at the 50% point, consistent
+// with the ~5 dB convolutional coding gain recovered by coherent MLSE.
 //
 // CI thresholds are anchored at the observed 100% success level so they
 // pass reliably on every platform without being noise-sensitive.
@@ -182,10 +184,10 @@ fn bpsk31_decodes_at_minus_5db_snr_2500hz() {
 
 // ── QPSK31 CI regression ──────────────────────────────────────────────────────
 
-/// QPSK31 must decode at −6 dB SNR/2500 Hz (measured 100% success level).
+/// QPSK31 coherent must decode at −7 dB SNR/2500 Hz (measured 100% success level).
 #[test]
-fn qpsk31_decodes_at_minus_6db_snr_2500hz() {
-    let snr_db = -6.0_f32;
+fn qpsk31_decodes_at_minus_7db_snr_2500hz() {
+    let snr_db = -7.0_f32;
     let text = b"CQ TEST";
     let noise_power = snr_to_noise_power(snr_db);
     assert!(
