@@ -2,14 +2,17 @@
 name: release-prep
 description: Bump orion-sdr version, update CHANGELOG, run tests, commit, and create a signed tag — but do not push or publish.
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep
-argument-hint: <new-version>  (e.g. 0.0.17)
+argument-hint: <new-version>  (e.g. 0.0.17; omit to use the next patch bump)
 ---
 
-Prepare an orion-sdr release for version $ARGUMENTS.
+Prepare an orion-sdr release.
 
 The previous version is the one currently in `Cargo.toml`. Determine it by
-reading that file. Call it OLD_VERSION. The new version is $ARGUMENTS;
-call it NEW_VERSION.
+reading that file. Call it OLD_VERSION.
+
+If $ARGUMENTS is empty or not provided, derive NEW_VERSION by incrementing
+the patch component of OLD_VERSION by 1 (e.g. 0.0.25 → 0.0.26).
+Otherwise NEW_VERSION = $ARGUMENTS.
 
 ## Step 1 — Verify preconditions
 
