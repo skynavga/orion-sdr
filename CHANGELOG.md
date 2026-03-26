@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.26] - 2026-03-26
+
+### Changed
+
+- `actions/download-artifact` bumped from v6 to v7 in the publish workflow,
+  completing the Node.js 24 upgrade across all three artifact actions
+  (`checkout@v6`, `upload-artifact@v6`, `download-artifact@v7`).
+- Updated `release-prep` skill to infer the next patch version automatically
+  when no version argument is provided.
+
 ## [0.0.25] - 2026-03-25
 
 ### Changed
