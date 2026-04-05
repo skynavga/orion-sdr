@@ -1,4 +1,4 @@
-# Features (as of v0.0.26)
+# Features (as of v0.0.27)
 
 - Core traits and runner
 - Basic, IQ→IQ, IQ→Audio, Audio→IQ graph schedulers
