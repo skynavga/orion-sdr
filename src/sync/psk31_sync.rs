@@ -80,13 +80,46 @@ pub fn psk31_sync(
     // Minimum run duration in symbols.
     let min_run = min_carrier_syms.max(1);
 
+    // Compute per-bin median log-energy and the global noise floor.
+    //
+    // The per-bin temporal median is used as the reference for each bin's
+    // run detection, which handles two complementary cases:
+    //
+    //   (a) A short carrier embedded in a mostly-silent buffer: most symbols
+    //       in the carrier bin are near zero (ln ≈ -27.6), so the bin median
+    //       is low, but the active symbols stand well above it.
+    //
+    //   (b) A full-duration clean carrier (real-only PSK31 from Psk31Source):
+    //       the Goertzel magnitude-squared is constant across ALL symbols
+    //       (phase flips don't affect energy), so the per-bin median equals
+    //       the max — nothing exceeds the per-bin threshold.
+    //
+    // To handle (b), we also compute a cross-bin noise floor (median of all
+    // per-bin medians) and use the LOWER of the per-bin threshold and the
+    // global threshold.  This way a bin whose energy is uniformly high
+    // (constant carrier) is detected because it exceeds the cross-bin floor,
+    // while a bin with a short burst is detected via its own per-bin median.
+    let bin_medians: Vec<f32> = (0..num_bins)
+        .map(|bin| {
+            let mut e: Vec<f32> = (0..num_syms).map(|s| wf.get(s, bin)).collect();
+            median_f32(&mut e)
+        })
+        .collect();
+    let noise_floor = {
+        let mut bm = bin_medians.clone();
+        median_f32(&mut bm)
+    };
+    let global_threshold = noise_floor + ln_margin;
+
     let mut candidates: Vec<Psk31SyncResult> = Vec::new();
 
     for bin in 0..num_bins {
-        // Compute the per-bin median log-energy across all symbol rows.
-        let mut energies: Vec<f32> = (0..num_syms).map(|s| wf.get(s, bin)).collect();
-        let median = median_f32(&mut energies);
-        let threshold = median + ln_margin;
+        let bin_median = bin_medians[bin];
+        // Per-bin threshold: symbol must exceed its own bin's median.
+        // Global threshold: bin's median must exceed the cross-bin noise floor.
+        // A symbol is a peak candidate if EITHER condition is met (union),
+        // plus the spatial local-maximum requirement.
+        let per_bin_threshold = bin_median + ln_margin;
 
         // Scan through symbols looking for persistent energy peaks.
         let mut run_start: Option<usize> = None;
@@ -102,7 +135,10 @@ pub fn psk31_sync(
             let e_left  = if bin > 0            { wf.get(sym, bin - 1) } else { f32::NEG_INFINITY };
             let e_right = if bin + 1 < num_bins { wf.get(sym, bin + 1) } else { f32::NEG_INFINITY };
 
-            let is_peak = e > threshold && e >= e_left && e >= e_right;
+            // Accept via per-bin temporal threshold (short burst in silence)
+            // OR via cross-bin global threshold (constant full-duration carrier).
+            let is_peak = (e > per_bin_threshold || bin_median > global_threshold)
+                && e >= e_left && e >= e_right;
 
             if is_peak {
                 if run_start.is_none() {
