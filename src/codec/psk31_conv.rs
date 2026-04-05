@@ -74,7 +74,7 @@ fn next_state(s: u8, b: u8) -> u8 {
 //   dibit 1 (c0=0,c1=1): step = ( 0, -1)
 //   dibit 2 (c0=1,c1=0): step = ( 0, +1)
 //   dibit 3 (c0=1,c1=1): step = (-1,  0)
-const DQPSK_EXP: [(f32, f32); 4] = [
+pub const DQPSK_EXP: [(f32, f32); 4] = [
     ( 1.0,  0.0), // dibit 0
     ( 0.0, -1.0), // dibit 1
     ( 0.0,  1.0), // dibit 2
@@ -234,6 +234,133 @@ pub fn viterbi_decode_coherent(soft: &[f32], phase_steps: &[(f32, f32); 4]) -> V
     }
 
     bits_out
+}
+
+// ── Streaming coherent Viterbi decoder ────────────────────────────────────────
+
+/// Fixed-lag sliding-window Viterbi decoder for coherent QPSK31.
+///
+/// Processes one QPSK symbol at a time and emits decoded bits with a fixed
+/// latency of `TRACEBACK_DEPTH` symbols.  Uses the same coherent branch
+/// metric as `viterbi_decode_coherent` (hypothesised absolute phasor per
+/// trellis state).
+///
+/// Based on the fldigi approach: after each ACS step, if enough history has
+/// accumulated, traceback from the best-metric state and emit the oldest
+/// undecoded bit.
+pub struct StreamingViterbi {
+    pm:      [f32; NUM_STATES],
+    history: Vec<[u8; NUM_STATES]>,  // circular buffer of prev_state
+    ptr:     usize,                  // write pointer into circular buffer
+    count:   usize,                  // total symbols processed
+    phase_steps: [(f32, f32); 4],
+}
+
+/// Traceback depth.  Textbook = 5×(K-1) = 20 for rate-1/2 K=5.
+/// Use 32 for extra convergence margin with differential detection.
+const TRACEBACK_DEPTH: usize = 32;
+/// Circular buffer size (must be > TRACEBACK_DEPTH).
+const PATHMEM: usize = 128;
+
+impl StreamingViterbi {
+    /// Create a new streaming Viterbi decoder.
+    /// `phase_steps` is the DQPSK phase-step table (same as for batch decoder).
+    pub fn new(phase_steps: &[(f32, f32); 4]) -> Self {
+        let inf = f32::MAX / 2.0;
+        let mut pm = [inf; NUM_STATES];
+        pm[0] = 0.0;
+        Self {
+            pm,
+            history: vec![[0u8; NUM_STATES]; PATHMEM],
+            ptr:     0,
+            count:   0,
+            phase_steps: *phase_steps,
+        }
+    }
+
+    /// Feed one QPSK symbol.
+    ///
+    /// `s_re, s_im` are the DQPSK differential-detection outputs (or
+    /// phase-corrected absolute phasors from the coherent demod).  The branch
+    /// metric compares the received symbol against the expected DQPSK step
+    /// phasors — this is a non-coherent metric that doesn't require tracking
+    /// absolute phase, making it robust to PLL lock-in transients.
+    pub fn feed_symbol(&mut self, s_re: f32, s_im: f32) -> Option<u8> {
+        let inf = f32::MAX / 2.0;
+        let mut new_pm = [inf; NUM_STATES];
+
+        // ACS step — non-coherent DQPSK branch metric.
+        for prev in 0..NUM_STATES {
+            if self.pm[prev] >= inf { continue; }
+            for &bit in &[0u8, 1u8] {
+                let (c0, c1) = branch_bits(prev as u8, bit);
+                let dibit = (c0 & 1) * 2 + (c1 & 1);
+                let (exp_re, exp_im) = self.phase_steps[dibit as usize];
+                let bm = (s_re - exp_re) * (s_re - exp_re)
+                       + (s_im - exp_im) * (s_im - exp_im);
+                let ns = next_state(prev as u8, bit) as usize;
+                let cand = self.pm[prev] + bm;
+                if cand < new_pm[ns] {
+                    new_pm[ns] = cand;
+                    self.history[self.ptr][ns] = prev as u8;
+                }
+            }
+        }
+        self.pm = new_pm;
+
+        // Periodic metric normalisation to prevent f32 overflow.
+        if self.count % 256 == 255 {
+            let min_pm = self.pm.iter().copied()
+                .filter(|&v| v < inf)
+                .fold(inf, f32::min);
+            if min_pm > 0.0 {
+                for p in &mut self.pm {
+                    if *p < inf { *p -= min_pm; }
+                }
+            }
+        }
+
+        self.ptr = (self.ptr + 1) % PATHMEM;
+        self.count += 1;
+
+        // Not enough history for traceback yet.
+        if self.count <= TRACEBACK_DEPTH {
+            return None;
+        }
+
+        // Fixed-lag traceback: find best state now, trace back TRACEBACK_DEPTH
+        // steps, emit the decoded bit at the traceback endpoint.
+        let mut state = self.pm
+            .iter()
+            .enumerate()
+            .min_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+
+        let mut p = (self.ptr + PATHMEM - 1) % PATHMEM; // current position
+        for _ in 0..TRACEBACK_DEPTH {
+            state = self.history[p][state] as usize;
+            p = (p + PATHMEM - 1) % PATHMEM;
+        }
+
+        // The decoded bit is the MSB of the state at the traceback endpoint
+        // (same as batch: b = (state >> 3) & 1).
+        Some(((state >> 3) & 1) as u8)
+    }
+
+    /// Flush remaining bits after the last symbol.  Returns up to
+    /// `TRACEBACK_DEPTH` final decoded bits by tracing back from the best
+    /// state at progressively shorter depths.
+    pub fn flush(&mut self) -> Vec<u8> {
+        let mut out = Vec::new();
+        // Feed TRACEBACK_DEPTH zero-energy symbols to push out the tail.
+        for _ in 0..TRACEBACK_DEPTH {
+            if let Some(b) = self.feed_symbol(0.0, 0.0) {
+                out.push(b);
+            }
+        }
+        out
+    }
 }
 
 /// Hard-decision Viterbi decoder (for testing with noiseless hard bits).

@@ -53,7 +53,7 @@ src/
     ft8.rs            — Ft8Codec: encode, decode_hard, decode_soft, frame_to_llr_hard
     gray.rs           — gray8_encode/decode (FT8), gray4_encode/decode (FT4)
     ldpc.rs           — ldpc_encode, ldpc_decode_soft (LDPC(174,91), BP 20 iter)
-    psk31_conv.rs     — conv_encode, viterbi_decode, viterbi_decode_coherent (rate-1/2 K=5 convolutional codec)
+    psk31_conv.rs     — conv_encode, viterbi_decode, viterbi_decode_coherent, StreamingViterbi (rate-1/2 K=5 convolutional codec)
     varicode.rs       — varicode_encode/decode, VaricodeEncoder, VaricodeDecoder (IZ8BLY)
   sync/
     costas.rs         — Costas difference-metric scorer and top-N candidate search
