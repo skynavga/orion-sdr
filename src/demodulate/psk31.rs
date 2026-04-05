@@ -30,8 +30,8 @@
 use num_complex::Complex32 as C32;
 use crate::core::{Block, WorkReport};
 use crate::dsp::Rotator;
-use crate::codec::psk31_conv::{viterbi_decode_coherent};
-use crate::modulate::psk31::{psk31_sps, QPSK31_PHASE_STEP_F32};
+use crate::codec::psk31_conv::viterbi_decode;
+use crate::modulate::psk31::psk31_sps;
 
 fn make_hann(sps: usize) -> Vec<f32> {
     if sps == 0 { return Vec::new(); }
@@ -279,7 +279,8 @@ impl Block for Qpsk31Demod {
     type In  = C32;
     type Out = f32;
 
-    /// Output: pairs of soft values `[Re(d), Im(d)]` per symbol.
+    /// Output: pairs of soft values `[Re(d), Im(d)]` per symbol, where
+    /// `d = sym × conj(prev_sym)` is the differential detection product.
     fn process(&mut self, input: &[C32], output: &mut [f32]) -> WorkReport {
         let mut in_pos  = 0;
         let mut out_pos = 0;
@@ -314,15 +315,17 @@ impl Block for Qpsk31Demod {
                 let sym_re = sym.re * cos_pa + sym.im * sin_pa;
                 let sym_im = sym.im * cos_pa - sym.re * sin_pa;
 
-                // Coherent output: pass sym_c directly to the Viterbi MLSE.
-                output[out_pos]   = sym_re;
-                output[out_pos+1] = sym_im;
+                // Differential detection: d = sym_c × conj(prev_sym).
+                let d_re = sym_re * self.prev_sym.re + sym_im * self.prev_sym.im;
+                let d_im = sym_im * self.prev_sym.re - sym_re * self.prev_sym.im;
+                output[out_pos]   = d_re;
+                output[out_pos+1] = d_im;
                 out_pos += 2;
 
-                // Decision-directed phase error on absolute phasor.
-                let (dec_re, dec_im) = hard_decide_dqpsk(sym_re, sym_im);
-                let cross_im  = sym_im * dec_re - sym_re * dec_im;
-                let mag_sq    = sym_re * sym_re + sym_im * sym_im;
+                // Decision-directed phase error on the differential product.
+                let (dec_re, dec_im) = hard_decide_dqpsk(d_re, d_im);
+                let cross_im  = d_im * dec_re - d_re * dec_im;
+                let mag_sq    = d_re * d_re + d_im * d_im;
                 let phase_err = if mag_sq > 1e-6 { cross_im / mag_sq.sqrt() } else { 0.0 };
                 self.phase_acc += self.loop_gain * phase_err;
                 if self.phase_acc >  std::f32::consts::PI { self.phase_acc -= std::f32::consts::TAU; }
@@ -339,12 +342,12 @@ impl Block for Qpsk31Demod {
 
 // ── QPSK31 Viterbi decider ────────────────────────────────────────────────────
 
-/// QPSK31 coherent Viterbi decoder.
+/// QPSK31 differential Viterbi decoder.
 ///
-/// Buffers phase-corrected phasor estimates `[Re(sym_c), Im(sym_c)]` from
-/// `Qpsk31Demod` and runs coherent Viterbi MLSE when `flush()` is called.
-/// The coherent decoder tracks a hypothesised absolute phasor per trellis
-/// state, eliminating the ~3 dB noise-product penalty of differential detection.
+/// Buffers differential-detection phasor estimates `[Re(d), Im(d)]` from
+/// `Qpsk31Demod` and runs non-coherent Viterbi MLSE when `flush()` is called.
+/// Branch metrics compare received differential products against the expected
+/// DQPSK step phasors.
 ///
 /// The `Block::process` implementation buffers all input and emits 0 bytes
 /// until `flush()` is called.
@@ -356,11 +359,11 @@ pub struct Qpsk31Decider {
 impl Qpsk31Decider {
     pub fn new() -> Self { Self::default() }
 
-    /// Run coherent Viterbi on the accumulated symbol estimates and append
+    /// Run Viterbi on the accumulated differential symbol estimates and append
     /// decoded bits to `output`.
     pub fn flush(&mut self, output: &mut Vec<u8>) {
         if !self.soft_buf.is_empty() {
-            let decoded = viterbi_decode_coherent(&self.soft_buf, &QPSK31_PHASE_STEP_F32);
+            let decoded = viterbi_decode(&self.soft_buf);
             output.extend_from_slice(&decoded);
             self.soft_buf.clear();
         }

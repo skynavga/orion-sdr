@@ -180,8 +180,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Docs updated to cover digital modes: `docs/features.md`, `docs/design.md`, `docs/modulate.md`, `docs/demodulate.md`, `docs/throughput.md`, `docs/python.md`
-- Fixed incorrect API examples in `docs/demodulate.md` (removed fictional `push_iq`, `push_audio`, `demod_mut`, `set_deemph_tau_us`, `set_limiter` calls)
+- Docs updated to cover digital modes: `docs/features.md`, `docs/design.md`,
+  `docs/modulate.md`, `docs/demodulate.md`, `docs/throughput.md`, `docs/python.md`
+- Fixed incorrect API examples in `docs/demodulate.md`
+  (removed fictional `push_iq`, `push_audio`, `demod_mut`, `set_deemph_tau_us`,
+  `set_limiter` calls)
 
 ## [0.0.14] - 2026-03-08
 

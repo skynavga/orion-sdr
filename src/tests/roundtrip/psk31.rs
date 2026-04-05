@@ -190,6 +190,47 @@ fn roundtrip_qpsk31_text() {
     );
 }
 
+// ── Full ASCII roundtrip ──────────────────────────────────────────────────────
+
+/// Modulate → demodulate → varicode roundtrip for ALL 128 ASCII code points.
+/// Verifies that every byte 0–127 survives the full BPSK31 signal chain at
+/// baseband (carrier = 0 Hz, no noise).
+#[test]
+fn roundtrip_bpsk31_all_ascii() {
+    let text: Vec<u8> = (0u8..128u8).collect();
+    let fs = 8000.0;
+    let mut modulator = Bpsk31Mod::new(fs, 0.0, 1.0);
+    let iq = modulator.modulate_text(&text, 64, 64);
+
+    let mut demod = Bpsk31Demod::new(fs, 0.0, 1.0);
+    let mut soft = vec![0.0f32; iq.len()];
+    let wr = demod.process(&iq, &mut soft);
+    soft.truncate(wr.out_written);
+
+    let mut bits = vec![0u8; soft.len()];
+    let dr = Bpsk31Decider::new().process(&soft, &mut bits);
+    bits.truncate(dr.out_written);
+
+    let mut vdec = VaricodeDecoder::new();
+    for &b in &bits {
+        vdec.push_bit(b);
+    }
+    vdec.push_bit(0);
+    vdec.push_bit(0);
+    let mut decoded = Vec::new();
+    while let Some(c) = vdec.pop_char() {
+        decoded.push(c);
+    }
+
+    assert_eq!(decoded.len(), 128,
+        "expected 128 decoded bytes, got {} — decoded: {:?}",
+        decoded.len(), &decoded[..decoded.len().min(20)]);
+    for (i, (&got, &exp)) in decoded.iter().zip(text.iter()).enumerate() {
+        assert_eq!(got, exp,
+            "mismatch at index {}: expected 0x{:02X}, got 0x{:02X}", i, exp, got);
+    }
+}
+
 // ── PSK31 sync roundtrip tests ────────────────────────────────────────────────
 
 #[test]
