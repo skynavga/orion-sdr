@@ -81,7 +81,7 @@ If you have the `.venv` activated (`source .venv/bin/activate`) you can drop the
 ### Test structure
 
 | File | What it covers |
-|------|----------------|
+| ---- | -------------- |
 | `conftest.py` | Shared helpers: `real_tone`, `complex_tone`, `snr_db`, `tail`, fixtures |
 | `test_unit.py` | Output shape/dtype, input validation, setters, instance isolation |
 | `test_roundtrip.py` | Mod→demod SNR for CW, AM, SSB, FM, PM; noiseless bit-exact roundtrips for BPSK, QPSK, QAM-16/64/256 |

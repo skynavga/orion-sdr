@@ -4,6 +4,39 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.27] - 2026-04-05
+
+### Fixed
+
+- Varicode table: replaced 38 incorrect entries with canonical fldigi source
+  (pskvaricode.cxx). Affected control chars 9-31, uppercase U-Y, Z, brackets,
+  underscore, backtick, braces, tilde, DEL.
+- Varicode decoder: shift register cap changed from `MAX_BITS` to `MAX_BITS + 1`
+  to correctly decode 10-bit codewords (%, &, ?, @, Z, ^, backtick, {, }, ~).
+- `VARICODE_MAX_BITS` reduced from 11 to 10 to match the canonical table.
+
+### Changed
+
+- QPSK31 demodulator reverted from coherent to differential detection for
+  streaming decode compatibility. `Qpsk31Demod` now outputs differential
+  products `[Re(d), Im(d)]`; `Qpsk31Decider` uses non-coherent `viterbi_decode`.
+  SNR 100% threshold: -6 dB (was -7 dB coherent).
+- `DQPSK_EXP` constant in `psk31_conv.rs` made public.
+- Removed `QPSK31_PHASE_STEP_F32` from `modulate/psk31.rs` (use `DQPSK_EXP`).
+- Updated docs: performance SNR table, API descriptions, features, source layout.
+- Fixed all markdownlint issues across `**/*.md`.
+
+### Added
+
+- `StreamingViterbi`: fixed-lag sliding-window Viterbi decoder for incremental
+  QPSK31 decode. Non-coherent DQPSK branch metric, traceback depth 32, exported
+  as `orion_sdr::codec::StreamingViterbi`.
+- Varicode tests: `varicode_table_no_collisions`, `varicode_no_internal_zero_pairs`,
+  `varicode_stream_roundtrip_all_printable`, expanded `varicode_decode_roundtrip`
+  to all 128 ASCII values.
+- `streaming_viterbi_matches_batch` and `streaming_viterbi_text_roundtrip` unit tests.
+- `roundtrip_bpsk31_all_ascii`: full 128-code-point modulate-demod-varicode roundtrip.
+
 ## [0.0.26] - 2026-03-26
 
 ### Changed
@@ -180,8 +213,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Docs updated to cover digital modes: `docs/features.md`, `docs/design.md`, `docs/modulate.md`, `docs/demodulate.md`, `docs/throughput.md`, `docs/python.md`
-- Fixed incorrect API examples in `docs/demodulate.md` (removed fictional `push_iq`, `push_audio`, `demod_mut`, `set_deemph_tau_us`, `set_limiter` calls)
+- Docs updated to cover digital modes: `docs/features.md`, `docs/design.md`,
+  `docs/modulate.md`, `docs/demodulate.md`, `docs/throughput.md`, `docs/python.md`
+- Fixed incorrect API examples in `docs/demodulate.md`
+  (removed fictional `push_iq`, `push_audio`, `demod_mut`, `set_deemph_tau_us`,
+  `set_limiter` calls)
 
 ## [0.0.14] - 2026-03-08
 

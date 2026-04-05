@@ -44,7 +44,7 @@ per-sample `cos`/`sin`.
 All digital modes follow a two-stage split that separates symbol mapping from waveform
 generation, keeping each stage independently reusable:
 
-```
+```text
 [u8 bits] → Mapper → [C32 symbols] → Mod → [C32 IQ]
 [C32 IQ]  → Demod  → [C32 soft]   → Decider → [u8 bits]
 ```
@@ -92,7 +92,7 @@ See [performance.md](performance.md) for benchmark results and how to run them.
 ## Acronym Glossary
 
 | Acronym | Expansion | Notes |
-|---------|-----------|-------|
+| ------- | --------- | ----- |
 | AGC | Automatic Gain Control | `AgcRms`, `AgcRmsIq` in `dsp/agc.rs` |
 | AM | Amplitude Modulation | DSB (double-sideband) variant implemented |
 | AWGN | Additive White Gaussian Noise | Standard noise model used in tests |

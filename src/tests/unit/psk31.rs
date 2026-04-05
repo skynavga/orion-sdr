@@ -1,6 +1,6 @@
 
 use crate::codec::varicode::{varicode_encode, VaricodeEncoder, VaricodeDecoder};
-use crate::codec::psk31_conv::{conv_encode, viterbi_decode_hard};
+use crate::codec::psk31_conv::{conv_encode, viterbi_decode_hard, StreamingViterbi};
 use crate::modulate::psk31::{psk31_sps, PSK31_BAUD, PSK31_SPS_8000, PSK31_SPS_12000};
 
 // ── Varicode tests ────────────────────────────────────────────────────────────
@@ -14,25 +14,92 @@ fn varicode_encode_space() {
 
 #[test]
 fn varicode_decode_roundtrip() {
-    // The canonical IZ8BLY/G3PLX Varicode table has a small number of duplicate
-    // codewords (some characters share the same bit pattern).  For those, the
-    // decode lookup returns the lower-indexed character (first match).
-    // We only assert that the roundtrip holds for characters that are the *first*
-    // in the table with their codeword.
+    // Verify that every ASCII byte 0–127 survives encode → decode.
     use crate::codec::varicode::varicode_encode as enc;
     use crate::codec::varicode::varicode_decode as dec;
 
-    for b in 32u8..127u8 {
+    for b in 0u8..128u8 {
         let (cw, len) = enc(b);
         let decoded = dec(cw, len);
-        // The decoded value must exist and must encode to the same codeword.
-        assert!(decoded.is_some(), "no decode for byte {}", b);
-        let d = decoded.unwrap();
-        let (cw2, len2) = enc(d);
-        assert_eq!((cw2, len2), (cw, len),
-            "codeword mismatch: byte {} encoded to ({},{}) but decoded as byte {} \
-             which encodes to ({},{})", b, cw, len, d, cw2, len2);
+        assert!(decoded.is_some(), "no decode for byte {} (cw=0b{:b}, len={})", b, cw, len);
+        assert_eq!(decoded.unwrap(), b,
+            "roundtrip mismatch: byte {} encoded to (0b{:b},{}) but decoded as {}",
+            b, cw, len, decoded.unwrap());
     }
+}
+
+/// Verify that every codeword in the table is unique — no two ASCII values
+/// share the same (codeword, length) pair.
+#[test]
+fn varicode_table_no_collisions() {
+    use crate::codec::varicode::varicode_encode as enc;
+    use std::collections::HashMap;
+
+    let mut seen: HashMap<(u16, u8), u8> = HashMap::new();
+    for b in 0u8..128u8 {
+        let (cw, len) = enc(b);
+        if let Some(&prev) = seen.get(&(cw, len)) {
+            panic!("collision: byte {} and byte {} both encode to (0b{:b}, {})",
+                prev, b, cw, len);
+        }
+        seen.insert((cw, len), b);
+    }
+}
+
+/// Verify that no codeword contains "00" internally (which would be mistaken
+/// for an inter-character boundary by the decoder).
+#[test]
+fn varicode_no_internal_zero_pairs() {
+    use crate::codec::varicode::varicode_encode as enc;
+
+    for b in 0u8..128u8 {
+        let (cw, len) = enc(b);
+        // Check every consecutive pair of bits for "00".
+        for i in 1..len {
+            let b0 = (cw >> (i - 1)) & 1;
+            let b1 = (cw >> i) & 1;
+            if b0 == 0 && b1 == 0 {
+                panic!("byte {} (0b{:b}, len={}) has internal 00 at bit positions {}-{}",
+                    b, cw, len, i - 1, i);
+            }
+        }
+    }
+}
+
+/// Encoder → Decoder stream roundtrip for all printable ASCII (32–126).
+/// Pushes all printable characters through VaricodeEncoder, then feeds
+/// the bit stream through VaricodeDecoder and verifies identical output.
+#[test]
+fn varicode_stream_roundtrip_all_printable() {
+    let mut enc = VaricodeEncoder::new();
+    // No preamble — just raw characters.
+    for b in 32u8..127u8 {
+        enc.push_byte(b);
+    }
+    let bits = enc.drain_bits();
+
+    // Decode the bit stream.
+    let mut dec = VaricodeDecoder::new();
+    for &bit in &bits {
+        dec.push_bit(bit);
+    }
+    // Flush with trailing zeros.
+    dec.push_bit(0);
+    dec.push_bit(0);
+
+    let mut decoded = Vec::new();
+    while let Some(ch) = dec.pop_char() {
+        decoded.push(ch);
+    }
+
+    let expected: Vec<u8> = (32u8..127u8).collect();
+    assert_eq!(decoded, expected,
+        "stream roundtrip failed: expected {} chars, got {}.\n\
+         First mismatch at index {}",
+        expected.len(), decoded.len(),
+        decoded.iter().zip(expected.iter())
+            .position(|(a, b)| a != b)
+            .unwrap_or(decoded.len().min(expected.len())));
 }
 
 #[test]
@@ -182,4 +249,115 @@ fn qpsk31_hard_decide_dqpsk_four_quadrants() {
     assert_eq!(hard_decide_dqpsk( 0.2, -0.8), ( 0.0, -1.0)); // -90°
     // Tie (|re| == |im|) → real axis wins
     assert_eq!(hard_decide_dqpsk( 0.707,  0.707), (1.0, 0.0));
+}
+
+// ── Streaming Viterbi tests ──────────────────────────────────────────────────
+
+/// Verify streaming Viterbi matches batch decoder on noiseless convolutionally
+/// coded bits (hard-decision DQPSK phasors).
+#[test]
+fn streaming_viterbi_matches_batch() {
+    use crate::codec::psk31_conv::{viterbi_decode, DQPSK_EXP};
+
+    // Encode a known bit sequence.
+    let bits_in: Vec<u8> = (0..200).map(|i| ((i * 7 + 3) & 1) as u8).collect();
+    let coded = conv_encode(&bits_in);
+
+    // Convert coded bits to DQPSK phasors (hard decision, noiseless).
+    let n_syms = coded.len() / 2;
+    let mut soft = Vec::with_capacity(n_syms * 2);
+    // Convert coded bits to DQPSK step phasors (what the streaming Viterbi expects).
+    for i in 0..n_syms {
+        let c0 = coded[i * 2] & 1;
+        let c1 = coded[i * 2 + 1] & 1;
+        let dibit = c0 * 2 + c1;
+        let (re, im) = DQPSK_EXP[dibit as usize];
+        soft.push(re);
+        soft.push(im);
+    }
+
+    // Batch decode (non-coherent, same metric).
+    let batch = viterbi_decode(&soft);
+
+    // Streaming decode.
+    let phase_steps: [(f32, f32); 4] = DQPSK_EXP;
+    let mut sv = StreamingViterbi::new(&phase_steps);
+    let mut streaming = Vec::new();
+    for i in 0..n_syms {
+        if let Some(b) = sv.feed_symbol(soft[i * 2], soft[i * 2 + 1]) {
+            streaming.push(b);
+        }
+    }
+    streaming.extend(sv.flush());
+
+    // Both should produce the same bits (after accounting for traceback latency).
+    // The batch decoder produces n_syms bits; the streaming decoder produces
+    // n_syms bits (25 from feed + 25 from flush = n_syms total after startup).
+    // Compare the overlapping region.
+    let compare_len = batch.len().min(streaming.len());
+    assert!(compare_len > 100, "too few bits to compare: batch={} streaming={}",
+        batch.len(), streaming.len());
+
+    let errors: usize = (0..compare_len)
+        .filter(|&i| batch[i] != streaming[i])
+        .count();
+    println!("streaming vs batch: {} bits compared, {} errors", compare_len, errors);
+    assert_eq!(errors, 0, "streaming Viterbi diverges from batch: {errors} errors in {compare_len} bits");
+}
+
+/// Verify streaming Viterbi produces correct text via full encode → decode
+/// roundtrip with varicode.
+#[test]
+fn streaming_viterbi_text_roundtrip() {
+    use crate::codec::psk31_conv::DQPSK_EXP;
+
+    let text = b"CQ CQ CQ DE N0GNR";
+
+    // Encode: text → varicode bits → convolutional bits → DQPSK phasors.
+    let mut enc = VaricodeEncoder::new();
+    enc.push_preamble(64);
+    for &b in text { enc.push_byte(b); }
+    enc.push_postamble(32);
+    let var_bits = enc.drain_bits();
+    let coded = conv_encode(&var_bits);
+    let n_syms = coded.len() / 2;
+
+    let phase_steps: [(f32, f32); 4] = DQPSK_EXP;
+    let mut sv = StreamingViterbi::new(&phase_steps);
+    let mut vdec = VaricodeDecoder::new();
+    let mut decoded = Vec::new();
+
+    // Feed DQPSK step phasors directly (non-coherent streaming Viterbi).
+    for i in 0..n_syms {
+        let c0 = coded[i * 2] & 1;
+        let c1 = coded[i * 2 + 1] & 1;
+        let dibit = c0 * 2 + c1;
+        let (re, im) = DQPSK_EXP[dibit as usize];
+        if let Some(b) = sv.feed_symbol(re, im) {
+            vdec.push_bit(b);
+            while let Some(ch) = vdec.pop_char() {
+                decoded.push(ch);
+            }
+        }
+    }
+    // Flush Viterbi + varicode.
+    for b in sv.flush() {
+        vdec.push_bit(b);
+        while let Some(ch) = vdec.pop_char() {
+            decoded.push(ch);
+        }
+    }
+    vdec.push_bit(0);
+    vdec.push_bit(0);
+    while let Some(ch) = vdec.pop_char() {
+        decoded.push(ch);
+    }
+
+    let decoded_str: String = decoded.iter()
+        .filter(|&&c| c >= 0x20 && c < 0x7f)
+        .map(|&c| c as char)
+        .collect();
+    println!("streaming Viterbi text: {:?}", decoded_str);
+    assert!(decoded_str.contains("CQ CQ CQ DE N0GNR"),
+        "expected message not found in {:?}", decoded_str);
 }

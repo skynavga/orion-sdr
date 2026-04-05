@@ -184,10 +184,10 @@ fn bpsk31_decodes_at_minus_5db_snr_2500hz() {
 
 // ── QPSK31 CI regression ──────────────────────────────────────────────────────
 
-/// QPSK31 coherent must decode at −7 dB SNR/2500 Hz (measured 100% success level).
+/// QPSK31 differential must decode at −6 dB SNR/2500 Hz (measured 100% success level).
 #[test]
-fn qpsk31_decodes_at_minus_7db_snr_2500hz() {
-    let snr_db = -7.0_f32;
+fn qpsk31_decodes_at_minus_6db_snr_2500hz() {
+    let snr_db = -6.0_f32;
     let text = b"CQ TEST";
     let noise_power = snr_to_noise_power(snr_db);
     assert!(

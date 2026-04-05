@@ -39,13 +39,13 @@ Input bits are `uint8` arrays (one bit per byte, LSB used). Output IQ is `comple
 
 | Class / function | Description |
 | --- | --- |
-| `VaricodeEncoder()` | Stateful encoder; `push_preamble(n)`, `push_byte(b)`, `push_postamble(n)`, `drain_bits() → uint8[N]`, `is_empty() → bool` |
-| `VaricodeDecoder()` | Stateful decoder; `push_bits(bits: uint8[N])`, `pop_bytes() → bytes` |
-| `Bpsk31Mod(fs, rf_hz, gain)` | BPSK31 modulator; `modulate_text(text, preamble_bits, postamble_bits) → complex64[N]`, `modulate_bits(bits) → complex64[N]` |
-| `Bpsk31Demod(fs, rf_hz, gain)` | BPSK31 demodulator; `process(iq) → float32[N]` (one soft value per symbol; positive = bit 1) |
-| `Qpsk31Mod(fs, rf_hz, gain)` | QPSK31 modulator; same API as `Bpsk31Mod` |
-| `Qpsk31Demod(fs, rf_hz, gain)` | QPSK31 demodulator; `process(iq) → float32[N]` (buffers phase-corrected phasor estimates), `flush() → uint8[N]` (runs coherent Viterbi MLSE) |
-| `psk31_sync(iq, fs, base_hz, max_hz, ...)` | Waterfall carrier search → `list[dict]` of candidates with soft bits |
+| `VaricodeEncoder()` | `push_preamble(n)`, `push_byte(b)`, `push_postamble(n)`, `drain_bits()`, `is_empty()` |
+| `VaricodeDecoder()` | `push_bits(bits: uint8[N])`, `pop_bytes() → bytes` |
+| `Bpsk31Mod(fs, rf_hz, gain)` | `modulate_text(text, pre, post) → complex64[N]`, `modulate_bits(bits) → complex64[N]` |
+| `Bpsk31Demod(fs, rf_hz, gain)` | `process(iq) → float32[N]` (one soft value per symbol; positive = bit 1) |
+| `Qpsk31Mod(fs, rf_hz, gain)` | Same API as `Bpsk31Mod` |
+| `Qpsk31Demod(fs, rf_hz, gain)` | `process(iq) → float32[N]` (differential `[Re(d), Im(d)]` pairs) |
+| `psk31_sync(iq, fs, ...)` | Waterfall carrier search → `list[dict]` of candidates with soft bits |
 
 `psk31_sync` candidate dicts contain:
 `{"time_sym": int, "freq_bin": int, "carrier_hz": float, "score": float, "soft_bits": float32[N]}`.
@@ -158,8 +158,8 @@ for the full module layout.
 | `Bpsk31Demod` | `process(iq, soft) → WorkReport` — one `f32` per symbol; positive = bit 1 (no phase flip) |
 | `Bpsk31Decider` | `process(soft, bits) → WorkReport` — threshold at 0.0 |
 | `Qpsk31Mod` | Same API as `Bpsk31Mod`; convolutional-encodes input bits before modulation |
-| `Qpsk31Demod` | `process(iq, soft) → WorkReport` — two `f32` per symbol `[Re(sym_c), Im(sym_c)]` (phase-corrected absolute phasor) |
-| `Qpsk31Decider` | Buffers phasor estimates; `flush(output)` runs coherent Viterbi MLSE |
+| `Qpsk31Demod` | `process(iq, soft) → WorkReport` — two `f32` per symbol `[Re(d), Im(d)]` (differential detection product) |
+| `Qpsk31Decider` | Buffers differential symbols; `flush(output)` runs Viterbi decode |
 
 ### PSK31 Codec
 
@@ -168,15 +168,16 @@ for the full module layout.
 | `VaricodeEncoder` | `push_preamble(n)`, `push_byte(b)`, `push_postamble(n)`, `next_bit() → Option<u8>`, `drain_bits() → Vec<u8>` |
 | `VaricodeDecoder` | `push_bit(bit)`, `pop_char() → Option<u8>` |
 | `conv_encode(bits)` | Rate-1/2 K=5 encoder (G0=25, G1=23) → interleaved `Vec<u8>` |
-| `viterbi_decode(soft)` | Differential soft Viterbi decoder; input `[Re(d), Im(d)]` pairs, positive = coded bit likely 0 |
-| `viterbi_decode_coherent(soft, phase_steps)` | Coherent MLSE Viterbi; input `[Re(sym_c), Im(sym_c)]` pairs; tracks hypothesised absolute phasor per trellis state |
+| `viterbi_decode(soft)` | Soft Viterbi decoder; input `[Re(d), Im(d)]` DQPSK pairs; non-coherent branch metric |
+| `viterbi_decode_coherent(soft, steps)` | Coherent MLSE Viterbi; tracks absolute phasor per state (retained for reference) |
 | `viterbi_decode_hard(bits)` | Hard-decision wrapper around `viterbi_decode` |
+| `StreamingViterbi` | Fixed-lag sliding-window Viterbi; `feed_symbol(re, im)`, `flush()` |
 
 ### PSK31 Sync
 
 | Function / Type | Description |
 | --- | --- |
-| `psk31_sync(iq, fs, base_hz, max_hz, min_carrier_syms, peak_margin_db, n_bits, max_cand)` | Waterfall energy-persistence carrier search → `Vec<Psk31SyncResult>` |
+| `psk31_sync(iq, fs, base_hz, max_hz, ...)` | Waterfall energy-persistence carrier search → `Vec<Psk31SyncResult>` |
 | `Psk31SyncResult` | `{time_sym: usize, freq_bin: usize, carrier_hz: f32, score: f32, soft_bits: Vec<f32>}` |
 
 ### FT8 / FT4 Waveform
