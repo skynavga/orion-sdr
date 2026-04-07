@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // src/modulate/psk31.rs
 //
 // PSK31 modulators: BPSK31 and QPSK31.
@@ -216,7 +219,7 @@ const QPSK31_PHASE_STEP: [C32; 4] = [
     C32 { re: -1.0, im:  0.0 }, // dibit 3: g0=1, g1=1 → 180°
 ];
 
-// QPSK31 phase-step table for the Viterbi decoder is in `codec::psk31_conv::DQPSK_EXP`.
+// QPSK31 phase-step table for the Viterbi decoder is in `codec::psk31::DQPSK_EXP`.
 
 /// QPSK31 modulator.
 ///

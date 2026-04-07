@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // Gray code tables for FT8 (8-FSK, 3 bits/symbol) and FT4 (4-FSK, 2 bits/symbol).
 //
 // FT8: 3-bit index → tone index.  Table from ft8_lib `kFT8_Gray_map`.

@@ -1,3 +1,6 @@
+// Copyright (c) 2025-2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! orion-sdr — toplevel exports
 
 pub mod core;
@@ -12,6 +15,3 @@ pub mod util;
 pub mod python;
 
 pub use core::{Block, WorkReport, AudioToIqChain, IqToAudioChain, IqToIqChain};
-  
-#[cfg(test)]
-mod tests;

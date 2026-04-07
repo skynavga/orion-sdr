@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // FT4 channel codec: same LDPC(174,91) as FT8 but 4-FSK (2 bits/symbol).
 //
 // FT4 difference from FT8:
