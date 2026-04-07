@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // src/python/psk31.rs — PyO3 bindings for PSK31 (BPSK31 + QPSK31).
 
 use pyo3::prelude::*;
@@ -6,8 +9,9 @@ use numpy::{PyReadonlyArray1, PyArray1, IntoPyArray};
 use num_complex::Complex32;
 
 use crate::codec::varicode::{VaricodeEncoder as RsVaricodeEncoder, VaricodeDecoder as RsVaricodeDecoder};
-use crate::modulate::psk31::{Bpsk31Mod as RsBpsk31Mod, Qpsk31Mod as RsQpsk31Mod, PSK31_PREAMBLE_BITS, PSK31_POSTAMBLE_BITS};
-use crate::demodulate::psk31::{Bpsk31Demod as RsBpsk31Demod, Qpsk31Demod as RsQpsk31Demod, Qpsk31Decider as RsQpsk31Decider};
+use crate::codec::psk31::Psk31Stream as RsPsk31Stream;
+use crate::modulate::psk31::{Bpsk31Mod as RsBpsk31Mod, Qpsk31Mod as RsQpsk31Mod, PSK31_PREAMBLE_BITS, PSK31_POSTAMBLE_BITS, PSK31_BAUD};
+use crate::demodulate::psk31::{Bpsk31Demod as RsBpsk31Demod, Bpsk31Decider as RsBpsk31Decider, Qpsk31Demod as RsQpsk31Demod, Qpsk31Decider as RsQpsk31Decider};
 use crate::core::Block;
 
 // ── VaricodeEncoder ───────────────────────────────────────────────────────────
@@ -227,6 +231,116 @@ impl PyQpsk31Demod {
         let mut bits = Vec::new();
         self.decider.flush(&mut bits);
         bits.into_pyarray(py)
+    }
+}
+
+// ── Bpsk31Decider ────────────────────────────────────────────────────────────
+
+#[pyclass(name = "Bpsk31Decider")]
+pub struct PyBpsk31Decider(RsBpsk31Decider);
+
+#[pymethods]
+impl PyBpsk31Decider {
+    #[new]
+    fn new() -> Self {
+        Self(RsBpsk31Decider::new())
+    }
+
+    /// Threshold soft bits to hard decisions. Returns uint8 array.
+    fn process<'py>(
+        &mut self,
+        py: Python<'py>,
+        soft: PyReadonlyArray1<'_, f32>,
+    ) -> PyResult<Bound<'py, PyArray1<u8>>> {
+        let input = soft.as_slice()?;
+        let mut out = vec![0u8; input.len()];
+        let wr = self.0.process(input, &mut out);
+        out.truncate(wr.out_written);
+        Ok(out.into_pyarray(py))
+    }
+}
+
+// ── Psk31Stream ──────────────────────────────────────────────────────────────
+
+/// Streaming PSK31 decoder.
+///
+/// Wires demod → decider/viterbi → varicode into a single feed/flush API.
+/// Use `Psk31Stream("bpsk", fs, carrier_hz, gain)` for BPSK31 or
+/// `Psk31Stream("qpsk", ...)` for QPSK31.
+#[pyclass(name = "Psk31Stream")]
+pub struct PyPsk31Stream(RsPsk31Stream);
+
+#[pymethods]
+impl PyPsk31Stream {
+    #[new]
+    #[pyo3(signature = (mode, fs, carrier_hz, gain=1.0))]
+    fn new(mode: &str, fs: f32, carrier_hz: f32, gain: f32) -> PyResult<Self> {
+        match mode.to_lowercase().as_str() {
+            "bpsk" | "bpsk31" => Ok(Self(RsPsk31Stream::new_bpsk(fs, carrier_hz, gain))),
+            "qpsk" | "qpsk31" => Ok(Self(RsPsk31Stream::new_qpsk(fs, carrier_hz, gain))),
+            _ => Err(pyo3::exceptions::PyValueError::new_err(
+                format!("mode must be 'bpsk' or 'qpsk', got '{}'", mode),
+            )),
+        }
+    }
+
+    /// Feed IQ samples and return any newly decoded text.
+    fn feed(&mut self, iq: PyReadonlyArray1<'_, Complex32>) -> PyResult<String> {
+        let input = iq.as_slice()?;
+        Ok(self.0.feed(input))
+    }
+
+    /// Flush the decoder and return any remaining text.
+    fn flush(&mut self) -> String {
+        self.0.flush()
+    }
+}
+
+// ── best_sync ────────────────────────────────────────────────────────────────
+
+/// Pick the best PSK31 sync result nearest to `carrier_hz`.
+///
+/// Takes the list of dicts returned by `psk31_sync()` and returns the best
+/// candidate as a dict, or None if no candidate is within 2×baud of the carrier.
+#[pyfunction]
+#[pyo3(signature = (candidates, carrier_hz, baud=PSK31_BAUD))]
+pub fn best_psk31_sync<'py>(
+    _py: Python<'py>,
+    candidates: &Bound<'py, PyList>,
+    carrier_hz: f32,
+    baud: f32,
+) -> PyResult<Option<Bound<'py, PyDict>>> {
+    // Convert Python dicts to Psk31SyncResult structs.
+    let mut results = Vec::new();
+    for item in candidates.iter() {
+        let d = item.cast::<PyDict>()?;
+        let hz: f32 = d.get_item("carrier_hz")?.unwrap().extract()?;
+        let ts: usize = d.get_item("time_sym")?.unwrap().extract()?;
+        let fb: usize = d.get_item("freq_bin")?.unwrap().extract()?;
+        let sc: f32 = d.get_item("score")?.unwrap().extract()?;
+        results.push(crate::sync::psk31_sync::Psk31SyncResult {
+            carrier_hz: hz,
+            time_sym: ts,
+            freq_bin: fb,
+            score: sc,
+            soft_bits: vec![], // not needed for best_sync selection
+        });
+    }
+
+    match crate::util::best_sync(&results, carrier_hz, baud) {
+        Some((hz, time_sym)) => {
+            // Find and return the matching original dict.
+            for item in candidates.iter() {
+                let d = item.cast::<PyDict>()?;
+                let ts: usize = d.get_item("time_sym")?.unwrap().extract()?;
+                let ch: f32 = d.get_item("carrier_hz")?.unwrap().extract()?;
+                if ts == time_sym && (ch - hz).abs() < 0.01 {
+                    return Ok(Some(d.clone()));
+                }
+            }
+            Ok(None)
+        }
+        None => Ok(None),
     }
 }
 

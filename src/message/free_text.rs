@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use super::tables::{nchar, charn, Table};
 
 /// Encode a free-text string (up to 13 chars, base-42 alphabet) into 9 bytes (71 bits).
@@ -48,38 +51,4 @@ pub fn decode_free_text(b71: &[u8; 9]) -> String {
 
     let s: String = chars.iter().collect();
     s.trim_end_matches(' ').to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn free_text_roundtrip() {
-        let cases = &[
-            "CQ DX",
-            "HELLO WORLD",
-            "TNX 73 GL",
-            "73",
-            " ",
-            "",
-        ];
-        for &text in cases {
-            let encoded = encode_free_text(text)
-                .expect(&format!("encode failed for '{}'", text));
-            let decoded = decode_free_text(&encoded);
-            assert_eq!(decoded, text.trim_end(), "Roundtrip failed for '{}'", text);
-        }
-    }
-
-    #[test]
-    fn free_text_too_long() {
-        assert!(encode_free_text("12345678901234").is_none());
-    }
-
-    #[test]
-    fn free_text_invalid_char() {
-        // '#' is not in the FULL table
-        assert!(encode_free_text("HELLO#WORLD").is_none());
-    }
 }

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // LDPC(174,91) encoder and soft-decision decoder for FT8/FT4.
 //
 // Code parameters:

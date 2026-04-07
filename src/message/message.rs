@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use super::callsign::{CallsignHashTable, pack28, unpack28, pack58};
 use super::grid::{GridField, unpackgrid, gridfield_to_pack};
 use super::free_text::{encode_free_text, decode_free_text};
@@ -328,41 +331,4 @@ fn unpack58_readonly(n58: u64) -> String {
     }
     let s: String = chars.iter().collect();
     s.trim_matches(' ').to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pack77_type1_roundtrip() {
-        let mut ht = CallsignHashTable::new();
-        let msg = Ft8Message::Standard {
-            call_to: "KD9ABC".to_string(),
-            call_de: "W9XYZ".to_string(),
-            extra: GridField::Grid("FN31".to_string()),
-        };
-        let payload = pack77(&msg, &mut ht).expect("pack77 failed");
-        let decoded = unpack77(&payload, &ht);
-        assert_eq!(decoded, msg, "Type 1 roundtrip failed");
-    }
-
-    #[test]
-    fn pack77_free_text_roundtrip() {
-        let mut ht = CallsignHashTable::new();
-        let msg = Ft8Message::FreeText("CQ DX".to_string());
-        let payload = pack77(&msg, &mut ht).expect("pack77 free text");
-        let decoded = unpack77(&payload, &ht);
-        assert_eq!(decoded, msg);
-    }
-
-    #[test]
-    fn pack77_telemetry_roundtrip() {
-        let mut ht = CallsignHashTable::new();
-        let data = [0x12u8, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0, 0x11];
-        let msg = Ft8Message::Telemetry(data);
-        let payload = pack77(&msg, &mut ht).expect("pack77 telemetry");
-        let decoded = unpack77(&payload, &ht);
-        assert_eq!(decoded, msg);
-    }
 }

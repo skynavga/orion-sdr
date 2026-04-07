@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // src/demodulate/psk31.rs
 //
 // PSK31 demodulators: BPSK31 and QPSK31.
@@ -30,7 +33,7 @@
 use num_complex::Complex32 as C32;
 use crate::core::{Block, WorkReport};
 use crate::dsp::Rotator;
-use crate::codec::psk31_conv::viterbi_decode;
+use crate::codec::psk31::viterbi_decode;
 use crate::modulate::psk31::psk31_sps;
 
 fn make_hann(sps: usize) -> Vec<f32> {
@@ -55,7 +58,7 @@ pub(crate) fn hard_decide_dbpsk(d_re: f32) -> f32 {
 /// QPSK31 hard decision on a differential symbol.
 /// Returns the nearest unit-axis phasor: (±1,0) or (0,±1).
 #[inline(always)]
-pub(crate) fn hard_decide_dqpsk(d_re: f32, d_im: f32) -> (f32, f32) {
+pub fn hard_decide_dqpsk(d_re: f32, d_im: f32) -> (f32, f32) {
     if d_re.abs() >= d_im.abs() {
         if d_re >= 0.0 { (1.0, 0.0) } else { (-1.0, 0.0) }
     } else {

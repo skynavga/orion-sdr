@@ -1,3 +1,6 @@
+// Copyright (c) 2025-2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // src/modulate/ssb.rs
 use crate::dsp::{LpCascade, Rotator};
 use crate::core::{Block, WorkReport};

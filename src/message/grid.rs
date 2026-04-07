@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 const MAXGRID4: u16 = 32_400;
 
 /// The "extra" field in a standard FT8 message.
@@ -142,44 +145,4 @@ pub fn gridfield_to_pack(gf: &GridField) -> (u16, bool) {
     let ir = (raw & 0x8000) != 0;
     let igrid4 = raw & 0x7FFF;
     (igrid4, ir)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn packgrid_grid_roundtrip() {
-        for g in &["FN31", "AA00", "RR99"] {
-            let raw = packgrid(g);
-            let gf = unpackgrid(raw & 0x7FFF, (raw & 0x8000) != 0);
-            assert_eq!(gf, GridField::Grid(g.to_string()), "Roundtrip failed for {}", g);
-        }
-    }
-
-    #[test]
-    fn packgrid_report_roundtrip() {
-        let cases: &[(&str, GridField)] = &[
-            ("+07",  GridField::Report(7)),
-            ("-12",  GridField::Report(-12)),
-            ("R-05", GridField::RReport(-5)),
-        ];
-        for (s, expected) in cases {
-            let raw = packgrid(s);
-            let gf = unpackgrid(raw & 0x7FFF, (raw & 0x8000) != 0);
-            assert_eq!(&gf, expected, "Roundtrip failed for {}", s);
-        }
-    }
-
-    #[test]
-    fn packgrid_tokens() {
-        let raw = packgrid("RRR");
-        assert_eq!(unpackgrid(raw & 0x7FFF, false), GridField::RRR);
-        let raw = packgrid("RR73");
-        assert_eq!(unpackgrid(raw & 0x7FFF, false), GridField::RR73);
-        let raw = packgrid("73");
-        assert_eq!(unpackgrid(raw & 0x7FFF, false), GridField::Seventy3);
-        let raw = packgrid("");
-        assert_eq!(unpackgrid(raw & 0x7FFF, false), GridField::None);
-    }
 }

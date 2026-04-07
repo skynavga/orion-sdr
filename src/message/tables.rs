@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 /// Character table selector — matches ft8_lib's `ft8_char_table_e`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Table {
@@ -84,29 +87,5 @@ pub fn charn(n: u8, table: Table) -> char {
             if n == 0 { '/' } else { '_' }
         }
         _ => '_',
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn nchar_charn_roundtrip_full() {
-        let chars: &str = " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ+-./? ";
-        for c in " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ+-./?".chars() {
-            let idx = nchar(c, Table::Full).expect(&format!("nchar failed for '{}'", c));
-            assert_eq!(charn(idx, Table::Full), c);
-        }
-        // Make sure ' ' is not repeated by FULL test
-        let _ = chars;
-    }
-
-    #[test]
-    fn nchar_alphanum_space() {
-        assert_eq!(nchar(' ', Table::AlphanumSpace), Some(0));
-        assert_eq!(nchar('0', Table::AlphanumSpace), Some(1));
-        assert_eq!(nchar('Z', Table::AlphanumSpace), Some(36));
-        assert_eq!(nchar('/', Table::AlphanumSpace), None);
     }
 }

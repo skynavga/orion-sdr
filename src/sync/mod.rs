@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // src/sync/mod.rs
 //
 // Frame synchronisation for FT8 and FT4.

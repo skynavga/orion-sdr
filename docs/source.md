@@ -1,3 +1,8 @@
+<!--
+  Copyright (c) 2026 G & R Associates LLC
+  SPDX-License-Identifier: MIT OR Apache-2.0
+-->
+
 # Source Layout
 
 ```text
@@ -14,7 +19,9 @@ src/
   lib.rs              — crate root, public API re-exports
   core.rs             — Block trait, WorkReport, chain schedulers
                         (IqToAudioChain, IqToIqChain, AudioToIqChain, BasicChain)
-  util.rs             — rms, tone, snr_db_at, atan2_approx, run_block helpers
+  util.rs             — rms, tone, snr_db_at, atan2_approx, run_block helpers,
+                        power_spectrum, spectrum_snr_db, spectrum_bw_hz, best_sync,
+                        SIGNAL_THRESHOLD, PSK31_BW_HZ
   dsp/
     agc.rs            — AgcRms, AgcRmsIq
     dc.rs             — DcBlocker (1st-order HP: y = x - x1 + r·y1)
@@ -53,7 +60,8 @@ src/
     ft8.rs            — Ft8Codec: encode, decode_hard, decode_soft, frame_to_llr_hard
     gray.rs           — gray8_encode/decode (FT8), gray4_encode/decode (FT4)
     ldpc.rs           — ldpc_encode, ldpc_decode_soft (LDPC(174,91), BP 20 iter)
-    psk31_conv.rs     — conv_encode, viterbi_decode, viterbi_decode_coherent, StreamingViterbi (rate-1/2 K=5 convolutional codec)
+    psk31.rs          — conv_encode, viterbi_decode, viterbi_decode_coherent, StreamingViterbi,
+                        Psk31Stream (streaming BPSK31/QPSK31 decode pipeline)
     varicode.rs       — varicode_encode/decode, VaricodeEncoder, VaricodeDecoder (IZ8BLY)
   sync/
     costas.rs         — Costas difference-metric scorer and top-N candidate search
@@ -74,10 +82,14 @@ src/
     ft8.rs            — Python wrappers for FT8/FT4 waveform, codec, sync, and message
     modulate.rs       — Python wrappers for modulators
     psk31.rs          — Python wrappers for PSK31 mod/demod, Varicode, and psk31_sync
-  tests/
-    unit/             — per-module unit tests (one file per module)
-    roundtrip/        — mod→demod→decode full-stack tests (one file per mode)
-    performance/
-      throughput/     — throughput benchmarks (feature-gated, one file per mode)
-      snr/            — SNR sensitivity sweeps (feature-gated, always pass, print curve)
+tests/
+  common/mod.rs       — shared test helpers (snr_db_at, add_awgn)
+  unit.rs             — entry point for unit tests
+  unit/               — per-module unit tests (one file per modulation type)
+  roundtrip.rs        — entry point for roundtrip tests
+  roundtrip/          — mod→demod→decode full-stack tests (one file per mode)
+  performance.rs      — entry point for performance tests
+  performance/
+    throughput/        — throughput benchmarks (feature-gated, one file per mode)
+    snr/              — SNR sensitivity regression tests (feature-gated)
 ```

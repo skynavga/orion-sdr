@@ -210,6 +210,97 @@ class TestQpsk31Demod:
 # psk31_sync
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Bpsk31Decider
+# ---------------------------------------------------------------------------
+
+class TestBpsk31Decider:
+    def test_threshold(self):
+        decider = sdr.Bpsk31Decider()
+        soft = np.array([1.0, -1.0, 2.5, -0.5], dtype=np.float32)
+        hard = decider.process(soft)
+        assert hard.dtype == np.uint8
+        np.testing.assert_array_equal(hard, [1, 0, 1, 0])
+
+    def test_empty_input(self):
+        decider = sdr.Bpsk31Decider()
+        hard = decider.process(np.array([], dtype=np.float32))
+        assert len(hard) == 0
+
+
+# ---------------------------------------------------------------------------
+# Psk31Stream
+# ---------------------------------------------------------------------------
+
+class TestPsk31Stream:
+    def test_bpsk_decode_hello(self):
+        carrier_hz = 1000.0
+        mod = sdr.Bpsk31Mod(FS, carrier_hz, 1.0)
+        iq = mod.modulate_text(b"HELLO", preamble_bits=32, postamble_bits=32)
+
+        stream = sdr.Psk31Stream("bpsk", FS, carrier_hz, 1.0)
+        decoded = stream.feed(iq) + stream.flush()
+        assert "HELLO" in decoded, f"expected 'HELLO' in '{decoded}'"
+
+    def test_qpsk_decode_hello(self):
+        carrier_hz = 1000.0
+        mod = sdr.Qpsk31Mod(FS, carrier_hz, 1.0)
+        iq = mod.modulate_text(b"HELLO", preamble_bits=32, postamble_bits=32)
+
+        stream = sdr.Psk31Stream("qpsk", FS, carrier_hz, 1.0)
+        decoded = stream.feed(iq) + stream.flush()
+        assert "HELLO" in decoded, f"expected 'HELLO' in '{decoded}'"
+
+    def test_invalid_mode_raises(self):
+        with pytest.raises(ValueError):
+            sdr.Psk31Stream("am", FS, 1000.0, 1.0)
+
+    def test_empty_feed(self):
+        stream = sdr.Psk31Stream("bpsk", FS, 1000.0, 1.0)
+        result = stream.feed(np.array([], dtype=np.complex64))
+        assert result == ""
+
+    def test_mode_aliases(self):
+        # Both "bpsk31" and "bpsk" should work.
+        s1 = sdr.Psk31Stream("bpsk31", FS, 1000.0, 1.0)
+        s2 = sdr.Psk31Stream("qpsk31", FS, 1000.0, 1.0)
+        assert s1.flush() == ""
+        assert s2.flush() == ""
+
+
+# ---------------------------------------------------------------------------
+# best_psk31_sync
+# ---------------------------------------------------------------------------
+
+class TestBestPsk31Sync:
+    def test_picks_nearest(self):
+        candidates = [
+            {"time_sym": 10, "freq_bin": 0, "carrier_hz": 1000.0,
+             "score": 1.0, "soft_bits": np.array([], dtype=np.float32)},
+            {"time_sym": 5,  "freq_bin": 0, "carrier_hz": 1001.0,
+             "score": 1.0, "soft_bits": np.array([], dtype=np.float32)},
+            {"time_sym": 1,  "freq_bin": 0, "carrier_hz": 5000.0,
+             "score": 1.0, "soft_bits": np.array([], dtype=np.float32)},
+        ]
+        best = sdr.best_psk31_sync(candidates, 1000.0)
+        assert best is not None
+        assert best["time_sym"] == 5
+
+    def test_returns_none_when_no_match(self):
+        candidates = [
+            {"time_sym": 1, "freq_bin": 0, "carrier_hz": 5000.0,
+             "score": 1.0, "soft_bits": np.array([], dtype=np.float32)},
+        ]
+        assert sdr.best_psk31_sync(candidates, 1000.0) is None
+
+    def test_empty_candidates(self):
+        assert sdr.best_psk31_sync([], 1000.0) is None
+
+
+# ---------------------------------------------------------------------------
+# psk31_sync
+# ---------------------------------------------------------------------------
+
 class TestPsk31Sync:
     def test_returns_list(self):
         noise = np.zeros(int(FS * 1.0), dtype=np.complex64)
