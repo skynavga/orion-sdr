@@ -30,7 +30,7 @@
 use num_complex::Complex32 as C32;
 use crate::core::{Block, WorkReport};
 use crate::dsp::Rotator;
-use crate::codec::psk31_conv::viterbi_decode;
+use crate::codec::psk31::viterbi_decode;
 use crate::modulate::psk31::psk31_sps;
 
 fn make_hann(sps: usize) -> Vec<f32> {
