@@ -1,4 +1,4 @@
-// src/codec/psk31_conv.rs
+// src/codec/psk31.rs
 //
 // Rate-1/2, constraint-length-5 convolutional encoder and Viterbi decoder
 // for QPSK31.
@@ -380,4 +380,166 @@ pub fn viterbi_decode_hard(bits: &[u8]) -> Vec<u8> {
         soft.push(im);
     }
     viterbi_decode(&soft)
+}
+
+// ── Streaming PSK31 decode pipeline ──────────────────────────────────────────
+
+use num_complex::Complex32 as C32;
+use crate::Block;
+use crate::demodulate::psk31::{Bpsk31Demod, Bpsk31Decider, Qpsk31Demod};
+use crate::codec::varicode::VaricodeDecoder;
+
+/// Persistent streaming PSK31 decode state.
+///
+/// Wires together the demod → decider/viterbi → varicode pipeline and
+/// tracks how far into the IQ buffer has been processed.
+///
+/// BPSK31: fully incremental — `Bpsk31Decider` produces hard bits instantly,
+/// which are pushed through the `VaricodeDecoder` character by character.
+///
+/// QPSK31: `Qpsk31Demod` produces differential soft symbols; each symbol is
+/// fed through `StreamingViterbi` which emits decoded bits with a fixed
+/// latency of 32 symbols, then through the `VaricodeDecoder`.
+pub enum Psk31Stream {
+    Bpsk {
+        demod:     Bpsk31Demod,
+        decider:   Bpsk31Decider,
+        vdec:      VaricodeDecoder,
+        fed_up_to: usize,
+    },
+    Qpsk {
+        demod:     Qpsk31Demod,
+        viterbi:   StreamingViterbi,
+        vdec:      VaricodeDecoder,
+        fed_up_to: usize,
+    },
+}
+
+impl Psk31Stream {
+    /// Create a new BPSK31 streaming decoder.
+    pub fn new_bpsk(fs: f32, carrier_hz: f32, gain: f32) -> Self {
+        Psk31Stream::Bpsk {
+            demod:     Bpsk31Demod::new(fs, carrier_hz, gain),
+            decider:   Bpsk31Decider::new(),
+            vdec:      VaricodeDecoder::new(),
+            fed_up_to: 0,
+        }
+    }
+
+    /// Create a new QPSK31 streaming decoder.
+    pub fn new_qpsk(fs: f32, carrier_hz: f32, gain: f32) -> Self {
+        Psk31Stream::Qpsk {
+            demod:     Qpsk31Demod::new(fs, carrier_hz, gain),
+            viterbi:   StreamingViterbi::new(&DQPSK_EXP),
+            vdec:      VaricodeDecoder::new(),
+            fed_up_to: 0,
+        }
+    }
+
+    /// Number of IQ samples already processed.
+    pub fn fed_up_to(&self) -> usize {
+        match self {
+            Psk31Stream::Bpsk { fed_up_to, .. } => *fed_up_to,
+            Psk31Stream::Qpsk { fed_up_to, .. } => *fed_up_to,
+        }
+    }
+
+    /// Update the processed-sample counter (e.g. after buffer truncation).
+    pub fn set_fed_up_to(&mut self, v: usize) {
+        match self {
+            Psk31Stream::Bpsk { fed_up_to, .. } => *fed_up_to = v,
+            Psk31Stream::Qpsk { fed_up_to, .. } => *fed_up_to = v,
+        }
+    }
+
+    /// Feed new IQ samples through the demod chain.
+    /// Returns any newly decoded printable ASCII characters.
+    pub fn feed(&mut self, iq: &[C32]) -> String {
+        if iq.is_empty() { return String::new(); }
+
+        match self {
+            Psk31Stream::Bpsk { demod, decider, vdec, .. } => {
+                let max_syms = iq.len() / 32 + 4;
+                let mut soft = vec![0.0_f32; max_syms];
+                let wr = demod.process(iq, &mut soft);
+                soft.truncate(wr.out_written);
+
+                let mut bits = vec![0_u8; soft.len()];
+                let dr = decider.process(&soft, &mut bits);
+                bits.truncate(dr.out_written);
+
+                let mut text = String::new();
+                for &b in &bits {
+                    vdec.push_bit(b);
+                    while let Some(ch) = vdec.pop_char() {
+                        if ch >= 0x20 && ch < 0x7f {
+                            text.push(ch as char);
+                        }
+                    }
+                }
+                text
+            }
+            Psk31Stream::Qpsk { demod, viterbi, vdec, .. } => {
+                let max_soft = iq.len() / 32 + 8;
+                let mut soft = vec![0.0_f32; max_soft];
+                let wr = demod.process(iq, &mut soft);
+                soft.truncate(wr.out_written);
+
+                let mut text = String::new();
+                let n_syms = soft.len() / 2;
+                for i in 0..n_syms {
+                    let d_re = soft[i * 2];
+                    let d_im = soft[i * 2 + 1];
+                    // Skip near-zero symbols (silence/startup).
+                    if d_re * d_re + d_im * d_im < 0.01 { continue; }
+
+                    if let Some(b) = viterbi.feed_symbol(d_re, d_im) {
+                        vdec.push_bit(b);
+                        while let Some(ch) = vdec.pop_char() {
+                            if ch >= 0x20 && ch < 0x7f {
+                                text.push(ch as char);
+                            }
+                        }
+                    }
+                }
+                text
+            }
+        }
+    }
+
+    /// Flush the decoder to emit trailing characters.
+    pub fn flush(&mut self) -> String {
+        match self {
+            Psk31Stream::Bpsk { vdec, .. } => {
+                vdec.push_bit(0);
+                vdec.push_bit(0);
+                let mut text = String::new();
+                while let Some(ch) = vdec.pop_char() {
+                    if ch >= 0x20 && ch < 0x7f {
+                        text.push(ch as char);
+                    }
+                }
+                text
+            }
+            Psk31Stream::Qpsk { viterbi, vdec, .. } => {
+                let mut text = String::new();
+                for b in viterbi.flush() {
+                    vdec.push_bit(b);
+                    while let Some(ch) = vdec.pop_char() {
+                        if ch >= 0x20 && ch < 0x7f {
+                            text.push(ch as char);
+                        }
+                    }
+                }
+                vdec.push_bit(0);
+                vdec.push_bit(0);
+                while let Some(ch) = vdec.pop_char() {
+                    if ch >= 0x20 && ch < 0x7f {
+                        text.push(ch as char);
+                    }
+                }
+                text
+            }
+        }
+    }
 }

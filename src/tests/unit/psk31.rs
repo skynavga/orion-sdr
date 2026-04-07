@@ -1,6 +1,6 @@
 
 use crate::codec::varicode::{varicode_encode, VaricodeEncoder, VaricodeDecoder};
-use crate::codec::psk31_conv::{conv_encode, viterbi_decode_hard, StreamingViterbi};
+use crate::codec::psk31::{conv_encode, viterbi_decode_hard, StreamingViterbi};
 use crate::modulate::psk31::{psk31_sps, PSK31_BAUD, PSK31_SPS_8000, PSK31_SPS_12000};
 
 // ── Varicode tests ────────────────────────────────────────────────────────────
@@ -257,7 +257,7 @@ fn qpsk31_hard_decide_dqpsk_four_quadrants() {
 /// coded bits (hard-decision DQPSK phasors).
 #[test]
 fn streaming_viterbi_matches_batch() {
-    use crate::codec::psk31_conv::{viterbi_decode, DQPSK_EXP};
+    use crate::codec::psk31::{viterbi_decode, DQPSK_EXP};
 
     // Encode a known bit sequence.
     let bits_in: Vec<u8> = (0..200).map(|i| ((i * 7 + 3) & 1) as u8).collect();
@@ -309,7 +309,7 @@ fn streaming_viterbi_matches_batch() {
 /// roundtrip with varicode.
 #[test]
 fn streaming_viterbi_text_roundtrip() {
-    use crate::codec::psk31_conv::DQPSK_EXP;
+    use crate::codec::psk31::DQPSK_EXP;
 
     let text = b"CQ CQ CQ DE N0GNR";
 
