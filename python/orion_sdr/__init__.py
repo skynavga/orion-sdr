@@ -31,9 +31,12 @@ from orion_sdr.orion_sdr import (
     VaricodeDecoder,
     Bpsk31Mod,
     Bpsk31Demod,
+    Bpsk31Decider,
     Qpsk31Mod,
     Qpsk31Demod,
+    Psk31Stream,
     psk31_sync,
+    best_psk31_sync,
 )
 
 __all__ = [
@@ -69,7 +72,10 @@ __all__ = [
     "VaricodeDecoder",
     "Bpsk31Mod",
     "Bpsk31Demod",
+    "Bpsk31Decider",
     "Qpsk31Mod",
     "Qpsk31Demod",
+    "Psk31Stream",
     "psk31_sync",
+    "best_psk31_sync",
 ]

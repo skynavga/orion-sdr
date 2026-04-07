@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // src/modulate/psk31.rs
 //
 // PSK31 modulators: BPSK31 and QPSK31.

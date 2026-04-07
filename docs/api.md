@@ -1,3 +1,8 @@
+<!--
+  Copyright (c) 2026 G & R Associates LLC
+  SPDX-License-Identifier: MIT OR Apache-2.0
+-->
+
 # API Reference
 
 ## Python API
@@ -42,14 +47,18 @@ Input bits are `uint8` arrays (one bit per byte, LSB used). Output IQ is `comple
 | `VaricodeEncoder()` | `push_preamble(n)`, `push_byte(b)`, `push_postamble(n)`, `drain_bits()`, `is_empty()` |
 | `VaricodeDecoder()` | `push_bits(bits: uint8[N])`, `pop_bytes() → bytes` |
 | `Bpsk31Mod(fs, rf_hz, gain)` | `modulate_text(text, pre, post) → complex64[N]`, `modulate_bits(bits) → complex64[N]` |
-| `Bpsk31Demod(fs, rf_hz, gain)` | `process(iq) → float32[N]` (one soft value per symbol; positive = bit 1) |
+| `Bpsk31Demod(fs, rf_hz, gain)` | `process(iq) → float32[N]` (one soft value per symbol) |
+| `Bpsk31Decider()` | `process(soft) → uint8[N]` (threshold soft bits to hard decisions) |
 | `Qpsk31Mod(fs, rf_hz, gain)` | Same API as `Bpsk31Mod` |
 | `Qpsk31Demod(fs, rf_hz, gain)` | `process(iq) → float32[N]` (differential `[Re(d), Im(d)]` pairs) |
-| `psk31_sync(iq, fs, ...)` | Waterfall carrier search → `list[dict]` of candidates with soft bits |
+| `Psk31Stream(mode, fs, hz, gain)` | `feed(iq) → str`, `flush() → str`; mode = `"bpsk"` or `"qpsk"` |
+| `psk31_sync(iq, fs, ...)` | Waterfall carrier search → `list[dict]` of candidates |
+| `best_psk31_sync(candidates, hz)` | Pick best candidate from `psk31_sync()` results |
 
 `psk31_sync` candidate dicts contain:
 `{"time_sym": int, "freq_bin": int, "carrier_hz": float, "score": float, "soft_bits": float32[N]}`.
-Pass `soft_bits` to `Bpsk31Demod` (BPSK31) or `Qpsk31Demod.flush()` (QPSK31) to decode.
+Use `Psk31Stream` for end-to-end decode, or manual pipeline via
+`Bpsk31Demod` → `Bpsk31Decider` → `VaricodeDecoder`.
 
 #### FT8 / FT4
 
@@ -115,6 +124,22 @@ for the full module layout.
 | `Nco` | Numerically controlled oscillator (phasor recurrence) |
 | `Rotator` | Continuous phase rotator |
 
+### Utilities
+
+| Function / Constant | Description |
+| --- | --- |
+| `rms(x)` | Root-mean-square of a real slice |
+| `tone(fs, f_hz, n, amp)` | Generate a real sine tone |
+| `gen_complex_tone(fs, f_hz, n)` | Generate a complex baseband tone |
+| `snr_db_at(fs, f_hz, x)` | Single-bin SNR using Hann window + DFT |
+| `power_spectrum(samples, fs)` | Hann-windowed FFT power spectrum (dB); returns `(bins, bin_hz)` |
+| `spectrum_snr_db(samples, fs, carrier_hz)` | Peak-vs-median SNR from power spectrum |
+| `spectrum_bw_hz(samples, fs, carrier_hz, threshold_db)` | Occupied bandwidth from power spectrum |
+| `best_sync(results, carrier_hz, baud)` | Pick the best PSK31 sync result nearest to carrier |
+| `atan2_approx(y, x)` | Fast 5th-order minimax atan2 approximation |
+| `SIGNAL_THRESHOLD` | RMS threshold for silence detection (0.1) |
+| `PSK31_BW_HZ` | PSK31 bandwidth: 2 × baud = 62.5 Hz |
+
 ### Analog Modulators / Demodulators
 
 | Type | Description |
@@ -172,6 +197,7 @@ for the full module layout.
 | `viterbi_decode_coherent(soft, steps)` | Coherent MLSE Viterbi; tracks absolute phasor per state (retained for reference) |
 | `viterbi_decode_hard(bits)` | Hard-decision wrapper around `viterbi_decode` |
 | `StreamingViterbi` | Fixed-lag sliding-window Viterbi; `feed_symbol(re, im)`, `flush()` |
+| `Psk31Stream` | Streaming decode; `new_bpsk(fs, hz, gain)` / `new_qpsk(...)`, `feed(iq)→String`, `flush()→String` |
 
 ### PSK31 Sync
 
