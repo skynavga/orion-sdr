@@ -9,6 +9,32 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.28] - 2026-04-07
+
+### Added
+
+- `Psk31Stream`: streaming BPSK31/QPSK31 decode pipeline
+  (`new_bpsk`/`new_qpsk`, `feed(iq)→String`, `flush()→String`) in
+  `codec::psk31`
+- Spectral analysis utilities in `util`: `power_spectrum`,
+  `spectrum_snr_db`, `spectrum_bw_hz`, `best_sync`, `SIGNAL_THRESHOLD`,
+  `PSK31_BW_HZ`
+- Python bindings: `Psk31Stream`, `Bpsk31Decider`, `best_psk31_sync`
+  with type stubs and 10 pytest tests
+- Copyright banners (SPDX MIT OR Apache-2.0) on all `.rs` and `.md`
+  files
+
+### Changed
+
+- Renamed `codec::psk31_conv` → `codec::psk31`
+- Migrated all tests from `src/tests/` to top-level `tests/` directory
+  (unit, roundtrip, performance entry points with shared `common/`)
+- Consolidated per-modulation tests: `psk31_snr`/`psk31_stream` →
+  `psk31`; `ft8_snr`/`message` → `ft8`/`ft4`; gray → `ft8`/`ft4`
+- Made `hard_decide_dqpsk` public for external test access
+- Updated docs: `api.md` (Utilities section, Psk31Stream), `source.md`
+  (test layout), `python.md` (PSK31 examples, updated counts)
+
 ## [0.0.27] - 2026-04-05
 
 ### Fixed
