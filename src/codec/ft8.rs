@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // FT8 channel codec: ties together CRC-14, LDPC(174,91), and Gray code.
 //
 // Encode path:  77-bit payload → CRC → LDPC → Gray → Ft8Frame (58 tone indices)

@@ -1,3 +1,8 @@
+<!--
+  Copyright (c) 2026 G & R Associates LLC
+  SPDX-License-Identifier: MIT OR Apache-2.0
+-->
+
 # Coding Conventions
 
 - Rust edition 2024; `opt-level=3`, `lto=fat`, `codegen-units=1` in release

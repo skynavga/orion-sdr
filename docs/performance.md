@@ -1,3 +1,8 @@
+<!--
+  Copyright (c) 2026 G & R Associates LLC
+  SPDX-License-Identifier: MIT OR Apache-2.0
+-->
+
 # Throughput
 
 Measurements taken on Apple M2 Pro, release build (`opt-level=3`, `lto=fat`,

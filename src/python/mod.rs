@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use pyo3::prelude::*;
 
 mod demodulate;
@@ -50,8 +53,12 @@ fn orion_sdr(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<psk31::PyQpsk31Mod>()?;
     // PSK31 demodulators
     m.add_class::<psk31::PyBpsk31Demod>()?;
+    m.add_class::<psk31::PyBpsk31Decider>()?;
     m.add_class::<psk31::PyQpsk31Demod>()?;
+    // PSK31 streaming decoder
+    m.add_class::<psk31::PyPsk31Stream>()?;
     // PSK31 sync
     m.add_function(wrap_pyfunction!(psk31::psk31_sync, m)?)?;
+    m.add_function(wrap_pyfunction!(psk31::best_psk31_sync, m)?)?;
     Ok(())
 }

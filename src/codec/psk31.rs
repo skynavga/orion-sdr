@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // src/codec/psk31.rs
 //
 // Rate-1/2, constraint-length-5 convolutional encoder and Viterbi decoder

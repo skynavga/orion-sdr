@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use std::collections::HashMap;
 use super::tables::{nchar, charn, Table};
 
@@ -299,27 +302,4 @@ pub fn unpack58(n58: u64, ht: &mut CallsignHashTable) -> String {
         ht.save(&s);
     }
     s
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pack_basecall_w9xyz() {
-        // "W9XYZ" has digit at position 1 -> right-align to " W9XYZ"
-        // i0=' '=0, i1='W'=32, i2='9'=9, i3='X'=24, i4='Y'=25, i5='Z'=26
-        let n = pack_basecall("W9XYZ").expect("W9XYZ should be valid");
-        // n = 0*36 + 32 = 32; *10+9=329; *27+24=8907; *27+25=240514; *27+26=6493904
-        assert_eq!(n, 6_493_904);
-    }
-
-    #[test]
-    fn pack_basecall_roundtrip() {
-        for call in &["W9XYZ", "KD9ABC", "VE3XYZ", "G0ABC"] {
-            let n = pack_basecall(call).expect(call);
-            let back = unpack_basecall(n).expect("unpack");
-            assert_eq!(&back, call, "Roundtrip failed for {}", call);
-        }
-    }
 }

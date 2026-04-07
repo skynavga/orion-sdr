@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // CRC-14 for FT8/FT4, polynomial 0x2757.
 //
 // Algorithm: straight-line bit-by-bit shift register, MSB first.

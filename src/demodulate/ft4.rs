@@ -1,3 +1,6 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // src/demodulate/ft4.rs
 use num_complex::Complex32 as C32;
 use crate::modulate::ft4::{

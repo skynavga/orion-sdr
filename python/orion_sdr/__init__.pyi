@@ -451,3 +451,175 @@ def ft8_unpack(payload: bytes) -> dict:
     Raises ``ValueError`` if *payload* is not exactly 10 bytes.
     """
     ...
+
+# ---------------------------------------------------------------------------
+# PSK31 codec classes
+# ---------------------------------------------------------------------------
+
+class VaricodeEncoder:
+    """PSK31 Varicode encoder: push bytes, drain bit stream."""
+
+    def __init__(self) -> None: ...
+    def push_preamble(self, n: int) -> None:
+        """Append *n* zero bits as preamble."""
+        ...
+    def push_byte(self, b: int) -> None:
+        """Encode byte *b* and append its Varicode bits."""
+        ...
+    def push_postamble(self, n: int) -> None:
+        """Append *n* zero bits as postamble."""
+        ...
+    def drain_bits(self) -> NDArray[np.uint8]:
+        """Drain all pending bits into a uint8 array."""
+        ...
+    def is_empty(self) -> bool: ...
+
+class VaricodeDecoder:
+    """PSK31 Varicode decoder: push bits, pop decoded bytes."""
+
+    def __init__(self) -> None: ...
+    def push_bits(self, bits: NDArray[np.uint8]) -> None:
+        """Feed a uint8 array of bits (0/1) into the decoder."""
+        ...
+    def pop_bytes(self) -> bytes:
+        """Drain all decoded bytes."""
+        ...
+
+# ---------------------------------------------------------------------------
+# PSK31 modulators / demodulators
+# ---------------------------------------------------------------------------
+
+class Bpsk31Mod:
+    """BPSK31 modulator: differential phase encoding with Hann pulse shaping."""
+
+    def __init__(self, fs: float, rf_hz: float, gain: float = 1.0) -> None: ...
+    def set_gain(self, g: float) -> None: ...
+    def reset(self) -> None: ...
+    def modulate_text(
+        self,
+        text: bytes,
+        preamble_bits: int = 32,
+        postamble_bits: int = 32,
+    ) -> NDArray[np.complex64]:
+        """Encode text via Varicode and modulate to IQ."""
+        ...
+    def modulate_bits(self, bits: NDArray[np.uint8]) -> NDArray[np.complex64]:
+        """Modulate raw differential bits to IQ."""
+        ...
+
+class Bpsk31Demod:
+    """BPSK31 demodulator: matched-filter symbol detection."""
+
+    def __init__(self, fs: float, rf_hz: float, gain: float = 1.0) -> None: ...
+    def set_gain(self, g: float) -> None: ...
+    def reset(self) -> None: ...
+    def process(self, iq: NDArray[np.complex64]) -> NDArray[np.float32]:
+        """Demodulate IQ to soft bits (one float per symbol)."""
+        ...
+
+class Bpsk31Decider:
+    """BPSK31 hard-decision slicer: threshold soft bits at 0."""
+
+    def __init__(self) -> None: ...
+    def process(self, soft: NDArray[np.float32]) -> NDArray[np.uint8]:
+        """Threshold soft bits to hard decisions."""
+        ...
+
+class Qpsk31Mod:
+    """QPSK31 modulator: convolutional encoding + DQPSK + Hann pulse shaping."""
+
+    def __init__(self, fs: float, rf_hz: float, gain: float = 1.0) -> None: ...
+    def set_gain(self, g: float) -> None: ...
+    def reset(self) -> None: ...
+    def modulate_text(
+        self,
+        text: bytes,
+        preamble_bits: int = 32,
+        postamble_bits: int = 32,
+    ) -> NDArray[np.complex64]:
+        """Encode text via Varicode, convolutional-encode, and modulate to IQ."""
+        ...
+    def modulate_bits(self, bits: NDArray[np.uint8]) -> NDArray[np.complex64]:
+        """Modulate raw bits (convolutional encoding + DQPSK) to IQ."""
+        ...
+
+class Qpsk31Demod:
+    """QPSK31 demodulator with integrated Viterbi decider.
+
+    Call ``process()`` to feed IQ samples (returns soft dibits for inspection),
+    then ``flush()`` to run Viterbi and get decoded bits.
+    """
+
+    def __init__(self, fs: float, rf_hz: float, gain: float = 1.0) -> None: ...
+    def set_gain(self, g: float) -> None: ...
+    def reset(self) -> None: ...
+    def process(self, iq: NDArray[np.complex64]) -> NDArray[np.float32]:
+        """Demodulate IQ to soft dibits (interleaved Re/Im pairs)."""
+        ...
+    def flush(self) -> NDArray[np.uint8]:
+        """Run Viterbi on accumulated dibits and return decoded bits."""
+        ...
+
+# ---------------------------------------------------------------------------
+# PSK31 streaming decoder
+# ---------------------------------------------------------------------------
+
+class Psk31Stream:
+    """Streaming PSK31 decoder: demod → decider/Viterbi → Varicode in one step.
+
+    Use ``mode="bpsk"`` for BPSK31 or ``mode="qpsk"`` for QPSK31.
+    """
+
+    def __init__(
+        self,
+        mode: str,
+        fs: float,
+        carrier_hz: float,
+        gain: float = 1.0,
+    ) -> None: ...
+    def feed(self, iq: NDArray[np.complex64]) -> str:
+        """Feed IQ samples and return any newly decoded text."""
+        ...
+    def flush(self) -> str:
+        """Flush the decoder and return any remaining text."""
+        ...
+
+# ---------------------------------------------------------------------------
+# PSK31 sync functions
+# ---------------------------------------------------------------------------
+
+def psk31_sync(
+    iq: NDArray[np.complex64],
+    fs: float,
+    base_hz: float,
+    max_hz: float,
+    min_carrier_syms: int = 8,
+    peak_margin_db: float = 6.0,
+    n_bits: int = 1024,
+    max_cand: int = 10,
+) -> list[dict]:
+    """Scan for PSK31 carriers in an IQ buffer.
+
+    Returns a list of candidate dicts::
+
+        {
+            "time_sym":   int,
+            "freq_bin":   int,
+            "carrier_hz": float,
+            "score":      float,
+            "soft_bits":  float32[N],
+        }
+    """
+    ...
+
+def best_psk31_sync(
+    candidates: list[dict],
+    carrier_hz: float,
+    baud: float = 31.25,
+) -> dict | None:
+    """Pick the best PSK31 sync result nearest to *carrier_hz*.
+
+    Takes the list returned by ``psk31_sync()`` and returns the best
+    candidate dict, or ``None`` if no candidate is within 2×baud.
+    """
+    ...

@@ -1,9 +1,14 @@
+<!--
+  Copyright (c) 2026 G & R Associates LLC
+  SPDX-License-Identifier: MIT OR Apache-2.0
+-->
+
 # Python Bindings
 
 The complete orion-sdr stack is available as a native Python extension via PyO3: analog
-modes (CW, AM, SSB, FM, PM), digital modes (BPSK, QPSK, QAM-16/64/256), and the full
-FT8/FT4 pipeline (waveform, codec, sync, message packing) — 28 classes and functions in
-total.
+modes (CW, AM, SSB, FM, PM), digital modes (BPSK, QPSK, QAM-16/64/256), PSK31
+(BPSK31/QPSK31 with streaming decode), and the full FT8/FT4 pipeline (waveform, codec,
+sync, message packing) — 31 classes and functions in total.
 
 ## Installation
 
@@ -85,6 +90,7 @@ If you have the `.venv` activated (`source .venv/bin/activate`) you can drop the
 | `conftest.py` | Shared helpers: `real_tone`, `complex_tone`, `snr_db`, `tail`, fixtures |
 | `test_unit.py` | Output shape/dtype, input validation, setters, instance isolation |
 | `test_roundtrip.py` | Mod→demod SNR for CW, AM, SSB, FM, PM; noiseless bit-exact roundtrips for BPSK, QPSK, QAM-16/64/256 |
+| `test_psk31.py` | Varicode, BPSK31/QPSK31 mod/demod, Psk31Stream, Bpsk31Decider, psk31\_sync, best\_psk31\_sync |
 | `test_ft8.py` | FT8/FT4 waveform shape/roundtrip, codec encode/decode, sync detection, message roundtrips, full-stack test |
 
 ## Python Source Layout
@@ -93,7 +99,7 @@ If you have the `.venv` activated (`source .venv/bin/activate`) you can drop the
 python/
   orion_sdr/
     __init__.py       ← re-exports everything from the native extension
-    __init__.pyi      ← hand-authored PEP 561 type stub (all 28 classes/functions)
+    __init__.pyi      ← hand-authored PEP 561 type stub (all 31 classes/functions)
     py.typed          ← PEP 561 marker; tells type checkers this package is typed
     orion_sdr.so      ← compiled native extension (built by maturin, not in repo)
   tests/
@@ -318,6 +324,81 @@ bits_out = demod.process(iq)       # → uint8,     shape (256,)
 
 np.testing.assert_array_equal(bits_in, bits_out)
 print("BPSK noiseless roundtrip: perfect recovery")
+```
+
+## PSK31
+
+### Streaming decode (recommended)
+
+`Psk31Stream` is the simplest way to decode PSK31 — it wires together the
+demod, decider/Viterbi, and Varicode decoder into a single feed/flush API.
+
+```python
+import orion_sdr as sdr
+import numpy as np
+
+FS = 48_000.0
+CARRIER_HZ = 1_000.0
+
+# Modulate a test message
+mod = sdr.Bpsk31Mod(FS, CARRIER_HZ, 1.0)
+iq = mod.modulate_text(b"CQ CQ DE N0GNR", preamble_bits=32, postamble_bits=32)
+
+# Decode with Psk31Stream — mode="bpsk" or "qpsk"
+stream = sdr.Psk31Stream("bpsk", FS, CARRIER_HZ, 1.0)
+text = stream.feed(iq) + stream.flush()
+print(text)  # → "CQ CQ DE N0GNR"
+```
+
+### Manual pipeline
+
+For finer control, wire the stages yourself:
+
+```python
+import orion_sdr as sdr
+import numpy as np
+
+FS = 8_000.0
+
+# Modulate
+mod = sdr.Bpsk31Mod(FS, 0.0, 1.0)
+iq = mod.modulate_text(b"HELLO", preamble_bits=32, postamble_bits=64)
+
+# Demodulate → decide → varicode decode
+demod = sdr.Bpsk31Demod(FS, 0.0, 1.0)
+soft = demod.process(iq)
+
+decider = sdr.Bpsk31Decider()
+bits = decider.process(soft)
+
+dec = sdr.VaricodeDecoder()
+dec.push_bits(bits)
+dec.push_bits(np.array([0, 0], dtype=np.uint8))  # flush last char
+text = dec.pop_bytes()
+print(text)  # → b"HELLO" (possibly with leading/trailing artifacts)
+```
+
+### Carrier search with psk31\_sync
+
+```python
+import orion_sdr as sdr
+import numpy as np
+
+FS = 8_000.0
+carrier_hz = 993.75  # bin-aligned at base_hz=900 + 3 * 31.25
+
+mod = sdr.Bpsk31Mod(FS, carrier_hz, 1.0)
+iq = mod.modulate_text(b"CQ TEST", preamble_bits=64, postamble_bits=32)
+
+buf = np.zeros(int(FS * 4), dtype=np.complex64)
+buf[:len(iq)] = iq
+
+candidates = sdr.psk31_sync(buf, FS, 900.0, 1100.0,
+                             min_carrier_syms=4, peak_margin_db=3.0)
+
+best = sdr.best_psk31_sync(candidates, carrier_hz)
+if best:
+    print(f"Found carrier at {best['carrier_hz']:.1f} Hz")
 ```
 
 ## FT8 / FT4

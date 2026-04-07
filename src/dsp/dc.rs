@@ -1,3 +1,6 @@
+// Copyright (c) 2025-2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use crate::core::{Block, WorkReport};
 
 /// 1st-order DC blocker (high-pass): y[n] = x[n] - x[n-1] + r*y[n-1]
