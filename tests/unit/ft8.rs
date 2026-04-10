@@ -4,7 +4,7 @@
 
 use orion_sdr::modulate::{Ft8Mod, Ft8Frame};
 use orion_sdr::modulate::ft8::{FT8_FRAME_LEN, FT8_TOTAL_SYMS, FT8_DATA_SYMS};
-use orion_sdr::codec::ft8::{Ft8Codec, Ft8Bits};
+use orion_sdr::codec::ft8::{Ft8Codec, Ft8Bits, Ft8StreamDecoder};
 use orion_sdr::codec::gray::{gray8_encode, gray8_decode};
 
 #[test]
@@ -98,4 +98,99 @@ fn ft8_gray_table_matches_spec() {
     for (i, &e) in expected.iter().enumerate() {
         assert_eq!(gray8_encode(i as u8), e, "FT8 Gray table mismatch at {i}");
     }
+}
+
+// -- Ft8StreamDecoder unit tests ----------------------------------------------
+
+#[test]
+fn stream_decoder_starts_empty() {
+    let dec = Ft8StreamDecoder::new_ft8(12_000.0, 900.0, 1_100.0, 5);
+    assert_eq!(dec.len(), 0);
+    assert!(dec.is_empty());
+}
+
+#[test]
+fn stream_decoder_accumulates_without_decode() {
+    use num_complex::Complex32;
+    let mut dec = Ft8StreamDecoder::new_ft8(12_000.0, 900.0, 1_100.0, 5);
+    let chunk = vec![Complex32::new(0.0, 0.0); 1024];
+    let results = dec.feed(&chunk);
+    assert!(results.is_empty(), "Should not decode before frame_len samples");
+    assert_eq!(dec.len(), 1024);
+}
+
+#[test]
+fn stream_decoder_clear_resets_buffer() {
+    use num_complex::Complex32;
+    let mut dec = Ft8StreamDecoder::new_ft8(12_000.0, 900.0, 1_100.0, 5);
+    dec.feed(&vec![Complex32::new(0.1, 0.0); 4096]);
+    assert!(!dec.is_empty());
+    dec.clear();
+    assert!(dec.is_empty());
+    assert_eq!(dec.len(), 0);
+}
+
+#[test]
+fn stream_decoder_flush_empty_returns_nothing() {
+    let mut dec = Ft8StreamDecoder::new_ft8(12_000.0, 900.0, 1_100.0, 5);
+    let results = dec.flush();
+    assert!(results.is_empty());
+}
+
+#[test]
+fn stream_decoder_feed_full_frame_noiseless() {
+    let base_hz = 1_000.0_f32;
+    let payload: Ft8Bits = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01, 0x23, 0x45, 0x60];
+    let frame = Ft8Codec::encode(&payload);
+    let iq = Ft8Mod::new(12_000.0, base_hz, 0.0, 1.0).modulate(&frame);
+
+    let mut dec = Ft8StreamDecoder::new_ft8(
+        12_000.0,
+        base_hz - 6.25,
+        base_hz + 50.0 + 6.25,
+        5,
+    );
+
+    // Feed in chunks; final chunk triggers decode.
+    let chunk_size = 8192;
+    let mut results = Vec::new();
+    let mut pos = 0;
+    while pos < iq.len() {
+        let end = (pos + chunk_size).min(iq.len());
+        let r = dec.feed(&iq[pos..end]);
+        results.extend(r);
+        pos = end;
+    }
+    // If feed didn't trigger (buffer < frame_len after last chunk), flush.
+    if results.is_empty() {
+        results = dec.flush();
+    }
+
+    assert!(!results.is_empty(), "Ft8StreamDecoder: no decode result from noiseless frame");
+    // The payload encodes to a NonStd message (raw bytes) — just assert something decoded.
+    let _ = &results[0].message;
+}
+
+#[test]
+fn stream_decoder_flush_partial_frame_noiseless() {
+    let base_hz = 1_000.0_f32;
+    let payload: Ft8Bits = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0, 0x11, 0x20];
+    let frame = Ft8Codec::encode(&payload);
+    let iq = Ft8Mod::new(12_000.0, base_hz, 0.0, 1.0).modulate(&frame);
+
+    // Feed only 90% of the frame — decoder won't auto-trigger.
+    let partial_len = iq.len() * 9 / 10;
+    let mut dec = Ft8StreamDecoder::new_ft8(
+        12_000.0,
+        base_hz - 6.25,
+        base_hz + 50.0 + 6.25,
+        5,
+    );
+    let r = dec.feed(&iq[..partial_len]);
+    assert!(r.is_empty(), "Should not decode before frame_len reached");
+    assert_eq!(dec.len(), partial_len);
+    // flush() should still attempt a decode on the partial buffer.
+    let results = dec.flush();
+    // A partial frame at high SNR may or may not decode — just assert no panic.
+    let _ = results;
 }

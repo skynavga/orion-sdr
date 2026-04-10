@@ -9,6 +9,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.29] - 2026-04-10
+
+### Added
+
+- `Ft8StreamDecoder` in `codec::ft8`: streaming FT8/FT4 frame decoder
+  that accumulates 12 kHz IQ samples and runs the full
+  sync → LDPC → CRC → `unpack77` pipeline when a frame's worth of
+  samples is buffered, or on demand via `flush()`. Mode-specific
+  constructors (`new_ft8` / `new_ft4`) and a shared
+  `CallsignHashTable` across frames so hashed nonstandard callsigns
+  resolve in later frames.
+- `Ft8DecodeResult` value type carrying the decoded `Ft8Message`,
+  carrier frequency, and SNR score.
+- Unit and roundtrip tests for `Ft8StreamDecoder` covering buffer
+  bookkeeping, full-frame feeds, chunked feeds, and both standard and
+  free-text messages for FT8 and FT4.
+
 ## [0.0.28] - 2026-04-07
 
 ### Added
