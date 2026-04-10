@@ -5,7 +5,7 @@
 use orion_sdr::modulate::{Ft8Mod, Ft8Frame};
 use orion_sdr::demodulate::Ft8Demod;
 use orion_sdr::modulate::ft8::{FT8_DATA_SYMS, FT8_TONES};
-use orion_sdr::codec::ft8::{Ft8Codec, Ft8Bits};
+use orion_sdr::codec::ft8::{Ft8Codec, Ft8Bits, Ft8StreamDecoder};
 use orion_sdr::message::{CallsignHashTable, GridField, Ft8Message, pack77, unpack77};
 use orion_sdr::sync::ft8_sync;
 use super::helpers::make_ft8_test_buffer;
@@ -214,4 +214,126 @@ fn full_stack_ft8_free_text() {
     let bits_out = Ft8Codec::decode_hard(&frame_out).expect("decode_hard failed");
     let decoded = unpack77(&bits_out, &ht);
     assert_eq!(decoded, msg, "Full-stack FT8 free text roundtrip mismatch");
+}
+
+// -- Ft8StreamDecoder roundtrip tests -----------------------------------------
+
+/// Feed a complete FT8 frame in one shot; verify the decoded message matches.
+#[test]
+fn stream_decoder_ft8_standard_message_noiseless() {
+    let base_hz = 1_000.0_f32;
+    let mut ht = CallsignHashTable::new();
+    let msg = Ft8Message::Standard {
+        call_to: "CQ".to_string(),
+        call_de: "N0GNR".to_string(),
+        extra: GridField::Grid("FN31".to_string()),
+    };
+
+    let payload = pack77(&msg, &mut ht).expect("pack77");
+    let frame = Ft8Codec::encode(&payload);
+    let iq = Ft8Mod::new(12_000.0, base_hz, 0.0, 1.0).modulate(&frame);
+
+    let mut dec = Ft8StreamDecoder::new_ft8(
+        12_000.0,
+        base_hz - 6.25,
+        base_hz + 50.0 + 6.25,
+        5,
+    );
+
+    // Feed the full frame; this will trigger an automatic decode.
+    let results = dec.feed(&iq);
+    assert!(!results.is_empty(), "Ft8StreamDecoder: no result for standard message");
+    assert_eq!(results[0].message, msg, "Ft8StreamDecoder: standard message mismatch");
+}
+
+/// Feed a free-text FT8 frame in chunks; verify the decoded message matches.
+#[test]
+fn stream_decoder_ft8_free_text_chunked() {
+    let base_hz = 1_200.0_f32;
+    let mut ht = CallsignHashTable::new();
+    let msg = Ft8Message::FreeText("CQ DX".to_string());
+
+    let payload = pack77(&msg, &mut ht).expect("pack77 free text");
+    let frame = Ft8Codec::encode(&payload);
+    let iq = Ft8Mod::new(12_000.0, base_hz, 0.0, 1.0).modulate(&frame);
+
+    let mut dec = Ft8StreamDecoder::new_ft8(
+        12_000.0,
+        base_hz - 6.25,
+        base_hz + 50.0 + 6.25,
+        5,
+    );
+
+    // Feed in 4 kHz chunks; the last chunk that reaches frame_len triggers decode.
+    let chunk = 4096;
+    let mut results = Vec::new();
+    let mut pos = 0;
+    while pos < iq.len() {
+        let end = (pos + chunk).min(iq.len());
+        results.extend(dec.feed(&iq[pos..end]));
+        pos = end;
+    }
+    if results.is_empty() {
+        results = dec.flush();
+    }
+
+    assert!(!results.is_empty(), "Ft8StreamDecoder: no result for free-text message (chunked)");
+    assert_eq!(results[0].message, msg, "Ft8StreamDecoder: free-text message mismatch");
+}
+
+/// SNR regression: stream decoder must decode FT8 at -15 dB SNR/2500 Hz.
+#[test]
+fn stream_decoder_ft8_minus_15db_snr() {
+    let base_hz = 1_000.0_f32;
+    let (buf, _payload) = make_ft8_test_buffer(0, base_hz, {
+        // noise_power = 0.5 * 12000 / (2500 * 10^(-15/10))
+        let snr_linear = 10.0_f32.powf(-15.0 / 10.0);
+        0.5 * 12_000.0 / (2_500.0 * snr_linear)
+    });
+
+    let mut dec = Ft8StreamDecoder::new_ft8(
+        12_000.0,
+        base_hz - 6.25,
+        base_hz + 50.0 + 6.25,
+        5,
+    );
+    let mut results = dec.feed(&buf);
+    if results.is_empty() {
+        results = dec.flush();
+    }
+
+    assert!(
+        !results.is_empty(),
+        "Ft8StreamDecoder: failed to decode at -15 dB SNR/2500 Hz"
+    );
+}
+
+/// FT4 stream decoder: feed a complete frame, verify decoded message.
+#[test]
+fn stream_decoder_ft4_standard_message_noiseless() {
+    use orion_sdr::modulate::Ft4Mod;
+    use orion_sdr::codec::ft4::Ft4Codec;
+    let base_hz = 1_000.0_f32;
+    let mut ht = CallsignHashTable::new();
+    let msg = Ft8Message::Standard {
+        call_to: "CQ".to_string(),
+        call_de: "W9XYZ".to_string(),
+        extra: GridField::Grid("EN52".to_string()),
+    };
+
+    let payload = pack77(&msg, &mut ht).expect("pack77 ft4");
+    let frame = Ft4Codec::encode(&payload);
+    let iq = Ft4Mod::new(12_000.0, base_hz, 0.0, 1.0).modulate(&frame);
+
+    // FT4 tone spacing is ~20.833 Hz; search ±1 tone around carrier.
+    let mut dec = Ft8StreamDecoder::new_ft4(
+        12_000.0,
+        base_hz - 20.834,
+        base_hz + 4.0 * 20.834,
+        5,
+    );
+
+    let results = dec.feed(&iq);
+    assert!(!results.is_empty(), "Ft8StreamDecoder(FT4): no result for standard message");
+    assert_eq!(results[0].message, msg, "Ft8StreamDecoder(FT4): standard message mismatch");
 }
