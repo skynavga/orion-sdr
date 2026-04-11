@@ -24,14 +24,14 @@ pub fn nchar(c: char, table: Table) -> Option<u8> {
     }
     // Digits 0-9
     if table != Table::LettersSpace {
-        if c >= '0' && c <= '9' {
+        if c.is_ascii_digit() {
             return Some((n + (c as i32 - '0' as i32)) as u8);
         }
         n += 10;
     }
     // Letters A-Z
     if table != Table::Numeric {
-        if c >= 'A' && c <= 'Z' {
+        if c.is_ascii_uppercase() {
             return Some((n + (c as i32 - 'A' as i32)) as u8);
         }
         n += 26;
@@ -40,7 +40,7 @@ pub fn nchar(c: char, table: Table) -> Option<u8> {
     match table {
         Table::Full => {
             match c {
-                '+' => Some((n + 0) as u8),
+                '+' => Some(n as u8),
                 '-' => Some((n + 1) as u8),
                 '.' => Some((n + 2) as u8),
                 '/' => Some((n + 3) as u8),
@@ -49,7 +49,7 @@ pub fn nchar(c: char, table: Table) -> Option<u8> {
             }
         }
         Table::AlphanumSpaceSlash => {
-            if c == '/' { Some((n + 0) as u8) } else { None }
+            if c == '/' { Some(n as u8) } else { None }
         }
         _ => None,
     }

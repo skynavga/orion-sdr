@@ -43,9 +43,9 @@ impl Block for FirDecimator {
         if self.yi.len() < n { self.yi.resize(n, 0.0); self.yq.resize(n, 0.0); }
 
         // split I/Q
-        for k in 0..n {
-            self.ri[k] = input[k].re;
-            self.rq[k] = input[k].im;
+        for (k, s) in input.iter().enumerate().take(n) {
+            self.ri[k] = s.re;
+            self.rq[k] = s.im;
         }
         // filter at input rate
         self.lp_i.process(&self.ri[..n], &mut self.yi[..n]);
@@ -53,11 +53,11 @@ impl Block for FirDecimator {
 
         // decimate by M
         let m = self.m;
-        let n_out = (n + m - 1) / m;
+        let n_out = n.div_ceil(m);
         let n_write = n_out.min(output.len());
-        for j in 0..n_write {
+        for (j, out) in output.iter_mut().enumerate().take(n_write) {
             let k = j * m;
-            output[j] = C32::new(self.yi[k], self.yq[k]);
+            *out = C32::new(self.yi[k], self.yq[k]);
         }
         WorkReport { in_read: n, out_written: n_write }
     }

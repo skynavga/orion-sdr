@@ -79,16 +79,12 @@ impl Ft4Mod {
         is_reserved[0] = true;
         is_reserved[104] = true;
         for &(start, end) in &FT4_SYNC_POS {
-            for pos in start..end {
-                is_reserved[pos] = true;
-            }
+            is_reserved[start..end].fill(true);
         }
 
         // Fill in Costas sync symbols
         for (blk, &(start, _)) in FT4_SYNC_POS.iter().enumerate() {
-            for i in 0..4 {
-                syms[start + i] = FT4_COSTAS[blk][i];
-            }
+            syms[start..start + 4].copy_from_slice(&FT4_COSTAS[blk]);
         }
 
         // Fill in data symbols in the remaining slots

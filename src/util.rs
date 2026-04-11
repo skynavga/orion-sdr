@@ -90,7 +90,7 @@ use rustfft::{FftPlanner, num_complex::Complex};
 /// FFT size is the next power of two >= `samples.len()`, clamped to [64, 4096].
 /// Returns `(power_db_bins, bin_hz)` where `bin_hz = fs / fft_size`.
 pub fn power_spectrum(samples: &[f32], fs: f32) -> (Vec<f32>, f32) {
-    let n = samples.len().next_power_of_two().min(4096).max(64);
+    let n = samples.len().next_power_of_two().clamp(64, 4096);
     let bin_hz = fs / n as f32;
 
     let mut buf: Vec<Complex<f32>> = (0..n)

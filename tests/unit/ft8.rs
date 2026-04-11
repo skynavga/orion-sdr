@@ -20,7 +20,7 @@ fn ft8_symbol_sequence_count() {
     assert_eq!(seq.len(), FT8_TOTAL_SYMS);
     let sync_pos: [(usize, usize); 3] = [(0, 7), (36, 43), (72, 79)];
     let mut is_sync = [false; FT8_TOTAL_SYMS];
-    for &(start, end) in &sync_pos { for p in start..end { is_sync[p] = true; } }
+    for &(start, end) in &sync_pos { is_sync[start..end].fill(true); }
     let data_count = is_sync.iter().filter(|&&s| !s).count();
     assert_eq!(data_count, FT8_DATA_SYMS);
 }
