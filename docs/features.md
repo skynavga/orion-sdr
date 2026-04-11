@@ -3,7 +3,7 @@
   SPDX-License-Identifier: MIT OR Apache-2.0
 -->
 
-# Features (as of v0.0.29)
+# Features (as of v0.0.30)
 
 - Core traits and runner
 - Basic, IQ→IQ, IQ→Audio, Audio→IQ graph schedulers
