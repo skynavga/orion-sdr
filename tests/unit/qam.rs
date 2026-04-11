@@ -19,7 +19,7 @@ fn qam16_mapper_symbols() {
     Qam16Mapper::new().process(&bits, &mut out);
     let eps = 1e-6f32;
     assert!((out[0].re - (-3.0 * scale)).abs() < eps, "QAM-16 I level mismatch sym 0: {:?}", out[0]);
-    assert!((out[1].re - (-1.0 * scale)).abs() < eps, "QAM-16 I level mismatch sym 1: {:?}", out[1]);
+    assert!((out[1].re - -scale).abs() < eps, "QAM-16 I level mismatch sym 1: {:?}", out[1]);
     assert!((out[2].re - ( 1.0 * scale)).abs() < eps, "QAM-16 I level mismatch sym 2: {:?}", out[2]);
     assert!((out[3].re - ( 3.0 * scale)).abs() < eps, "QAM-16 I level mismatch sym 3: {:?}", out[3]);
     for s in &out { assert!((s.im - (-3.0 * scale)).abs() < eps, "QAM-16 Q level mismatch: {:?}", s); }

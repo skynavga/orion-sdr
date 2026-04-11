@@ -5,6 +5,7 @@ pub mod tables;
 pub mod callsign;
 pub mod grid;
 pub mod free_text;
+#[allow(clippy::module_inception)] // inner `message` module matches the FT8 packer naming
 pub mod message;
 
 pub use callsign::CallsignHashTable;

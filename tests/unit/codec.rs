@@ -8,7 +8,7 @@ use orion_sdr::codec::crc::{ft8_crc14, ft8_add_crc, ft8_extract_crc};
 
 fn recompute_crc(payload: &[u8; 10]) -> u16 {
     let mut buf = [0u8; 12];
-    for i in 0..10 { buf[i] = payload[i]; }
+    buf[..10].copy_from_slice(payload);
     buf[9] &= 0xF8;
     ft8_crc14(&buf, 82)
 }

@@ -52,9 +52,7 @@ impl Ft8Demod {
         // Mark sync positions
         let mut is_sync = [false; FT8_TOTAL_SYMS];
         for &(start, end) in &FT8_SYNC_POS {
-            for pos in start..end {
-                is_sync[pos] = true;
-            }
+            is_sync[start..end].fill(true);
         }
 
         // Extract data tones

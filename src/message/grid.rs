@@ -49,11 +49,11 @@ pub fn packgrid(extra: &str) -> u16 {
     if bytes[0] == b'R' && bytes.len() >= 2 {
         let dd = dd_to_int(&extra[1..]);
         let irpt = (35i32 + dd as i32) as u16;
-        return (MAXGRID4 + irpt) | 0x8000; // ir = 1
+        (MAXGRID4 + irpt) | 0x8000// ir = 1
     } else {
         let dd = dd_to_int(extra);
         let irpt = (35i32 + dd as i32) as u16;
-        return MAXGRID4 + irpt; // ir = 0
+        MAXGRID4 + irpt// ir = 0
     }
 }
 

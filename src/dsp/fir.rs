@@ -1,9 +1,6 @@
 // Copyright (c) 2025-2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#[cfg(feature = "simd")]
-use core::simd::{Simd, SimdFloat};
-
 use num_complex::Complex32 as C32;
 
 #[derive(Debug, Clone)]
@@ -23,7 +20,7 @@ impl FirLowpass {
         let mut taps = vec![0.0f32; ntaps];
         let fc = pass_hz / fs;
         let m0 = ntaps as isize / 2;
-        for n in 0..ntaps {
+        for (n, tap) in taps.iter_mut().enumerate() {
             let m = n as isize - m0;
             let sinc = if m == 0 {
                 2.0 * fc
@@ -32,7 +29,7 @@ impl FirLowpass {
                 (2.0 * fc) * (2.0 * core::f32::consts::PI * fc * m as f32).sin() / x
             };
             let w = 0.5 - 0.5 * (2.0 * core::f32::consts::PI * n as f32 / (ntaps as f32 - 1.0)).cos();
-            taps[n] = sinc * w;
+            *tap = sinc * w;
         }
         let s: f32 = taps.iter().sum();
         for t in &mut taps { *t /= s; }
@@ -52,44 +49,13 @@ impl FirLowpass {
     #[inline(always)]
     fn dot(&self) -> f32 {
         let len = self.taps.len();
-        let taps = &self.taps;
         let d = &self.delay;
         let mut acc = 0.0f32;
-
-        #[cfg(feature = "simd")]
-        {
-            const LANES: usize = 8;
-            type Vf = Simd<f32, LANES>;
-            let mut i = 0;
-            while i + LANES <= len {
-                let mut td = [0.0f32; LANES];
-                let mut tt = [0.0f32; LANES];
-                for k in 0..LANES {
-                    let t_idx = i + k;
-                    let d_idx = (self.idx + len - 1 - t_idx) % len;
-                    td[k] = d[d_idx];
-                    tt[k] = taps[t_idx];
-                }
-                let vd = Vf::from_array(td);
-                let vt = Vf::from_array(tt);
-                acc += (vd * vt).reduce_sum();
-                i += LANES;
-            }
-            for t_idx in i..len {
-                let d_idx = (self.idx + len - 1 - t_idx) % len;
-                acc += d[d_idx] * taps[t_idx];
-            }
-            return acc;
+        for (t_idx, &tap) in self.taps.iter().enumerate() {
+            let d_idx = (self.idx + len - 1 - t_idx) % len;
+            acc += d[d_idx] * tap;
         }
-
-        #[cfg(not(feature = "simd"))]
-        {
-            for t_idx in 0..len {
-                let d_idx = (self.idx + len - 1 - t_idx) % len;
-                acc += d[d_idx] * taps[t_idx];
-            }
-            return acc;
-        }
+        acc
     }
 
 }

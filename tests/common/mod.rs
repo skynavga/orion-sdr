@@ -5,6 +5,7 @@
 
 use num_complex::Complex32 as C32;
 
+#[allow(dead_code)] // used by snr tests, not all test binaries
 pub fn snr_db_at(fs: f32, f0: f32, x: &[f32]) -> f32 {
     let n = x.len().max(1);
     let proj = |f: f32| {
@@ -23,7 +24,7 @@ pub fn snr_db_at(fs: f32, f0: f32, x: &[f32]) -> f32 {
 }
 
 #[allow(dead_code)] // used by roundtrip and performance, not unit
-pub fn add_awgn(iq: &mut Vec<C32>, noise_power: f32, seed: u64) {
+pub fn add_awgn(iq: &mut [C32], noise_power: f32, seed: u64) {
     let mut state = seed ^ 0xDEAD_BEEF_CAFE_0000;
     let scale = (noise_power / 2.0).sqrt();
 

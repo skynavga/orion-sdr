@@ -306,6 +306,7 @@ impl PyFt4Codec {
 ///   {"time_sym": int, "freq_bin": int, "score": float, "llr": float32[174]}
 #[pyfunction]
 #[pyo3(signature = (iq, fs, base_hz, max_hz, t_min, t_max, max_cand))]
+#[allow(clippy::too_many_arguments)] // mirrors the Python-facing signature
 pub fn ft8_sync<'py>(
     py: Python<'py>,
     iq: PyReadonlyArray1<'py, Complex32>,
@@ -340,6 +341,7 @@ pub fn ft8_sync<'py>(
 ///   {"time_sym": int, "freq_bin": int, "score": float, "llr": float32[174]}
 #[pyfunction]
 #[pyo3(signature = (iq, fs, base_hz, max_hz, t_min, t_max, max_cand))]
+#[allow(clippy::too_many_arguments)] // mirrors the Python-facing signature
 pub fn ft4_sync<'py>(
     py: Python<'py>,
     iq: PyReadonlyArray1<'py, Complex32>,
@@ -494,17 +496,15 @@ fn str_to_gridfield(s: &str) -> GridField {
         _ => {
             let bytes = s.as_bytes();
             // R-prefixed report ("R+07", "R-12")
-            if bytes.first() == Some(&b'R') && s.len() >= 2 {
-                if let Ok(v) = s[1..].parse::<i8>() {
+            if bytes.first() == Some(&b'R') && s.len() >= 2
+                && let Ok(v) = s[1..].parse::<i8>() {
                     return GridField::RReport(v);
                 }
-            }
             // Plain signal report ("+07", "-12")
-            if s.starts_with('+') || s.starts_with('-') {
-                if let Ok(v) = s.parse::<i8>() {
+            if (s.starts_with('+') || s.starts_with('-'))
+                && let Ok(v) = s.parse::<i8>() {
                     return GridField::Report(v);
                 }
-            }
             // Otherwise treat as Maidenhead grid
             GridField::Grid(s.to_string())
         }

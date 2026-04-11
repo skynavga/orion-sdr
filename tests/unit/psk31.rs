@@ -358,7 +358,7 @@ fn streaming_viterbi_text_roundtrip() {
     }
 
     let decoded_str: String = decoded.iter()
-        .filter(|&&c| c >= 0x20 && c < 0x7f)
+        .filter(|&&c| (0x20..0x7f).contains(&c))
         .map(|&c| c as char)
         .collect();
     println!("streaming Viterbi text: {:?}", decoded_str);

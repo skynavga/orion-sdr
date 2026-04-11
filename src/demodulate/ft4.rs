@@ -56,9 +56,7 @@ impl Ft4Demod {
         is_reserved[0] = true;
         is_reserved[104] = true;
         for &(start, end) in &FT4_SYNC_POS {
-            for pos in start..end {
-                is_reserved[pos] = true;
-            }
+            is_reserved[start..end].fill(true);
         }
 
         // Extract data tones

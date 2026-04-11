@@ -62,7 +62,7 @@ pub fn hash22(call: &str) -> u32 {
     }
     // Pad with spaces (index 0 in AlphanumSpaceSlash)
     while i < 11 {
-        n58 = 38 * n58;
+        n58 *= 38;
         i += 1;
     }
     let n22 = ((47_055_833_459_u64.wrapping_mul(n58)) >> (64 - 22)) & 0x3F_FFFF;
@@ -181,7 +181,7 @@ pub fn pack28(call: &str, ht: &mut CallsignHashTable, ip: &mut bool) -> Option<u
     }
 
     // Non-standard: 3–11 chars, ALPHANUM_SPACE_SLASH
-    if len >= 3 && len <= 11 {
+    if (3..=11).contains(&len) {
         let all_valid = call.chars().all(|c| nchar(c, Table::AlphanumSpaceSlash).is_some());
         if all_valid {
             *ip = false;
@@ -262,7 +262,7 @@ fn parse_cq_modifier(s: &str) -> Option<u32> {
 
     if nnum == 3 && nlet == 0 {
         rest[..3].parse::<u32>().ok()
-    } else if nnum == 0 && nlet >= 1 && nlet <= 4 {
+    } else if nnum == 0 && (1..=4).contains(&nlet) {
         Some(1000 + m)
     } else {
         None

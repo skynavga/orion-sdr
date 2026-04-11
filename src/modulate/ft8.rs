@@ -58,16 +58,11 @@ impl Ft8Mod {
         // Mark sync positions
         let mut is_sync = [false; FT8_TOTAL_SYMS];
         for &(start, end) in &FT8_SYNC_POS {
-            for pos in start..end {
-                is_sync[pos] = true;
-            }
+            is_sync[start..end].fill(true);
         }
         // Fill in Costas sync symbols
-        for (blk, &(start, _)) in FT8_SYNC_POS.iter().enumerate() {
-            for i in 0..7 {
-                syms[start + i] = FT8_COSTAS[i];
-                let _ = blk; // suppress warning
-            }
+        for &(start, _) in FT8_SYNC_POS.iter() {
+            syms[start..start + 7].copy_from_slice(&FT8_COSTAS);
         }
         // Fill in data symbols
         let mut data_idx = 0usize;
