@@ -298,10 +298,10 @@ pub fn ldpc_encode(message: &[u8; K_BYTES], codeword: &mut [u8; N_BYTES]) {
     let mut col_mask: u8 = 0x80 >> (K % 8);
     let mut col_idx: usize = K_BYTES - 1;
 
-    for i in 0..M {
+    for gen_row in GENERATOR.iter().take(M) {
         let mut nsum: u8 = 0;
-        for j in 0..K_BYTES {
-            nsum ^= parity8(message[j] & GENERATOR[i][j]);
+        for (j, &msg_byte) in message.iter().enumerate().take(K_BYTES) {
+            nsum ^= parity8(msg_byte & gen_row[j]);
         }
         if nsum & 1 != 0 {
             codeword[col_idx] |= col_mask;
@@ -383,10 +383,8 @@ pub fn ldpc_decode_soft(llr: &[f32; N], max_iter: usize, plain: &mut [u8; N]) ->
     let mut m = vec![[0.0f32; N]; M];
     let mut e = vec![[0.0f32; N]; M];
 
-    for j in 0..M {
-        for i in 0..N {
-            m[j][i] = llr[i];
-        }
+    for row in m.iter_mut().take(M) {
+        row[..N].copy_from_slice(&llr[..N]);
     }
 
     // Track the best (minimum-errors) plain word seen so far and save it.

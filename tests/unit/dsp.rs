@@ -16,7 +16,7 @@ fn decimator_reduces_length_and_preserves_tone() {
     let n = 4096;
     let mut nco = Nco::new(2_000.0, fs);
     let mut iq = vec![C32::new(0.0,0.0); n];
-    for i in 0..n { iq[i] = mix_with_nco(C32::new(1.0,0.0), &mut nco); }
+    for s in iq.iter_mut().take(n) { *s = mix_with_nco(C32::new(1.0,0.0), &mut nco); }
     let mut out = vec![C32::new(0.0,0.0); n/m];
     let w = dec.process(&iq, &mut out);
     assert_eq!(w.out_written, n/m);

@@ -46,6 +46,7 @@ pub struct Psk31SyncResult {
 ///
 /// # Returns
 /// Up to `max_cand` results sorted by `score` descending.
+#[allow(clippy::too_many_arguments)] // sync params are all tuning knobs; grouping would obscure the API
 pub fn psk31_sync(
     iq: &[C32],
     fs: f32,
@@ -116,8 +117,7 @@ pub fn psk31_sync(
 
     let mut candidates: Vec<Psk31SyncResult> = Vec::new();
 
-    for bin in 0..num_bins {
-        let bin_median = bin_medians[bin];
+    for (bin, &bin_median) in bin_medians.iter().enumerate().take(num_bins) {
         // Per-bin threshold: symbol must exceed its own bin's median.
         // Global threshold: bin's median must exceed the cross-bin noise floor.
         // A symbol is a peak candidate if EITHER condition is met (union),
@@ -151,28 +151,26 @@ pub fn psk31_sync(
                 }
                 run_energy_sum += e;
                 run_len += 1;
-            } else {
-                if let Some(start) = run_start.take() {
-                    if run_len >= min_run {
-                        record_candidate(
-                            &mut candidates,
-                            start,
-                            bin,
-                            base_hz,
-                            run_energy_sum / run_len as f32,
-                            iq,
-                            fs,
-                            n_bits,
-                        );
-                    }
-                    run_len = 0;
+            } else if let Some(start) = run_start.take() {
+                if run_len >= min_run {
+                    record_candidate(
+                        &mut candidates,
+                        start,
+                        bin,
+                        base_hz,
+                        run_energy_sum / run_len as f32,
+                        iq,
+                        fs,
+                        n_bits,
+                    );
                 }
+                run_len = 0;
             }
         }
 
         // Flush a run that reaches end of buffer.
-        if let Some(start) = run_start.take() {
-            if run_len >= min_run {
+        if let Some(start) = run_start.take()
+            && run_len >= min_run {
                 record_candidate(
                     &mut candidates,
                     start,
@@ -184,7 +182,6 @@ pub fn psk31_sync(
                     n_bits,
                 );
             }
-        }
     }
 
     // Sort by score descending, keep top N.
@@ -194,6 +191,7 @@ pub fn psk31_sync(
 }
 
 /// Build a `Psk31SyncResult` for a detected carrier run.
+#[allow(clippy::too_many_arguments)] // internal helper; args directly mirror the caller's local state
 fn record_candidate(
     out: &mut Vec<Psk31SyncResult>,
     time_sym: usize,

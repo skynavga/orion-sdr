@@ -23,7 +23,6 @@ name = "orion_sdr"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-simd = []
 throughput = []
 extension-module = ["dep:pyo3", "pyo3/extension-module", "dep:numpy"]
 

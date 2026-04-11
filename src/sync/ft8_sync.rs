@@ -133,7 +133,7 @@ pub fn ft8_sync(
     let wf_t_min = 0i32;
     let wf_t_max = (wf_syms as i32 - FT8_TOTAL_SYMS as i32).max(0);
 
-    let sync_pos_adjusted: Vec<i32> = FT8_SYNC_POS.iter().map(|&p| p).collect();
+    let sync_pos_adjusted: Vec<i32> = FT8_SYNC_POS.to_vec();
 
     let candidates = find_candidates(
         &wf,
@@ -191,10 +191,10 @@ fn extract_ft8_llr(wf: &Waterfall, cand: &Candidate) -> [f32; N] {
             // Gather log-energies for each of the 8 tones in this symbol.
             // s[j] = log-energy of tone (freq_bin + j).
             let mut s = [f32::NEG_INFINITY; 8];
-            for j in 0..8 {
+            for (j, slot) in s.iter_mut().enumerate() {
                 let bin = cand.freq_bin + j;
                 if bin < wf.num_tones {
-                    s[j] = wf.get(wf_sym, bin);
+                    *slot = wf.get(wf_sym, bin);
                 }
             }
 

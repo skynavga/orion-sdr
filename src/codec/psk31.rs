@@ -112,8 +112,8 @@ pub fn viterbi_decode(soft: &[f32]) -> Vec<u8> {
         let s1 = soft[t * 2 + 1];
         let mut new_pm = [inf; NUM_STATES];
 
-        for prev in 0..NUM_STATES {
-            if pm[prev] >= inf { continue; }
+        for (prev, &pm_prev) in pm.iter().enumerate().take(NUM_STATES) {
+            if pm_prev >= inf { continue; }
             for &bit in &[0u8, 1u8] {
                 let (c0, c1) = branch_bits(prev as u8, bit);
                 // Expected soft values are the DQPSK phasor for this dibit,
@@ -123,7 +123,7 @@ pub fn viterbi_decode(soft: &[f32]) -> Vec<u8> {
                 let (exp0, exp1) = DQPSK_EXP[dibit as usize];
                 let bm = (s0 - exp0) * (s0 - exp0) + (s1 - exp1) * (s1 - exp1);
                 let ns = next_state(prev as u8, bit) as usize;
-                let cand = pm[prev] + bm;
+                let cand = pm_prev + bm;
                 if cand < new_pm[ns] {
                     new_pm[ns] = cand;
                     prev_state_table[t][ns] = prev as u8;
@@ -475,7 +475,7 @@ impl Psk31Stream {
                 for &b in &bits {
                     vdec.push_bit(b);
                     while let Some(ch) = vdec.pop_char() {
-                        if ch >= 0x20 && ch < 0x7f {
+                        if (0x20..0x7f).contains(&ch) {
                             text.push(ch as char);
                         }
                     }
@@ -499,7 +499,7 @@ impl Psk31Stream {
                     if let Some(b) = viterbi.feed_symbol(d_re, d_im) {
                         vdec.push_bit(b);
                         while let Some(ch) = vdec.pop_char() {
-                            if ch >= 0x20 && ch < 0x7f {
+                            if (0x20..0x7f).contains(&ch) {
                                 text.push(ch as char);
                             }
                         }
@@ -518,7 +518,7 @@ impl Psk31Stream {
                 vdec.push_bit(0);
                 let mut text = String::new();
                 while let Some(ch) = vdec.pop_char() {
-                    if ch >= 0x20 && ch < 0x7f {
+                    if (0x20..0x7f).contains(&ch) {
                         text.push(ch as char);
                     }
                 }
@@ -529,7 +529,7 @@ impl Psk31Stream {
                 for b in viterbi.flush() {
                     vdec.push_bit(b);
                     while let Some(ch) = vdec.pop_char() {
-                        if ch >= 0x20 && ch < 0x7f {
+                        if (0x20..0x7f).contains(&ch) {
                             text.push(ch as char);
                         }
                     }
@@ -537,7 +537,7 @@ impl Psk31Stream {
                 vdec.push_bit(0);
                 vdec.push_bit(0);
                 while let Some(ch) = vdec.pop_char() {
-                    if ch >= 0x20 && ch < 0x7f {
+                    if (0x20..0x7f).contains(&ch) {
                         text.push(ch as char);
                     }
                 }

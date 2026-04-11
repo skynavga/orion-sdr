@@ -90,7 +90,7 @@ fn try_qpsk31(noise_power: f32, seed: u64) -> bool {
     soft.truncate(wr.out_written);
 
     let mut decider = Qpsk31Decider::new();
-    decider.process(&soft, &mut vec![]);
+    decider.process(&soft, &mut []);
     let mut decoded_bits = Vec::new();
     decider.flush(&mut decoded_bits);
 

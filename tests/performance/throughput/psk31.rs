@@ -59,7 +59,7 @@ fn throughput_qpsk31_roundtrip() {
             let mut soft = vec![0.0f32; n_syms * 2 + 4];
             let wr = demod.process(&iq, &mut soft);
             let mut decider = Qpsk31Decider::new();
-            decider.process(&soft[..wr.out_written], &mut vec![]);
+            decider.process(&soft[..wr.out_written], &mut []);
             let mut bits_out = Vec::new();
             decider.flush(&mut bits_out);
             black_box(bits_out.first().copied().unwrap_or(0));

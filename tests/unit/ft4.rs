@@ -22,7 +22,7 @@ fn ft4_symbol_sequence_count() {
     let mut is_reserved = [false; FT4_TOTAL_SYMS];
     is_reserved[0] = true;
     is_reserved[104] = true;
-    for &(start, end) in &sync_pos { for p in start..end { is_reserved[p] = true; } }
+    for &(start, end) in &sync_pos { is_reserved[start..end].fill(true); }
     let data_count = is_reserved.iter().filter(|&&s| !s).count();
     assert_eq!(data_count, FT4_DATA_SYMS);
 }

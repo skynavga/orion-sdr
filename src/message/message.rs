@@ -142,7 +142,7 @@ fn pack77_standard(
     p[6] = (n29b >> 2) as u8;
     p[7] = ((n29b << 6) as u8) | (ir_bit << 5) | ((igrid4 >> 10) as u8);
     p[8] = (igrid4 >> 2) as u8;
-    p[9] = ((igrid4 << 6) as u8) | ((i3 << 3) as u8);
+    p[9] = ((igrid4 << 6) as u8) | (i3 << 3);
 
     // Suppress unused warning for igrid4_packed
     let _ = igrid4_packed;

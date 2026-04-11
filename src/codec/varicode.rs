@@ -285,11 +285,10 @@ impl VaricodeDecoder {
             // Remove it before decoding: the codeword is `shift >> 1` with `len - 1`.
             let cw     = if self.len > 0 { self.shift >> 1 } else { 0 };
             let cw_len = self.len.saturating_sub(1);
-            if cw_len > 0 {
-                if let Some(ch) = varicode_decode(cw, cw_len) {
+            if cw_len > 0
+                && let Some(ch) = varicode_decode(cw, cw_len) {
                     self.chars.push_back(ch);
                 }
-            }
             self.shift = 0;
             self.len = 0;
             self.prev_zero = false;

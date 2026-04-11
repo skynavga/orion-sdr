@@ -229,10 +229,10 @@ fn extract_ft4_llr(wf: &Waterfall, cand: &Candidate) -> [f32; N] {
 
         // Gather log-energies for each of the 4 tones.
         let mut s = [f32::NEG_INFINITY; 4];
-        for j in 0..4 {
+        for (j, slot) in s.iter_mut().enumerate() {
             let bin = cand.freq_bin + j;
             if bin < wf.num_tones {
-                s[j] = wf.get(wf_sym, bin);
+                *slot = wf.get(wf_sym, bin);
             }
         }
 
