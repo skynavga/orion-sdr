@@ -9,6 +9,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.30] - 2026-04-10
+
+### Changed
+
+- Clean up clippy warnings across the crate (iterator-style loops,
+  `copy_from_slice`/`fill`, `clamp`, targeted `#[allow]`s with rationale
+  on public sync entry points).
+- Drop the unused `simd` feature and the nightly `core::simd` code path
+  in `FirLowpass`; the scalar implementation is the only one now.
+
 ## [0.0.29] - 2026-04-10
 
 ### Added
