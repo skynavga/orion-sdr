@@ -61,9 +61,7 @@ pub(crate) fn hard_decide_dbpsk(d_re: f32) -> f32 {
 pub fn hard_decide_dqpsk(d_re: f32, d_im: f32) -> (f32, f32) {
     if d_re.abs() >= d_im.abs() {
         if d_re >= 0.0 { (1.0, 0.0) } else { (-1.0, 0.0) }
-    } else {
-        if d_im >= 0.0 { (0.0, 1.0) } else { (0.0, -1.0) }
-    }
+    } else if d_im >= 0.0 { (0.0, 1.0) } else { (0.0, -1.0) }
 }
 
 // ── BPSK31 demodulator ────────────────────────────────────────────────────────

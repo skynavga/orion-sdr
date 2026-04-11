@@ -222,7 +222,7 @@ impl PyQpsk31Demod {
         let wr = self.demod.process(input, &mut soft);
         soft.truncate(wr.out_written);
         // Also buffer in the decider for later flush.
-        self.decider.process(&soft, &mut vec![]);
+        self.decider.process(&soft, &mut []);
         Ok(soft.into_pyarray(py))
     }
 
@@ -352,6 +352,7 @@ pub fn best_psk31_sync<'py>(
 ///   {"time_sym": int, "freq_bin": int, "carrier_hz": float, "score": float, "soft_bits": float32[N]}
 #[pyfunction]
 #[pyo3(signature = (iq, fs, base_hz, max_hz, min_carrier_syms=8, peak_margin_db=6.0, n_bits=1024, max_cand=10))]
+#[allow(clippy::too_many_arguments)] // mirrors the Python-facing signature
 pub fn psk31_sync<'py>(
     py: Python<'py>,
     iq: PyReadonlyArray1<'py, Complex32>,

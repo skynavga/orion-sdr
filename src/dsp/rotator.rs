@@ -40,6 +40,7 @@ impl Rotator {
 
     /// Advance and return next phasor (cos, sin) as complex.
     #[inline(always)]
+    #[allow(clippy::should_implement_trait)] // inherent `next` matches DSP naming; this is not an Iterator
     pub fn next(&mut self) -> C32 {
         // Complex multiply with FMAs:
         let zr = self.z.re.mul_add(self.w.re, -self.z.im * self.w.im);

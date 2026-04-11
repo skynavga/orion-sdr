@@ -41,9 +41,9 @@ pub fn decode_free_text(b71: &[u8; 9]) -> String {
     for i in (0..13usize).rev() {
         // Divide the big-endian 9-byte integer by 42, get remainder
         let mut rem: u16 = 0;
-        for j in 0..9usize {
-            rem = (rem << 8) | b[j] as u16;
-            b[j] = (rem / 42) as u8;
+        for byte in &mut b {
+            rem = (rem << 8) | *byte as u16;
+            *byte = (rem / 42) as u8;
             rem %= 42;
         }
         chars[i] = charn(rem as u8, Table::Full);

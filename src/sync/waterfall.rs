@@ -69,6 +69,7 @@ impl Waterfall {
 /// Returns a `Waterfall` with `num_syms × num_tones` log-power entries.
 /// Symbol `s` uses IQ samples `[time_offset + s*samples_per_sym .. +samples_per_sym)`.
 /// Missing samples are treated as zero energy (−120 dB).
+#[allow(clippy::too_many_arguments)] // explicit geometry is clearer than a params struct for this low-level helper
 pub fn compute_waterfall(
     iq: &[C32],
     fs: f32,

@@ -1,6 +1,6 @@
 [package]
 name = "orion-sdr"
-version = "0.0.29"
+version = "0.0.30"
 edition = "2024"
 description = "DSP/SDR block library targeting HF-to-UHF, satellites, and Python bindings. Roadmap inside."
 license = "MIT OR Apache-2.0"
@@ -23,7 +23,6 @@ name = "orion_sdr"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-simd = []
 throughput = []
 extension-module = ["dep:pyo3", "pyo3/extension-module", "dep:numpy"]
 

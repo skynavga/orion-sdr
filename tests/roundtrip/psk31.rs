@@ -145,7 +145,7 @@ fn roundtrip_qpsk31_bits_noiseless() {
     soft.truncate(wr.out_written);
 
     let mut decider = Qpsk31Decider::new();
-    decider.process(&soft, &mut vec![]);
+    decider.process(&soft, &mut []);
     let mut bits_out = Vec::new();
     decider.flush(&mut bits_out);
 
@@ -171,7 +171,7 @@ fn roundtrip_qpsk31_text() {
     soft.truncate(wr.out_written);
 
     let mut decider = Qpsk31Decider::new();
-    decider.process(&soft, &mut vec![]);
+    decider.process(&soft, &mut []);
     let mut decoded_bits = Vec::new();
     decider.flush(&mut decoded_bits);
 
@@ -391,7 +391,7 @@ fn try_qpsk31(text: &[u8], snr_db: f32, seed: u64) -> bool {
     soft.truncate(wr.out_written);
 
     let mut decider = Qpsk31Decider::new();
-    decider.process(&soft, &mut vec![]);
+    decider.process(&soft, &mut []);
     let mut decoded_bits = Vec::new();
     decider.flush(&mut decoded_bits);
 
@@ -435,7 +435,7 @@ const STREAM_CARRIER: f32 = 1000.0;
 
 fn message_to_bits(msg: &str) -> Vec<u8> {
     let mut bits = Vec::new();
-    bits.extend(std::iter::repeat(0u8).take(32));
+    bits.extend(std::iter::repeat_n(0u8, 32));
     for &byte in msg.as_bytes() {
         let (cw, len) = varicode_encode(byte);
         for i in (0..len).rev() {
@@ -444,7 +444,7 @@ fn message_to_bits(msg: &str) -> Vec<u8> {
         bits.push(0);
         bits.push(0);
     }
-    bits.extend(std::iter::repeat(0u8).take(32));
+    bits.extend(std::iter::repeat_n(0u8, 32));
     bits
 }
 

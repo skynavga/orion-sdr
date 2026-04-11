@@ -60,9 +60,7 @@ pub fn ft8_crc14(message: &[u8], num_bits: usize) -> u16 {
 /// (i.e., 96 - 14 = 82 bits processed).
 pub fn ft8_add_crc(payload: &[u8; 10], a91: &mut [u8; 12]) {
     // Copy 10 bytes (covers 77 payload bits + 3 slack bits at byte boundary)
-    for i in 0..10 {
-        a91[i] = payload[i];
-    }
+    a91[..10].copy_from_slice(payload);
     // Clear the 3 low bits of byte 9 and all of byte 10 (slack + CRC area)
     a91[9] &= 0xF8;
     a91[10] = 0;

@@ -84,6 +84,6 @@ fn bw_minimum_for_short_input() {
 
 #[test]
 fn signal_threshold_reasonable() {
-    assert!(SIGNAL_THRESHOLD > 0.0);
-    assert!(SIGNAL_THRESHOLD < 1.0);
+    const _: () = assert!(SIGNAL_THRESHOLD > 0.0);
+    const _: () = assert!(SIGNAL_THRESHOLD < 1.0);
 }
