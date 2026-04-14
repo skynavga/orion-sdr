@@ -16,10 +16,10 @@
 //
 // Reference: Peter Martinez G3PLX, "PSK31: A New Radio-Teletype Mode" (1998).
 
-use num_complex::Complex32 as C32;
+use crate::codec::varicode::VaricodeEncoder;
 use crate::core::{Block, WorkReport};
 use crate::dsp::Rotator;
-use crate::codec::varicode::VaricodeEncoder;
+use num_complex::Complex32 as C32;
 
 // ── Shared constants ──────────────────────────────────────────────────────────
 
@@ -51,8 +51,12 @@ pub fn psk31_sps(fs: f32) -> usize {
 /// to 1 at n=sps−1, providing a smooth crossfade from the previous phasor
 /// to the current one over one symbol period.
 fn make_hann(sps: usize) -> Vec<f32> {
-    if sps == 0 { return Vec::new(); }
-    if sps == 1 { return vec![1.0]; }
+    if sps == 0 {
+        return Vec::new();
+    }
+    if sps == 1 {
+        return vec![1.0];
+    }
     let denom = (sps - 1) as f32;
     (0..sps)
         .map(|i| {
@@ -61,7 +65,6 @@ fn make_hann(sps: usize) -> Vec<f32> {
         })
         .collect()
 }
-
 
 /// Write one pulse-shaped symbol into `out[0..sps]`.
 ///
@@ -81,13 +84,13 @@ fn write_symbol(out: &mut [C32], p0: C32, p1: C32, gain: f32, hann: &[f32]) {
     let nn = n & !3;
     while i < nn {
         let h0 = hann[i];
-        let h1 = hann[i+1];
-        let h2 = hann[i+2];
-        let h3 = hann[i+3];
-        out[i]   = C32::new(gain * (p0.re + h0 * dr), gain * (p0.im + h0 * di));
-        out[i+1] = C32::new(gain * (p0.re + h1 * dr), gain * (p0.im + h1 * di));
-        out[i+2] = C32::new(gain * (p0.re + h2 * dr), gain * (p0.im + h2 * di));
-        out[i+3] = C32::new(gain * (p0.re + h3 * dr), gain * (p0.im + h3 * di));
+        let h1 = hann[i + 1];
+        let h2 = hann[i + 2];
+        let h3 = hann[i + 3];
+        out[i] = C32::new(gain * (p0.re + h0 * dr), gain * (p0.im + h0 * di));
+        out[i + 1] = C32::new(gain * (p0.re + h1 * dr), gain * (p0.im + h1 * di));
+        out[i + 2] = C32::new(gain * (p0.re + h2 * dr), gain * (p0.im + h2 * di));
+        out[i + 3] = C32::new(gain * (p0.re + h3 * dr), gain * (p0.im + h3 * di));
         i += 4;
     }
     while i < n {
@@ -109,7 +112,7 @@ pub struct Bpsk31Mod {
     sps: usize,
     rf_hz: f32,
     gain: f32,
-    current_phase: f32,  // +1.0 or -1.0
+    current_phase: f32, // +1.0 or -1.0
     hann: Vec<f32>,
 }
 
@@ -131,7 +134,9 @@ impl Bpsk31Mod {
         }
     }
 
-    pub fn set_gain(&mut self, g: f32) { self.gain = g; }
+    pub fn set_gain(&mut self, g: f32) {
+        self.gain = g;
+    }
 
     pub fn reset(&mut self) {
         self.current_phase = 1.0;
@@ -168,7 +173,13 @@ impl Bpsk31Mod {
             }
             let cur_p = C32::new(self.current_phase, 0.0);
             let base = k * self.sps;
-            write_symbol(&mut out[base..base + self.sps], prev_p, cur_p, self.gain, &self.hann);
+            write_symbol(
+                &mut out[base..base + self.sps],
+                prev_p,
+                cur_p,
+                self.gain,
+                &self.hann,
+            );
             prev_p = cur_p;
         }
 
@@ -182,17 +193,25 @@ impl Bpsk31Mod {
 }
 
 impl Block for Bpsk31Mod {
-    type In  = u8;
+    type In = u8;
     type Out = C32;
 
     fn process(&mut self, input: &[u8], output: &mut [C32]) -> WorkReport {
         let max_bits = output.len() / self.sps;
         let n = input.len().min(max_bits);
-        if n == 0 { return WorkReport { in_read: 0, out_written: 0 }; }
+        if n == 0 {
+            return WorkReport {
+                in_read: 0,
+                out_written: 0,
+            };
+        }
         let iq = self.modulate_bits(&input[..n]);
         let written = iq.len().min(output.len());
         output[..written].copy_from_slice(&iq[..written]);
-        WorkReport { in_read: n, out_written: written }
+        WorkReport {
+            in_read: n,
+            out_written: written,
+        }
     }
 }
 
@@ -213,10 +232,10 @@ impl Block for Bpsk31Mod {
 //   (g0=1, g1=0): d = ( 0, +1)  → step = ( 0, +1)  [Im>0 → g1=0]
 //   (g0=1, g1=1): d = (-1,  0)  → step = (-1,  0)
 const QPSK31_PHASE_STEP: [C32; 4] = [
-    C32 { re:  1.0, im:  0.0 }, // dibit 0: g0=0, g1=0 →   0°
-    C32 { re:  0.0, im: -1.0 }, // dibit 1: g0=0, g1=1 → -90° (270°)
-    C32 { re:  0.0, im:  1.0 }, // dibit 2: g0=1, g1=0 →  90°
-    C32 { re: -1.0, im:  0.0 }, // dibit 3: g0=1, g1=1 → 180°
+    C32 { re: 1.0, im: 0.0 },  // dibit 0: g0=0, g1=0 →   0°
+    C32 { re: 0.0, im: -1.0 }, // dibit 1: g0=0, g1=1 → -90° (270°)
+    C32 { re: 0.0, im: 1.0 },  // dibit 2: g0=1, g1=0 →  90°
+    C32 { re: -1.0, im: 0.0 }, // dibit 3: g0=1, g1=1 → 180°
 ];
 
 // QPSK31 phase-step table for the Viterbi decoder is in `codec::psk31::DQPSK_EXP`.
@@ -231,9 +250,9 @@ pub struct Qpsk31Mod {
     sps: usize,
     rf_hz: f32,
     gain: f32,
-    current_phase: C32,  // current phasor ∈ {(1,0),(0,1),(−1,0),(0,−1)}
+    current_phase: C32, // current phasor ∈ {(1,0),(0,1),(−1,0),(0,−1)}
     hann: Vec<f32>,
-    enc_sr: u8,           // convolutional encoder shift register (4 bits)
+    enc_sr: u8, // convolutional encoder shift register (4 bits)
 }
 
 impl Qpsk31Mod {
@@ -251,7 +270,9 @@ impl Qpsk31Mod {
         }
     }
 
-    pub fn set_gain(&mut self, g: f32) { self.gain = g; }
+    pub fn set_gain(&mut self, g: f32) {
+        self.gain = g;
+    }
 
     pub fn reset(&mut self) {
         self.current_phase = C32::new(1.0, 0.0);
@@ -298,7 +319,13 @@ impl Qpsk31Mod {
             );
             self.current_phase = np;
             let base = k * self.sps;
-            write_symbol(&mut out[base..base + self.sps], prev_p, np, self.gain, &self.hann);
+            write_symbol(
+                &mut out[base..base + self.sps],
+                prev_p,
+                np,
+                self.gain,
+                &self.hann,
+            );
             prev_p = np;
         }
 
@@ -312,17 +339,25 @@ impl Qpsk31Mod {
 }
 
 impl Block for Qpsk31Mod {
-    type In  = u8;
+    type In = u8;
     type Out = C32;
 
     fn process(&mut self, input: &[u8], output: &mut [C32]) -> WorkReport {
         let max_bits = output.len() / self.sps;
         let n = input.len().min(max_bits);
-        if n == 0 { return WorkReport { in_read: 0, out_written: 0 }; }
+        if n == 0 {
+            return WorkReport {
+                in_read: 0,
+                out_written: 0,
+            };
+        }
         let iq = self.modulate_bits(&input[..n]);
         let written = iq.len().min(output.len());
         output[..written].copy_from_slice(&iq[..written]);
-        WorkReport { in_read: n, out_written: written }
+        WorkReport {
+            in_read: n,
+            out_written: written,
+        }
     }
 }
 

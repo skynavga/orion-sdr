@@ -1,10 +1,10 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use pyo3::prelude::*;
-use numpy::{PyReadonlyArray1, PyArray1, IntoPyArray};
-use num_complex::Complex32;
 use crate::core::Block;
+use num_complex::Complex32;
+use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
+use pyo3::prelude::*;
 
 // ── CwEnvelopeDemod ───────────────────────────────────────────────────────────
 
@@ -15,12 +15,20 @@ pub struct PyCwEnvelopeDemod(crate::demodulate::CwEnvelopeDemod);
 impl PyCwEnvelopeDemod {
     #[new]
     fn new(sample_rate: f32, tone_hz: f32, env_bw_hz: f32) -> Self {
-        Self(crate::demodulate::CwEnvelopeDemod::new(sample_rate, tone_hz, env_bw_hz))
+        Self(crate::demodulate::CwEnvelopeDemod::new(
+            sample_rate,
+            tone_hz,
+            env_bw_hz,
+        ))
     }
-    fn set_gain(&mut self, g: f32) { self.0.set_gain(g); }
-    fn process<'py>(&mut self, py: Python<'py>, iq: PyReadonlyArray1<'py, Complex32>)
-        -> PyResult<Bound<'py, PyArray1<f32>>>
-    {
+    fn set_gain(&mut self, g: f32) {
+        self.0.set_gain(g);
+    }
+    fn process<'py>(
+        &mut self,
+        py: Python<'py>,
+        iq: PyReadonlyArray1<'py, Complex32>,
+    ) -> PyResult<Bound<'py, PyArray1<f32>>> {
         let input = iq.as_slice()?;
         let mut out = vec![0.0f32; input.len()];
         self.0.process(input, &mut out);
@@ -46,9 +54,11 @@ impl PyAmEnvelopeDemod {
             Self(inner)
         }
     }
-    fn process<'py>(&mut self, py: Python<'py>, iq: PyReadonlyArray1<'py, Complex32>)
-        -> PyResult<Bound<'py, PyArray1<f32>>>
-    {
+    fn process<'py>(
+        &mut self,
+        py: Python<'py>,
+        iq: PyReadonlyArray1<'py, Complex32>,
+    ) -> PyResult<Bound<'py, PyArray1<f32>>> {
         let input = iq.as_slice()?;
         let mut out = vec![0.0f32; input.len()];
         self.0.process(input, &mut out);
@@ -65,11 +75,17 @@ pub struct PySsbProductDemod(crate::demodulate::SsbProductDemod);
 impl PySsbProductDemod {
     #[new]
     fn new(fs: f32, bfo_hz: f32, audio_bw_hz: f32) -> Self {
-        Self(crate::demodulate::SsbProductDemod::new(fs, bfo_hz, audio_bw_hz))
+        Self(crate::demodulate::SsbProductDemod::new(
+            fs,
+            bfo_hz,
+            audio_bw_hz,
+        ))
     }
-    fn process<'py>(&mut self, py: Python<'py>, iq: PyReadonlyArray1<'py, Complex32>)
-        -> PyResult<Bound<'py, PyArray1<f32>>>
-    {
+    fn process<'py>(
+        &mut self,
+        py: Python<'py>,
+        iq: PyReadonlyArray1<'py, Complex32>,
+    ) -> PyResult<Bound<'py, PyArray1<f32>>> {
         let input = iq.as_slice()?;
         let mut out = vec![0.0f32; input.len()];
         self.0.process(input, &mut out);
@@ -86,11 +102,17 @@ pub struct PyFmQuadratureDemod(crate::demodulate::FmQuadratureDemod);
 impl PyFmQuadratureDemod {
     #[new]
     fn new(fs: f32, dev_hz: f32, audio_bw_hz: f32) -> Self {
-        Self(crate::demodulate::FmQuadratureDemod::new(fs, dev_hz, audio_bw_hz))
+        Self(crate::demodulate::FmQuadratureDemod::new(
+            fs,
+            dev_hz,
+            audio_bw_hz,
+        ))
     }
-    fn process<'py>(&mut self, py: Python<'py>, iq: PyReadonlyArray1<'py, Complex32>)
-        -> PyResult<Bound<'py, PyArray1<f32>>>
-    {
+    fn process<'py>(
+        &mut self,
+        py: Python<'py>,
+        iq: PyReadonlyArray1<'py, Complex32>,
+    ) -> PyResult<Bound<'py, PyArray1<f32>>> {
         let input = iq.as_slice()?;
         let mut out = vec![0.0f32; input.len()];
         self.0.process(input, &mut out);
@@ -107,11 +129,17 @@ pub struct PyPmQuadratureDemod(crate::demodulate::PmQuadratureDemod);
 impl PyPmQuadratureDemod {
     #[new]
     fn new(fs: f32, k: f32, audio_bw_hz: f32) -> Self {
-        Self(crate::demodulate::PmQuadratureDemod::new(fs, k, audio_bw_hz))
+        Self(crate::demodulate::PmQuadratureDemod::new(
+            fs,
+            k,
+            audio_bw_hz,
+        ))
     }
-    fn process<'py>(&mut self, py: Python<'py>, iq: PyReadonlyArray1<'py, Complex32>)
-        -> PyResult<Bound<'py, PyArray1<f32>>>
-    {
+    fn process<'py>(
+        &mut self,
+        py: Python<'py>,
+        iq: PyReadonlyArray1<'py, Complex32>,
+    ) -> PyResult<Bound<'py, PyArray1<f32>>> {
         let input = iq.as_slice()?;
         let mut out = vec![0.0f32; input.len()];
         self.0.process(input, &mut out);
@@ -139,10 +167,14 @@ impl PyBpskDemod {
             decider: crate::demodulate::BpskDecider::new(),
         }
     }
-    fn set_gain(&mut self, g: f32) { self.demod.set_gain(g); }
-    fn process<'py>(&mut self, py: Python<'py>, iq: PyReadonlyArray1<'py, Complex32>)
-        -> PyResult<Bound<'py, PyArray1<u8>>>
-    {
+    fn set_gain(&mut self, g: f32) {
+        self.demod.set_gain(g);
+    }
+    fn process<'py>(
+        &mut self,
+        py: Python<'py>,
+        iq: PyReadonlyArray1<'py, Complex32>,
+    ) -> PyResult<Bound<'py, PyArray1<u8>>> {
         let input = iq.as_slice()?;
         let n = input.len();
         let mut soft = vec![Complex32::new(0.0, 0.0); n];
@@ -174,10 +206,14 @@ impl PyQpskDemod {
             decider: crate::demodulate::QpskDecider::new(),
         }
     }
-    fn set_gain(&mut self, g: f32) { self.demod.set_gain(g); }
-    fn process<'py>(&mut self, py: Python<'py>, iq: PyReadonlyArray1<'py, Complex32>)
-        -> PyResult<Bound<'py, PyArray1<u8>>>
-    {
+    fn set_gain(&mut self, g: f32) {
+        self.demod.set_gain(g);
+    }
+    fn process<'py>(
+        &mut self,
+        py: Python<'py>,
+        iq: PyReadonlyArray1<'py, Complex32>,
+    ) -> PyResult<Bound<'py, PyArray1<u8>>> {
         let input = iq.as_slice()?;
         let n = input.len();
         let mut soft = vec![Complex32::new(0.0, 0.0); n];
@@ -199,13 +235,23 @@ enum QamDeciderInner {
 
 impl QamDeciderInner {
     fn bits(&self) -> usize {
-        match self { Self::Qam16(_) => 4, Self::Qam64(_) => 6, Self::Qam256(_) => 8 }
+        match self {
+            Self::Qam16(_) => 4,
+            Self::Qam64(_) => 6,
+            Self::Qam256(_) => 8,
+        }
     }
     fn process(&mut self, input: &[Complex32], output: &mut [u8]) {
         match self {
-            Self::Qam16(d)  => { d.process(input, output); }
-            Self::Qam64(d)  => { d.process(input, output); }
-            Self::Qam256(d) => { d.process(input, output); }
+            Self::Qam16(d) => {
+                d.process(input, output);
+            }
+            Self::Qam64(d) => {
+                d.process(input, output);
+            }
+            Self::Qam256(d) => {
+                d.process(input, output);
+            }
         }
     }
 }
@@ -226,19 +272,28 @@ impl PyQamDemod {
     #[new]
     fn new(order: u32, gain: f32) -> PyResult<Self> {
         let decider = match order {
-            16  => QamDeciderInner::Qam16(crate::demodulate::Qam16Decider::new()),
-            64  => QamDeciderInner::Qam64(crate::demodulate::Qam64Decider::new()),
+            16 => QamDeciderInner::Qam16(crate::demodulate::Qam16Decider::new()),
+            64 => QamDeciderInner::Qam64(crate::demodulate::Qam64Decider::new()),
             256 => QamDeciderInner::Qam256(crate::demodulate::Qam256Decider::new()),
-            _   => return Err(pyo3::exceptions::PyValueError::new_err(
-                "QamDemod: order must be 16, 64, or 256"
-            )),
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "QamDemod: order must be 16, 64, or 256",
+                ));
+            }
         };
-        Ok(Self { demod: crate::demodulate::QamDemod::new(gain), decider })
+        Ok(Self {
+            demod: crate::demodulate::QamDemod::new(gain),
+            decider,
+        })
     }
-    fn set_gain(&mut self, g: f32) { self.demod.set_gain(g); }
-    fn process<'py>(&mut self, py: Python<'py>, iq: PyReadonlyArray1<'py, Complex32>)
-        -> PyResult<Bound<'py, PyArray1<u8>>>
-    {
+    fn set_gain(&mut self, g: f32) {
+        self.demod.set_gain(g);
+    }
+    fn process<'py>(
+        &mut self,
+        py: Python<'py>,
+        iq: PyReadonlyArray1<'py, Complex32>,
+    ) -> PyResult<Bound<'py, PyArray1<u8>>> {
         let input = iq.as_slice()?;
         let n = input.len();
         let bits_per_sym = self.decider.bits();

@@ -1,13 +1,12 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
-use orion_sdr::core::{Block, IqToIqChain};
-use orion_sdr::modulate::{BpskMapper, BpskMod};
-use orion_sdr::demodulate::{BpskDemod, BpskDecider};
-use std::hint::black_box;
+use super::{measure_throughput, minsps_from_env};
 use num_complex::Complex32 as C32;
-use super::{minsps_from_env, measure_throughput};
+use orion_sdr::core::{Block, IqToIqChain};
+use orion_sdr::demodulate::{BpskDecider, BpskDemod};
+use orion_sdr::modulate::{BpskMapper, BpskMod};
+use std::hint::black_box;
 
 #[test]
 fn throughput_bpsk_roundtrip() {
@@ -15,13 +14,13 @@ fn throughput_bpsk_roundtrip() {
     let repeats = 30;
 
     let bits_in: Vec<u8> = (0..n).map(|i| (i & 1) as u8).collect();
-    let mut syms   = vec![C32::default(); n];
-    let mut soft   = vec![C32::default(); n];
+    let mut syms = vec![C32::default(); n];
+    let mut soft = vec![C32::default(); n];
     let mut bits_out = vec![0u8; n];
 
-    let mut mapper  = BpskMapper::new();
+    let mut mapper = BpskMapper::new();
     let mut modstage = IqToIqChain::new(BpskMod::new(1.0, 0.0, 1.0));
-    let mut demod   = IqToIqChain::new(BpskDemod::new(1.0));
+    let mut demod = IqToIqChain::new(BpskDemod::new(1.0));
     let mut decider = BpskDecider::new();
 
     let (msps, dt) = measure_throughput(
@@ -39,5 +38,10 @@ fn throughput_bpsk_roundtrip() {
 
     println!("[BPSK] {:.2} Msps in {:.3}s", msps, dt);
     let min_msps = minsps_from_env(0.2);
-    assert!(msps >= min_msps, "BPSK throughput {:.2} Msps < min {:.2} Msps", msps, min_msps);
+    assert!(
+        msps >= min_msps,
+        "BPSK throughput {:.2} Msps < min {:.2} Msps",
+        msps,
+        min_msps
+    );
 }

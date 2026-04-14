@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // src/modulate/ft8.rs
-use num_complex::Complex32 as C32;
 use crate::dsp::Rotator;
+use num_complex::Complex32 as C32;
 
 // FT8 protocol constants
 pub const FT8_TONE_SPACING_HZ: f32 = 6.25;
@@ -25,8 +25,12 @@ const FT8_SYNC_POS: [(usize, usize); 3] = [(0, 7), (36, 43), (72, 79)];
 pub struct Ft8Frame(pub [u8; FT8_DATA_SYMS]);
 
 impl Ft8Frame {
-    pub fn new(tones: [u8; FT8_DATA_SYMS]) -> Self { Self(tones) }
-    pub fn zeros() -> Self { Self([0u8; FT8_DATA_SYMS]) }
+    pub fn new(tones: [u8; FT8_DATA_SYMS]) -> Self {
+        Self(tones)
+    }
+    pub fn zeros() -> Self {
+        Self([0u8; FT8_DATA_SYMS])
+    }
 }
 
 /// FT8 modulator: frame-at-a-time rectangular 8-FSK.
@@ -49,7 +53,12 @@ impl Ft8Mod {
     /// * `rf_hz`   — IF upconversion frequency (0.0 = baseband)
     /// * `gain`    — output amplitude scale
     pub fn new(fs: f32, base_hz: f32, rf_hz: f32, gain: f32) -> Self {
-        Self { fs, base_hz, rf_hz, gain }
+        Self {
+            fs,
+            base_hz,
+            rf_hz,
+            gain,
+        }
     }
 
     /// Build the 79-symbol tone sequence from an Ft8Frame, inserting Costas sync.
@@ -99,22 +108,22 @@ impl Ft8Mod {
             while i < nn {
                 // Advance phasor 4 steps, manual unroll
                 let zr0 = z.re.mul_add(w.re, -z.im * w.im);
-                let zi0 = z.im.mul_add(w.re,  z.re * w.im);
+                let zi0 = z.im.mul_add(w.re, z.re * w.im);
                 z = C32::new(zr0, zi0);
                 out[base + i] = C32::new(g * z.re, g * z.im);
 
                 let zr1 = z.re.mul_add(w.re, -z.im * w.im);
-                let zi1 = z.im.mul_add(w.re,  z.re * w.im);
+                let zi1 = z.im.mul_add(w.re, z.re * w.im);
                 z = C32::new(zr1, zi1);
                 out[base + i + 1] = C32::new(g * z.re, g * z.im);
 
                 let zr2 = z.re.mul_add(w.re, -z.im * w.im);
-                let zi2 = z.im.mul_add(w.re,  z.re * w.im);
+                let zi2 = z.im.mul_add(w.re, z.re * w.im);
                 z = C32::new(zr2, zi2);
                 out[base + i + 2] = C32::new(g * z.re, g * z.im);
 
                 let zr3 = z.re.mul_add(w.re, -z.im * w.im);
-                let zi3 = z.im.mul_add(w.re,  z.re * w.im);
+                let zi3 = z.im.mul_add(w.re, z.re * w.im);
                 z = C32::new(zr3, zi3);
                 out[base + i + 3] = C32::new(g * z.re, g * z.im);
 
@@ -129,7 +138,7 @@ impl Ft8Mod {
             }
             while i < FT8_SAMPLES_PER_SYM {
                 let zr = z.re.mul_add(w.re, -z.im * w.im);
-                let zi = z.im.mul_add(w.re,  z.re * w.im);
+                let zi = z.im.mul_add(w.re, z.re * w.im);
                 z = C32::new(zr, zi);
                 out[base + i] = C32::new(g * z.re, g * z.im);
                 i += 1;

@@ -155,6 +155,6 @@ fn goertzel_energy(slice: &[C32], w: C32) -> f32 {
 fn mul(a: C32, b: C32) -> C32 {
     C32::new(
         a.re.mul_add(b.re, -a.im * b.im),
-        a.im.mul_add(b.re,  a.re * b.im),
+        a.im.mul_add(b.re, a.re * b.im),
     )
 }

@@ -1,9 +1,9 @@
 // Copyright (c) 2025-2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use num_complex::Complex32 as C32;
 use crate::core::{Block, WorkReport};
 use crate::dsp::{Nco, mix_with_nco};
+use num_complex::Complex32 as C32;
 
 /// PM (direct) – instantaneous phase φ = kp * x[n], optional RF upconversion.
 #[derive(Debug, Clone)]
@@ -21,8 +21,12 @@ impl PmDirectPhaseMod {
             gain: 1.0,
         }
     }
-    pub fn set_gain(&mut self, g: f32) { self.gain = g; }
-    pub fn set_sensitivity(&mut self, kp_rad_per_unit: f32) { self.kp_rad_per_unit = kp_rad_per_unit; }
+    pub fn set_gain(&mut self, g: f32) {
+        self.gain = g;
+    }
+    pub fn set_sensitivity(&mut self, kp_rad_per_unit: f32) {
+        self.kp_rad_per_unit = kp_rad_per_unit;
+    }
 }
 
 impl Block for PmDirectPhaseMod {
@@ -36,6 +40,9 @@ impl Block for PmDirectPhaseMod {
             let base = C32::new(phi.cos(), phi.sin()) * self.gain;
             output[i] = mix_with_nco(base, &mut self.rf_nco);
         }
-        WorkReport { in_read: n, out_written: n }
+        WorkReport {
+            in_read: n,
+            out_written: n,
+        }
     }
 }

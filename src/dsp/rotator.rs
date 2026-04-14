@@ -6,8 +6,8 @@ use num_complex::Complex32 as C32;
 /// Complex oscillator / frequency translator without per-sample trig.
 #[derive(Clone, Copy, Debug)]
 pub struct Rotator {
-    z: C32,      // current phasor
-    w: C32,      // per-sample step: e^{j 2π f/fs}
+    z: C32, // current phasor
+    w: C32, // per-sample step: e^{j 2π f/fs}
     renorm_ctr: u32,
 }
 
@@ -44,12 +44,13 @@ impl Rotator {
     pub fn next(&mut self) -> C32 {
         // Complex multiply with FMAs:
         let zr = self.z.re.mul_add(self.w.re, -self.z.im * self.w.im);
-        let zi = self.z.im.mul_add(self.w.re,  self.z.re * self.w.im);
+        let zi = self.z.im.mul_add(self.w.re, self.z.re * self.w.im);
         self.z = C32::new(zr, zi);
 
         // Periodic renormalization to keep |z| ~ 1.0
         self.renorm_ctr = self.renorm_ctr.wrapping_add(1);
-        if (self.renorm_ctr & 0x3FF) == 0 { // every 1024 steps
+        if (self.renorm_ctr & 0x3FF) == 0 {
+            // every 1024 steps
             let r2 = self.z.re * self.z.re + self.z.im * self.z.im;
             // One-step Newton for 1/sqrt(r2) is overkill for f32; do the simple thing:
             let inv = r2.sqrt().recip();
@@ -75,9 +76,10 @@ impl Rotator {
         for i in 0..n {
             let p = self.next();
             // (a+jb)*(c+jd) = (ac - bd) + j(ad + bc)
-            let a = input[i].re; let b = input[i].im;
+            let a = input[i].re;
+            let b = input[i].im;
             out[i].re = a.mul_add(p.re, -b * p.im);
-            out[i].im = b.mul_add(p.re,  a * p.im);
+            out[i].im = b.mul_add(p.re, a * p.im);
         }
     }
 

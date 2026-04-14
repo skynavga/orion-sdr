@@ -1,12 +1,11 @@
 // Copyright (c) 2025-2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
 pub mod am;
 pub use am::AmEnvelopeDemod;
 
 pub mod bpsk;
-pub use bpsk::{BpskDemod, BpskDecider};
+pub use bpsk::{BpskDecider, BpskDemod};
 
 pub mod cw;
 pub use cw::CwEnvelopeDemod;
@@ -24,13 +23,13 @@ pub mod pm;
 pub use pm::PmQuadratureDemod;
 
 pub mod psk31;
-pub use psk31::{Bpsk31Demod, Bpsk31Decider, Qpsk31Demod, Qpsk31Decider};
+pub use psk31::{Bpsk31Decider, Bpsk31Demod, Qpsk31Decider, Qpsk31Demod};
 
 pub mod qam;
-pub use qam::{QamDemod, QamDecider, Qam16Decider, Qam64Decider, Qam256Decider};
+pub use qam::{Qam16Decider, Qam64Decider, Qam256Decider, QamDecider, QamDemod};
 
 pub mod qpsk;
-pub use qpsk::{QpskDemod, QpskDecider};
+pub use qpsk::{QpskDecider, QpskDemod};
 
 pub mod ssb;
 pub use ssb::SsbProductDemod;

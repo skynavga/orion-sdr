@@ -15,7 +15,11 @@ impl DcBlocker {
     pub fn new(fs: f32, cut_hz: f32) -> Self {
         // Simple approximation for small cut-off
         let r = (1.0 - 2.0 * core::f32::consts::PI * (cut_hz.max(0.1) / fs)).clamp(0.0, 0.9999);
-        Self { r, x1: 0.0, y1: 0.0 }
+        Self {
+            r,
+            x1: 0.0,
+            y1: 0.0,
+        }
     }
 
     /// Fast per-sample DC-block step. High-performance inner-loop helper.
@@ -45,7 +49,11 @@ impl Block for DcBlocker {
             x1 = x;
             y1 = y;
         }
-        self.x1 = x1; self.y1 = y1;
-        WorkReport { in_read: n, out_written: n }
+        self.x1 = x1;
+        self.y1 = y1;
+        WorkReport {
+            in_read: n,
+            out_written: n,
+        }
     }
 }

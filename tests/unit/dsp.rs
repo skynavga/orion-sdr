@@ -1,10 +1,9 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
-use orion_sdr::dsp::{FirDecimator, Nco, mix_with_nco};
-use orion_sdr::core::Block;
 use num_complex::Complex32 as C32;
+use orion_sdr::core::Block;
+use orion_sdr::dsp::{FirDecimator, Nco, mix_with_nco};
 
 #[test]
 fn decimator_reduces_length_and_preserves_tone() {
@@ -15,9 +14,11 @@ fn decimator_reduces_length_and_preserves_tone() {
     let mut dec = FirDecimator::new(fs, m, cutoff, transition);
     let n = 4096;
     let mut nco = Nco::new(2_000.0, fs);
-    let mut iq = vec![C32::new(0.0,0.0); n];
-    for s in iq.iter_mut().take(n) { *s = mix_with_nco(C32::new(1.0,0.0), &mut nco); }
-    let mut out = vec![C32::new(0.0,0.0); n/m];
+    let mut iq = vec![C32::new(0.0, 0.0); n];
+    for s in iq.iter_mut().take(n) {
+        *s = mix_with_nco(C32::new(1.0, 0.0), &mut nco);
+    }
+    let mut out = vec![C32::new(0.0, 0.0); n / m];
     let w = dec.process(&iq, &mut out);
-    assert_eq!(w.out_written, n/m);
+    assert_eq!(w.out_written, n / m);
 }

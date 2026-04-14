@@ -1,11 +1,10 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
+use super::{measure_throughput, minsps_from_env, real_tone};
 use orion_sdr::core::{AudioToIqChain, IqToAudioChain};
-use orion_sdr::modulate::PmDirectPhaseMod;
 use orion_sdr::demodulate::PmQuadratureDemod;
-use super::{real_tone, minsps_from_env, measure_throughput};
+use orion_sdr::modulate::PmDirectPhaseMod;
 
 #[test]
 fn throughput_pm_roundtrip() {
@@ -29,5 +28,10 @@ fn throughput_pm_roundtrip() {
 
     println!("[PM] {:.2} Msps in {:.3}s", msps, dt);
     let min_msps = minsps_from_env(0.25);
-    assert!(msps >= min_msps, "PM throughput {:.2} Msps < min {:.2} Msps", msps, min_msps);
+    assert!(
+        msps >= min_msps,
+        "PM throughput {:.2} Msps < min {:.2} Msps",
+        msps,
+        min_msps
+    );
 }

@@ -1,11 +1,10 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
-use orion_sdr::core::{AudioToIqChain, IqToAudioChain};
-use orion_sdr::modulate::CwKeyedMod;
-use orion_sdr::demodulate::CwEnvelopeDemod;
 use super::helpers::rms;
+use orion_sdr::core::{AudioToIqChain, IqToAudioChain};
+use orion_sdr::demodulate::CwEnvelopeDemod;
+use orion_sdr::modulate::CwKeyedMod;
 
 #[test]
 fn roundtrip_cw_envelope() {
@@ -31,10 +30,14 @@ fn roundtrip_cw_envelope() {
     let mut on: Vec<f32> = Vec::with_capacity(a.len());
     let mut off: Vec<f32> = Vec::with_capacity(a.len());
     for (&y, &ke) in a.iter().zip(k.iter()) {
-        if ke > 0.5 { on.push(y); } else { off.push(y); }
+        if ke > 0.5 {
+            on.push(y);
+        } else {
+            off.push(y);
+        }
     }
 
-    let on_rms  = rms(&on);
+    let on_rms = rms(&on);
     let off_rms = rms(&off);
 
     let contrast_db = 20.0 * (on_rms / (off_rms + 1e-12)).log10();

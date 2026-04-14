@@ -1,18 +1,17 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
-use orion_sdr::modulate::{BpskMapper, BpskMod};
-use orion_sdr::demodulate::{BpskDemod, BpskDecider};
-use orion_sdr::core::Block;
 use num_complex::Complex32 as C32;
+use orion_sdr::core::Block;
+use orion_sdr::demodulate::{BpskDecider, BpskDemod};
+use orion_sdr::modulate::{BpskMapper, BpskMod};
 
 #[test]
 fn roundtrip_bpsk_noiseless() {
     let n = 256;
     let bits_in: Vec<u8> = (0..n).map(|i| (i & 1) as u8).collect();
     let mut syms = vec![C32::default(); n];
-    let mut iq   = vec![C32::default(); n];
+    let mut iq = vec![C32::default(); n];
     let mut soft = vec![C32::default(); n];
     let mut bits_out = vec![0u8; n];
     BpskMapper::new().process(&bits_in, &mut syms);

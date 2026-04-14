@@ -1,11 +1,10 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
+use super::{measure_throughput, minsps_from_env, real_tone};
 use orion_sdr::core::{AudioToIqChain, IqToAudioChain};
-use orion_sdr::modulate::SsbPhasingMod;
 use orion_sdr::demodulate::SsbProductDemod;
-use super::{real_tone, minsps_from_env, measure_throughput};
+use orion_sdr::modulate::SsbPhasingMod;
 
 #[test]
 fn throughput_ssb_usb_roundtrip() {
@@ -29,5 +28,10 @@ fn throughput_ssb_usb_roundtrip() {
 
     println!("[SSB-USB] {:.2} Msps in {:.3}s", msps, dt);
     let min_msps = minsps_from_env(0.15);
-    assert!(msps >= min_msps, "SSB throughput {:.2} Msps < min {:.2} Msps", msps, min_msps);
+    assert!(
+        msps >= min_msps,
+        "SSB throughput {:.2} Msps < min {:.2} Msps",
+        msps,
+        min_msps
+    );
 }
