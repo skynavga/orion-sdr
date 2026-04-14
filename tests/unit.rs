@@ -15,6 +15,7 @@ mod unit {
     pub mod ft8;
     pub mod helpers;
     pub mod message;
+    pub mod morse;
     pub mod pm;
     pub mod psk31;
     pub mod qam;
