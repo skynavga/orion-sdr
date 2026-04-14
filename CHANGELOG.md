@@ -9,6 +9,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.33] - 2026-04-13
+
+### Added
+
+- `MorseEncoder` in `codec::morse`: ITU-R M.1677 Morse code encoder that
+  converts ASCII text into a keying envelope (0.0/1.0 sample buffer) for
+  driving `CwKeyedMod`. Supports configurable WPM, element-duration jitter,
+  dash weighting, and inter-element spacing to simulate human operator
+  characteristics. Builder API: `with_jitter`, `with_dash_weight`,
+  `with_char_space`, `with_word_space`.
+- Unit tests for Morse encoder: timing accuracy, SOS envelope length, dash
+  weight, jitter bounds, word/char spacing, case insensitivity, unknown
+  character handling, WPM range.
+
 ## [0.0.32] - 2026-04-13
 
 ### Changed
