@@ -9,6 +9,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.31] - 2026-04-13
+
+### Added
+
+- GitHub Actions CI workflow: fmt/check/clippy, unit+roundtrip tests
+  on stable and beta Rust, pytest smoke test (Linux), and
+  throughput/SNR regression job gated to main-branch pushes only.
+
+### Fixed
+
+- Cargo test alias filters corrected (were using nonexistent
+  `tests::*` path prefix).
+- Two `clippy::is_multiple_of` lints in psk31 demod and sync
+  (new in Rust 1.94).
+- Maturin `develop` venv handling in CI pytest job.
+
 ## [0.0.30] - 2026-04-10
 
 ### Changed
