@@ -38,18 +38,20 @@ pub fn nchar(c: char, table: Table) -> Option<u8> {
     }
     // Extra characters
     match table {
-        Table::Full => {
-            match c {
-                '+' => Some(n as u8),
-                '-' => Some((n + 1) as u8),
-                '.' => Some((n + 2) as u8),
-                '/' => Some((n + 3) as u8),
-                '?' => Some((n + 4) as u8),
-                _ => None,
-            }
-        }
+        Table::Full => match c {
+            '+' => Some(n as u8),
+            '-' => Some((n + 1) as u8),
+            '.' => Some((n + 2) as u8),
+            '/' => Some((n + 3) as u8),
+            '?' => Some((n + 4) as u8),
+            _ => None,
+        },
         Table::AlphanumSpaceSlash => {
-            if c == '/' { Some(n as u8) } else { None }
+            if c == '/' {
+                Some(n as u8)
+            } else {
+                None
+            }
         }
         _ => None,
     }
@@ -77,14 +79,13 @@ pub fn charn(n: u8, table: Table) -> char {
         n -= 26;
     }
     match table {
-        Table::Full => {
-            "+-./?"
-                .chars()
-                .nth(n as usize)
-                .unwrap_or('_')
-        }
+        Table::Full => "+-./?".chars().nth(n as usize).unwrap_or('_'),
         Table::AlphanumSpaceSlash => {
-            if n == 0 { '/' } else { '_' }
+            if n == 0 {
+                '/'
+            } else {
+                '_'
+            }
         }
         _ => '_',
     }

@@ -1,15 +1,14 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
 use num_complex::Complex32 as C32;
 
 // --- Waterfall ---
 
 #[test]
 fn waterfall_peak_bin_matches_tone_frequency() {
+    use orion_sdr::modulate::ft8::{FT8_SAMPLES_PER_SYM, FT8_TONE_SPACING_HZ};
     use orion_sdr::sync::waterfall::compute_waterfall;
-    use orion_sdr::modulate::ft8::{FT8_TONE_SPACING_HZ, FT8_SAMPLES_PER_SYM};
 
     let fs = 12_000.0f32;
     let base_hz = 1_000.0f32;
@@ -17,22 +16,29 @@ fn waterfall_peak_bin_matches_tone_frequency() {
     let f_tone = base_hz + tone_idx as f32 * FT8_TONE_SPACING_HZ;
 
     let n = FT8_SAMPLES_PER_SYM;
-    let iq: Vec<C32> = (0..n).map(|k| {
-        let phi = std::f32::consts::TAU * f_tone * (k as f32) / fs;
-        C32::new(phi.cos(), phi.sin())
-    }).collect();
+    let iq: Vec<C32> = (0..n)
+        .map(|k| {
+            let phi = std::f32::consts::TAU * f_tone * (k as f32) / fs;
+            C32::new(phi.cos(), phi.sin())
+        })
+        .collect();
 
     let wf = compute_waterfall(&iq, fs, base_hz, FT8_TONE_SPACING_HZ, n, 1, 8, 0);
 
-    let peak_bin = (0..8).max_by(|&a, &b| wf.get(0, a).partial_cmp(&wf.get(0, b)).unwrap()).unwrap();
-    assert_eq!(peak_bin, tone_idx,
-        "Peak waterfall bin {} does not match transmitted tone {}", peak_bin, tone_idx);
+    let peak_bin = (0..8)
+        .max_by(|&a, &b| wf.get(0, a).partial_cmp(&wf.get(0, b)).unwrap())
+        .unwrap();
+    assert_eq!(
+        peak_bin, tone_idx,
+        "Peak waterfall bin {} does not match transmitted tone {}",
+        peak_bin, tone_idx
+    );
 }
 
 #[test]
 fn waterfall_peak_bin_dominates_neighbours() {
+    use orion_sdr::modulate::ft8::{FT8_SAMPLES_PER_SYM, FT8_TONE_SPACING_HZ};
     use orion_sdr::sync::waterfall::compute_waterfall;
-    use orion_sdr::modulate::ft8::{FT8_TONE_SPACING_HZ, FT8_SAMPLES_PER_SYM};
 
     let fs = 12_000.0f32;
     let base_hz = 1_000.0f32;
@@ -40,27 +46,45 @@ fn waterfall_peak_bin_dominates_neighbours() {
     let f_tone = base_hz + tone_idx as f32 * FT8_TONE_SPACING_HZ;
 
     let n = FT8_SAMPLES_PER_SYM;
-    let iq: Vec<C32> = (0..n).map(|k| {
-        let phi = std::f32::consts::TAU * f_tone * (k as f32) / fs;
-        C32::new(phi.cos(), phi.sin())
-    }).collect();
+    let iq: Vec<C32> = (0..n)
+        .map(|k| {
+            let phi = std::f32::consts::TAU * f_tone * (k as f32) / fs;
+            C32::new(phi.cos(), phi.sin())
+        })
+        .collect();
 
     let wf = compute_waterfall(&iq, fs, base_hz, FT8_TONE_SPACING_HZ, n, 1, 8, 0);
 
     let peak_e = wf.get(0, tone_idx);
-    let left_e  = if tone_idx > 0 { wf.get(0, tone_idx - 1) } else { f32::NEG_INFINITY };
-    let right_e = if tone_idx < 7 { wf.get(0, tone_idx + 1) } else { f32::NEG_INFINITY };
+    let left_e = if tone_idx > 0 {
+        wf.get(0, tone_idx - 1)
+    } else {
+        f32::NEG_INFINITY
+    };
+    let right_e = if tone_idx < 7 {
+        wf.get(0, tone_idx + 1)
+    } else {
+        f32::NEG_INFINITY
+    };
 
-    assert!(peak_e - left_e > 10.0,
-        "Peak bin not dominant over left neighbour: peak={:.2} left={:.2}", peak_e, left_e);
-    assert!(peak_e - right_e > 10.0,
-        "Peak bin not dominant over right neighbour: peak={:.2} right={:.2}", peak_e, right_e);
+    assert!(
+        peak_e - left_e > 10.0,
+        "Peak bin not dominant over left neighbour: peak={:.2} left={:.2}",
+        peak_e,
+        left_e
+    );
+    assert!(
+        peak_e - right_e > 10.0,
+        "Peak bin not dominant over right neighbour: peak={:.2} right={:.2}",
+        peak_e,
+        right_e
+    );
 }
 
 #[test]
 fn waterfall_time_offset_shifts_window() {
+    use orion_sdr::modulate::ft8::{FT8_SAMPLES_PER_SYM, FT8_TONE_SPACING_HZ};
     use orion_sdr::sync::waterfall::compute_waterfall;
-    use orion_sdr::modulate::ft8::{FT8_TONE_SPACING_HZ, FT8_SAMPLES_PER_SYM};
 
     let fs = 12_000.0f32;
     let base_hz = 1_000.0f32;
@@ -79,28 +103,47 @@ fn waterfall_time_offset_shifts_window() {
 
     let wf1 = compute_waterfall(&buf, fs, base_hz, FT8_TONE_SPACING_HZ, n, 1, 8, n);
     let e_tone = wf1.get(0, tone_idx);
-    let peak_bin = (0..8).max_by(|&a, &b| wf1.get(0, a).partial_cmp(&wf1.get(0, b)).unwrap()).unwrap();
+    let peak_bin = (0..8)
+        .max_by(|&a, &b| wf1.get(0, a).partial_cmp(&wf1.get(0, b)).unwrap())
+        .unwrap();
 
-    assert!(e_tone > e_silence + 10.0,
-        "Tone energy with correct offset ({:.2}) should dominate silence ({:.2})", e_tone, e_silence);
-    assert_eq!(peak_bin, tone_idx,
-        "Peak bin {} should be {} with correct time offset", peak_bin, tone_idx);
+    assert!(
+        e_tone > e_silence + 10.0,
+        "Tone energy with correct offset ({:.2}) should dominate silence ({:.2})",
+        e_tone,
+        e_silence
+    );
+    assert_eq!(
+        peak_bin, tone_idx,
+        "Peak bin {} should be {} with correct time offset",
+        peak_bin, tone_idx
+    );
 }
 
 // --- Costas score ---
 
 #[test]
 fn costas_score_peaks_at_correct_location() {
-    use orion_sdr::sync::waterfall::compute_waterfall;
+    use orion_sdr::modulate::ft8::{
+        FT8_SAMPLES_PER_SYM, FT8_TONE_SPACING_HZ, FT8_TOTAL_SYMS, Ft8Frame, Ft8Mod,
+    };
     use orion_sdr::sync::costas::costas_score;
-    use orion_sdr::modulate::ft8::{Ft8Mod, Ft8Frame, FT8_TONE_SPACING_HZ, FT8_SAMPLES_PER_SYM, FT8_TOTAL_SYMS};
+    use orion_sdr::sync::waterfall::compute_waterfall;
 
     let fs = 12_000.0f32;
     let base_hz = 1_000.0f32;
 
     let iq = Ft8Mod::new(fs, base_hz, 0.0, 1.0).modulate(&Ft8Frame::zeros());
-    let wf = compute_waterfall(&iq, fs, base_hz, FT8_TONE_SPACING_HZ,
-        FT8_SAMPLES_PER_SYM, FT8_TOTAL_SYMS, 16, 0);
+    let wf = compute_waterfall(
+        &iq,
+        fs,
+        base_hz,
+        FT8_TONE_SPACING_HZ,
+        FT8_SAMPLES_PER_SYM,
+        FT8_TOTAL_SYMS,
+        16,
+        0,
+    );
 
     let costas = [3u8, 1, 4, 0, 6, 5, 2];
     let sync_pos: Vec<i32> = vec![0, 36, 72];
@@ -109,19 +152,29 @@ fn costas_score_peaks_at_correct_location() {
     let score_wrong_freq = costas_score(&wf, &costas, &sync_pos, 0, 4);
     let score_wrong_time = costas_score(&wf, &costas, &sync_pos, 5, 0);
 
-    assert!(score_correct > score_wrong_freq,
-        "Correct location ({:.2}) should beat wrong freq ({:.2})", score_correct, score_wrong_freq);
-    assert!(score_correct > score_wrong_time,
-        "Correct location ({:.2}) should beat wrong time ({:.2})", score_correct, score_wrong_time);
+    assert!(
+        score_correct > score_wrong_freq,
+        "Correct location ({:.2}) should beat wrong freq ({:.2})",
+        score_correct,
+        score_wrong_freq
+    );
+    assert!(
+        score_correct > score_wrong_time,
+        "Correct location ({:.2}) should beat wrong time ({:.2})",
+        score_correct,
+        score_wrong_time
+    );
 }
 
 // --- find_candidates ---
 
 #[test]
 fn find_candidates_top_hit_at_correct_location() {
-    use orion_sdr::sync::waterfall::compute_waterfall;
+    use orion_sdr::modulate::ft8::{
+        FT8_SAMPLES_PER_SYM, FT8_TONE_SPACING_HZ, FT8_TONES, FT8_TOTAL_SYMS, Ft8Frame, Ft8Mod,
+    };
     use orion_sdr::sync::costas::find_candidates;
-    use orion_sdr::modulate::ft8::{Ft8Mod, Ft8Frame, FT8_TONE_SPACING_HZ, FT8_SAMPLES_PER_SYM, FT8_TOTAL_SYMS, FT8_TONES};
+    use orion_sdr::sync::waterfall::compute_waterfall;
 
     let fs = 12_000.0f32;
     let base_hz = 1_000.0f32;
@@ -129,26 +182,45 @@ fn find_candidates_top_hit_at_correct_location() {
     let iq = Ft8Mod::new(fs, base_hz, 0.0, 1.0).modulate(&Ft8Frame::zeros());
 
     let num_bins = FT8_TONES + 8;
-    let wf = compute_waterfall(&iq, fs, base_hz, FT8_TONE_SPACING_HZ,
-        FT8_SAMPLES_PER_SYM, FT8_TOTAL_SYMS, num_bins, 0);
+    let wf = compute_waterfall(
+        &iq,
+        fs,
+        base_hz,
+        FT8_TONE_SPACING_HZ,
+        FT8_SAMPLES_PER_SYM,
+        FT8_TOTAL_SYMS,
+        num_bins,
+        0,
+    );
 
     let costas = [3u8, 1, 4, 0, 6, 5, 2];
     let sync_pos: Vec<i32> = vec![0, 36, 72];
 
     let candidates = find_candidates(&wf, &costas, &sync_pos, FT8_TONES, 0, 0, 5);
 
-    assert!(!candidates.is_empty(), "find_candidates returned no results");
+    assert!(
+        !candidates.is_empty(),
+        "find_candidates returned no results"
+    );
     let best = &candidates[0];
-    assert_eq!(best.time_sym, 0, "Best candidate time_sym should be 0, got {}", best.time_sym);
-    assert_eq!(best.freq_bin, 0, "Best candidate freq_bin should be 0, got {}", best.freq_bin);
+    assert_eq!(
+        best.time_sym, 0,
+        "Best candidate time_sym should be 0, got {}",
+        best.time_sym
+    );
+    assert_eq!(
+        best.freq_bin, 0,
+        "Best candidate freq_bin should be 0, got {}",
+        best.freq_bin
+    );
 }
 
 // --- LDPC decoder regression ---
 
 #[test]
 fn ldpc_decode_soft_early_exit_on_valid_initial_hard() {
-    use orion_sdr::codec::ldpc::{ldpc_encode, ldpc_decode_soft, K_BYTES, N_BYTES, N};
     use orion_sdr::codec::crc::ft8_add_crc;
+    use orion_sdr::codec::ldpc::{K_BYTES, N, N_BYTES, ldpc_decode_soft, ldpc_encode};
 
     let payload = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01, 0x23, 0x45, 0x60u8];
     let mut a91 = [0u8; K_BYTES];
@@ -163,15 +235,17 @@ fn ldpc_decode_soft_early_exit_on_valid_initial_hard() {
 
     let mut plain = [0u8; N];
     let errors = ldpc_decode_soft(&llr, 20, &mut plain);
-    assert_eq!(errors, 0,
-        "LDPC soft decode failed with moderate-magnitude valid LLRs (got {errors} errors)");
+    assert_eq!(
+        errors, 0,
+        "LDPC soft decode failed with moderate-magnitude valid LLRs (got {errors} errors)"
+    );
 }
 
 #[test]
 fn ldpc_decode_soft_returns_best_plain_on_divergence() {
-    use orion_sdr::codec::ldpc::{ldpc_decode_soft, ldpc_count_errors, N};
-    use orion_sdr::codec::ldpc::{ldpc_encode, K_BYTES, N_BYTES};
     use orion_sdr::codec::crc::ft8_add_crc;
+    use orion_sdr::codec::ldpc::{K_BYTES, N_BYTES, ldpc_encode};
+    use orion_sdr::codec::ldpc::{N, ldpc_count_errors, ldpc_decode_soft};
 
     let payload = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0, 0x11, 0x00u8];
     let mut a91 = [0u8; K_BYTES];
@@ -186,8 +260,13 @@ fn ldpc_decode_soft_returns_best_plain_on_divergence() {
 
     let mut plain = [0u8; N];
     let errors = ldpc_decode_soft(&llr, 20, &mut plain);
-    assert_eq!(errors, 0,
-        "LDPC decode failed with weak-but-correct-sign LLRs ({errors} errors)");
-    assert_eq!(ldpc_count_errors(&plain), 0,
-        "Returned plain fails syndrome check");
+    assert_eq!(
+        errors, 0,
+        "LDPC decode failed with weak-but-correct-sign LLRs ({errors} errors)"
+    );
+    assert_eq!(
+        ldpc_count_errors(&plain),
+        0,
+        "Returned plain fails syndrome check"
+    );
 }

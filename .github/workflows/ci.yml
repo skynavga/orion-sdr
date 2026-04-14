@@ -1,0 +1,138 @@
+# Copyright (c) 2026 G & R Associates LLC
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["main"]
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # ── Fast check ─────────────────────────────────────────────────────────────
+  check:
+    name: Check / fmt / clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-check-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-check-
+
+      - run: cargo fmt --check
+      - run: cargo check --all-features
+      - run: cargo clippy --all-features -- -D warnings
+
+  # ── Rust unit + roundtrip tests ────────────────────────────────────────────
+  test:
+    name: Test (stable + beta)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [stable, beta]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ${{ matrix.toolchain }} toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-test-${{ matrix.toolchain }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-test-${{ matrix.toolchain }}-
+
+      - name: Unit tests
+        run: cargo test --release unit
+
+      - name: Roundtrip tests
+        run: cargo test --release roundtrip
+
+  # ── Python smoke test ──────────────────────────────────────────────────────
+  pytest:
+    name: Python bindings (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-pytest-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-pytest-
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install maturin + test deps
+        run: pip install maturin numpy pytest
+
+      - name: Build and install extension
+        run: maturin develop --release
+
+      - name: Run pytest
+        run: pytest -v
+
+  # ── Throughput + SNR regression (main only) ────────────────────────────────
+  performance:
+    name: Throughput + SNR (main only)
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-perf-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-perf-
+
+      - name: Throughput tests
+        run: >
+          cargo test --release --features throughput throughput
+          -- --nocapture --test-threads=1
+
+      - name: SNR sensitivity sweeps
+        run: >
+          cargo test --release --features throughput "snr::"
+          -- --nocapture --test-threads=1

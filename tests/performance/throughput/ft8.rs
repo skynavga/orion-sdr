@@ -1,13 +1,12 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
-use orion_sdr::modulate::{Ft8Mod, Ft8Frame};
-use orion_sdr::modulate::ft8::{FT8_DATA_SYMS, FT8_FRAME_LEN};
+use super::{measure_throughput, minsps_from_env};
+use orion_sdr::codec::ft8::{Ft8Bits, Ft8Codec};
 use orion_sdr::demodulate::Ft8Demod;
-use orion_sdr::codec::ft8::{Ft8Codec, Ft8Bits};
+use orion_sdr::modulate::ft8::{FT8_DATA_SYMS, FT8_FRAME_LEN};
+use orion_sdr::modulate::{Ft8Frame, Ft8Mod};
 use std::hint::black_box;
-use super::{minsps_from_env, measure_throughput};
 
 const FS: f32 = 12_000.0;
 const BASE_HZ: f32 = 1_000.0;
@@ -39,7 +38,12 @@ fn throughput_ft8_mod() {
 
     println!("[FT8 mod] {:.2} Msps in {:.3}s", msps, dt);
     let min_msps = minsps_from_env(0.5);
-    assert!(msps >= min_msps, "FT8 mod throughput {:.2} Msps < min {:.2} Msps", msps, min_msps);
+    assert!(
+        msps >= min_msps,
+        "FT8 mod throughput {:.2} Msps < min {:.2} Msps",
+        msps,
+        min_msps
+    );
 }
 
 #[test]
@@ -61,7 +65,12 @@ fn throughput_ft8_demod() {
 
     println!("[FT8 demod] {:.2} Msps in {:.3}s", msps, dt);
     let min_msps = minsps_from_env(0.5);
-    assert!(msps >= min_msps, "FT8 demod throughput {:.2} Msps < min {:.2} Msps", msps, min_msps);
+    assert!(
+        msps >= min_msps,
+        "FT8 demod throughput {:.2} Msps < min {:.2} Msps",
+        msps,
+        min_msps
+    );
 }
 
 #[test]
@@ -80,7 +89,12 @@ fn throughput_ft8_codec_encode() {
 
     println!("[FT8 codec encode] {:.2} Msps in {:.3}s", msps, dt);
     let min_msps = minsps_from_env(0.01);
-    assert!(msps >= min_msps, "FT8 codec encode throughput {:.2} Msps < min {:.2} Msps", msps, min_msps);
+    assert!(
+        msps >= min_msps,
+        "FT8 codec encode throughput {:.2} Msps < min {:.2} Msps",
+        msps,
+        min_msps
+    );
 }
 
 #[test]
@@ -100,7 +114,12 @@ fn throughput_ft8_codec_decode() {
 
     println!("[FT8 codec decode] {:.2} Msps in {:.3}s", msps, dt);
     let min_msps = minsps_from_env(0.01);
-    assert!(msps >= min_msps, "FT8 codec decode throughput {:.2} Msps < min {:.2} Msps", msps, min_msps);
+    assert!(
+        msps >= min_msps,
+        "FT8 codec decode throughput {:.2} Msps < min {:.2} Msps",
+        msps,
+        min_msps
+    );
 }
 
 #[test]
@@ -124,5 +143,10 @@ fn throughput_ft8_roundtrip() {
 
     println!("[FT8 roundtrip] {:.2} Msps in {:.3}s", msps, dt);
     let min_msps = minsps_from_env(0.5);
-    assert!(msps >= min_msps, "FT8 roundtrip throughput {:.2} Msps < min {:.2} Msps", msps, min_msps);
+    assert!(
+        msps >= min_msps,
+        "FT8 roundtrip throughput {:.2} Msps < min {:.2} Msps",
+        msps,
+        min_msps
+    );
 }

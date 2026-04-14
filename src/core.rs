@@ -28,7 +28,10 @@ pub struct AudioToIqChain<B: Block<In = f32, Out = C32>> {
 }
 impl<B: Block<In = f32, Out = C32>> AudioToIqChain<B> {
     pub fn new(block: B) -> Self {
-        Self { block, out: Vec::new() }
+        Self {
+            block,
+            out: Vec::new(),
+        }
     }
     /// Original convenience API (takes ownership of Vec)
     pub fn process(&mut self, input: Vec<f32>) -> Vec<C32> {
@@ -55,10 +58,19 @@ pub struct IqToIqChain<B: Block<In = C32, Out = C32>> {
     out: Vec<C32>,
 }
 impl<B: Block<In = C32, Out = C32>> IqToIqChain<B> {
-    pub fn new(block: B) -> Self { Self { block, out: Vec::new() } }
-    pub fn process(&mut self, input: Vec<C32>) -> Vec<C32> { self.process_ref(&input) }
+    pub fn new(block: B) -> Self {
+        Self {
+            block,
+            out: Vec::new(),
+        }
+    }
+    pub fn process(&mut self, input: Vec<C32>) -> Vec<C32> {
+        self.process_ref(&input)
+    }
     pub fn process_ref(&mut self, input: &[C32]) -> Vec<C32> {
-        if self.out.len() < input.len() { self.out.resize(input.len(), C32::new(0.0, 0.0)); }
+        if self.out.len() < input.len() {
+            self.out.resize(input.len(), C32::new(0.0, 0.0));
+        }
         let n = input.len();
         let _wr = self.block.process_into(input, &mut self.out[..n]);
         self.out[..n].to_vec()
@@ -75,7 +87,10 @@ pub struct IqToAudioChain<B: Block<In = C32, Out = f32>> {
 }
 impl<B: Block<In = C32, Out = f32>> IqToAudioChain<B> {
     pub fn new(block: B) -> Self {
-        Self { block, out: Vec::new() }
+        Self {
+            block,
+            out: Vec::new(),
+        }
     }
     pub fn process(&mut self, input: Vec<C32>) -> Vec<f32> {
         self.process_ref(&input)

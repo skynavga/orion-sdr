@@ -1,14 +1,14 @@
 // Copyright (c) 2025-2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use num_complex::Complex32 as C32;
 use crate::core::{Block, WorkReport};
 use crate::dsp::{LpCascade, Rotator};
 use crate::util::atan2_approx;
- 
- // FM Quadrature Demod
+use num_complex::Complex32 as C32;
+
+// FM Quadrature Demod
 #[derive(Debug, Clone)]
- pub struct FmQuadratureDemod {
+pub struct FmQuadratureDemod {
     fs: f32,
     k: f32,
     // optional translator
@@ -16,28 +16,27 @@ use crate::util::atan2_approx;
     prev: C32,
     // audio postfilter
     post_lp: LpCascade,
- }
+}
 
 impl FmQuadratureDemod {
-
     pub fn new(fs: f32, dev_hz: f32, audio_bw_hz: f32) -> Self {
         let k = 1.0 / dev_hz.max(1.0);
         let post_lp = LpCascade::design(fs, audio_bw_hz * 0.9);
-         Self {
+        Self {
             fs,
             k,
             xf: None,
             prev: C32::new(1.0, 0.0),
             post_lp,
-         }
-     }
-
-     pub fn with_translate(mut self, freq_hz: f32) -> Self {
-        self.xf = Some(Rotator::new(freq_hz, self.fs)); self
+        }
     }
 
+    pub fn with_translate(mut self, freq_hz: f32) -> Self {
+        self.xf = Some(Rotator::new(freq_hz, self.fs));
+        self
+    }
 }
- 
+
 impl Block for FmQuadratureDemod {
     type In = C32;
     type Out = f32;
@@ -52,7 +51,9 @@ impl Block for FmQuadratureDemod {
                     z.re * self.prev.re + z.im * self.prev.im,
                     z.im * self.prev.re - z.re * self.prev.im,
                 );
-                output[i] = self.post_lp.process(atan2_approx(prod.im, prod.re) * self.k);
+                output[i] = self
+                    .post_lp
+                    .process(atan2_approx(prod.im, prod.re) * self.k);
                 self.prev = z;
             }
         } else {
@@ -62,12 +63,16 @@ impl Block for FmQuadratureDemod {
                     z.re * self.prev.re + z.im * self.prev.im,
                     z.im * self.prev.re - z.re * self.prev.im,
                 );
-                output[i] = self.post_lp.process(atan2_approx(prod.im, prod.re) * self.k);
+                output[i] = self
+                    .post_lp
+                    .process(atan2_approx(prod.im, prod.re) * self.k);
                 self.prev = z;
             }
         }
 
-        WorkReport { in_read: n, out_written: n }
+        WorkReport {
+            in_read: n,
+            out_written: n,
+        }
     }
-
 }

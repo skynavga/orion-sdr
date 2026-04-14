@@ -31,7 +31,7 @@ cargo test-roundtrip
 cargo test-throughput
 
 # Run SNR sensitivity sweeps (prints full curve, always passes)
-cargo test --lib --features throughput "performance::snr" -- --nocapture --test-threads=1
+cargo test --release --features throughput "snr::" -- --nocapture --test-threads=1
 ```
 
 See `.cargo/config.toml` for the alias definitions. Always use `--release` for

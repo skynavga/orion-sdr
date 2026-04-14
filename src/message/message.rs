@@ -1,9 +1,9 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::callsign::{CallsignHashTable, pack28, unpack28, pack58};
-use super::grid::{GridField, unpackgrid, gridfield_to_pack};
-use super::free_text::{encode_free_text, decode_free_text};
+use super::callsign::{CallsignHashTable, pack28, pack58, unpack28};
+use super::free_text::{decode_free_text, encode_free_text};
+use super::grid::{GridField, gridfield_to_pack, unpackgrid};
 
 /// A 77-bit FT8/FT4 payload packed into 10 bytes (MSB-first, bits 77–79 of byte 9 are zero).
 pub type Payload77 = [u8; 10];
@@ -44,18 +44,18 @@ pub enum Ft8Message {
 /// Returns `None` if the message cannot be encoded (e.g. invalid callsign).
 pub fn pack77(msg: &Ft8Message, ht: &mut CallsignHashTable) -> Option<Payload77> {
     match msg {
-        Ft8Message::Standard { call_to, call_de, extra } => {
-            pack77_standard(call_to, call_de, extra, ht)
-        }
-        Ft8Message::FreeText(text) => {
-            pack77_free_text(text)
-        }
-        Ft8Message::NonStd { call_to, call_de, extra } => {
-            pack77_nonstd(call_to, call_de, extra, ht)
-        }
-        Ft8Message::Telemetry(data) => {
-            Some(pack77_telemetry(data))
-        }
+        Ft8Message::Standard {
+            call_to,
+            call_de,
+            extra,
+        } => pack77_standard(call_to, call_de, extra, ht),
+        Ft8Message::FreeText(text) => pack77_free_text(text),
+        Ft8Message::NonStd {
+            call_to,
+            call_de,
+            extra,
+        } => pack77_nonstd(call_to, call_de, extra, ht),
+        Ft8Message::Telemetry(data) => Some(pack77_telemetry(data)),
         Ft8Message::Unknown(p) => Some(*p),
     }
 }
@@ -171,7 +171,11 @@ fn pack77_nonstd(
 ) -> Option<Payload77> {
     let i3: u8 = 4;
 
-    let icq: u8 = if call_to == "CQ" || call_to.starts_with("CQ ") { 1 } else { 0 };
+    let icq: u8 = if call_to == "CQ" || call_to.starts_with("CQ ") {
+        1
+    } else {
+        0
+    };
 
     let (iflip, n12, call58_str) = if icq == 0 {
         // Non-CQ: call_de is the 58-bit full callsign, call_to is the 12-bit hash
@@ -192,10 +196,10 @@ fn pack77_nonstd(
         0
     } else {
         match extra {
-            NonstdExtra::RRR      => 1,
-            NonstdExtra::RR73     => 2,
+            NonstdExtra::RRR => 1,
+            NonstdExtra::RR73 => 2,
             NonstdExtra::Seventy3 => 3,
-            NonstdExtra::None     => 0,
+            NonstdExtra::None => 0,
         }
     };
 
@@ -224,7 +228,7 @@ fn pack77_telemetry(data: &[u8; 9]) -> Payload77 {
     }
     // Encode n3=5, i3=0 in payload[8] bit 0 and payload[9] bits 7-6
     // n3=5=0b101: bit2 -> payload[8] bit 0; bits 1-0 -> payload[9] bits 7-6
-    p[8] |= 0x01;     // n3 bit 2
+    p[8] |= 0x01; // n3 bit 2
     p[9] = 0b01 << 6; // n3 bits 1-0 = 0b01; i3 = 0
     p
 }
@@ -259,13 +263,15 @@ fn unpack77_standard(payload: &Payload77, i3: u8, ht: &CallsignHashTable) -> Ft8
         | ((payload[8] as u16) << 2)
         | ((payload[9] as u16) >> 6);
 
-    let call_to = unpack28(n29a >> 1, (n29a & 1) != 0, i3, ht)
-        .unwrap_or_else(|| "<?>".to_string());
-    let call_de = unpack28(n29b >> 1, (n29b & 1) != 0, i3, ht)
-        .unwrap_or_else(|| "<?>".to_string());
+    let call_to = unpack28(n29a >> 1, (n29a & 1) != 0, i3, ht).unwrap_or_else(|| "<?>".to_string());
+    let call_de = unpack28(n29b >> 1, (n29b & 1) != 0, i3, ht).unwrap_or_else(|| "<?>".to_string());
     let extra = unpackgrid(igrid4, ir);
 
-    Ft8Message::Standard { call_to, call_de, extra }
+    Ft8Message::Standard {
+        call_to,
+        call_de,
+        extra,
+    }
 }
 
 fn unpack77_nonstd(payload: &Payload77, ht: &CallsignHashTable) -> Ft8Message {
@@ -287,7 +293,8 @@ fn unpack77_nonstd(payload: &Payload77, ht: &CallsignHashTable) -> Ft8Message {
     // We need a mutable reference, but we only have an immutable one here.
     // We'll decode the callsign without saving, which is fine for display.
     let call_decoded = unpack58_readonly(n58);
-    let call_hashed = ht.lookup_n12(n12)
+    let call_hashed = ht
+        .lookup_n12(n12)
         .map(|s| format!("<{}>", s))
         .unwrap_or_else(|| "<...>".to_string());
 
@@ -322,7 +329,7 @@ fn unpack77_nonstd(payload: &Payload77, ht: &CallsignHashTable) -> Ft8Message {
 
 /// Decode base-38 without saving to hash table (read-only context).
 fn unpack58_readonly(n58: u64) -> String {
-    use super::tables::{charn, Table};
+    use super::tables::{Table, charn};
     let mut n = n58;
     let mut chars = [' '; 11];
     for i in (0..11).rev() {

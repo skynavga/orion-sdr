@@ -29,25 +29,19 @@
 //   LLR[0] = max(s2[2],s2[3]) − max(s2[0],s2[1])   (bit 0, MSB)
 //   LLR[1] = max(s2[1],s2[3]) − max(s2[0],s2[2])   (bit 1, LSB)
 
-use num_complex::Complex32 as C32;
 use crate::codec::ldpc::N;
 use crate::modulate::ft4::{
-    FT4_TONE_SPACING_HZ, FT4_SAMPLES_PER_SYM, FT4_TOTAL_SYMS, FT4_DATA_SYMS,
-    FT4_TONES,
+    FT4_DATA_SYMS, FT4_SAMPLES_PER_SYM, FT4_TONE_SPACING_HZ, FT4_TONES, FT4_TOTAL_SYMS,
 };
-use crate::sync::waterfall::{Waterfall, compute_waterfall};
 use crate::sync::costas::Candidate;
+use crate::sync::waterfall::{Waterfall, compute_waterfall};
+use num_complex::Complex32 as C32;
 
 // FT4 Costas pattern (4 symbols each, 4 blocks).
 // From ft8_lib kFT4_Costas_pattern: [0,1,3,2], [1,0,2,3], [2,3,1,0], [3,2,0,1]
 // For sync scoring we use the first block; all four match the same template.
 // The sync scorer evaluates all 4 blocks simultaneously by passing all 4 starts.
-const FT4_COSTAS_BLK: [[u8; 4]; 4] = [
-    [0, 1, 3, 2],
-    [1, 0, 2, 3],
-    [2, 3, 1, 0],
-    [3, 2, 0, 1],
-];
+const FT4_COSTAS_BLK: [[u8; 4]; 4] = [[0, 1, 3, 2], [1, 0, 2, 3], [2, 3, 1, 0], [3, 2, 0, 1]];
 
 // Sync block starts within the 105-symbol frame (symbol indices of block[0..4]).
 const FT4_SYNC_POS: [i32; 4] = [1, 34, 67, 100];
@@ -145,12 +139,20 @@ fn find_ft4_candidates(
             let score = ft4_costas_score(wf, time_sym, freq_bin);
 
             if heap.len() < max_candidates {
-                heap.push(Candidate { time_sym, freq_bin, score });
+                heap.push(Candidate {
+                    time_sym,
+                    freq_bin,
+                    score,
+                });
                 if heap.len() == max_candidates {
                     heap.sort_by(|a, b| a.score.partial_cmp(&b.score).unwrap());
                 }
             } else if score > heap[0].score {
-                heap[0] = Candidate { time_sym, freq_bin, score };
+                heap[0] = Candidate {
+                    time_sym,
+                    freq_bin,
+                    score,
+                };
                 heap.sort_by(|a, b| a.score.partial_cmp(&b.score).unwrap());
             }
         }
@@ -182,14 +184,30 @@ fn ft4_costas_score(wf: &Waterfall, time_sym: i32, freq_bin: usize) -> f32 {
             let e_signal = wf.get(sym, bin);
 
             let e_freq = {
-                let left  = if bin > 0 { wf.get(sym, bin - 1) } else { f32::NEG_INFINITY };
-                let right = if bin + 1 < wf.num_tones { wf.get(sym, bin + 1) } else { f32::NEG_INFINITY };
+                let left = if bin > 0 {
+                    wf.get(sym, bin - 1)
+                } else {
+                    f32::NEG_INFINITY
+                };
+                let right = if bin + 1 < wf.num_tones {
+                    wf.get(sym, bin + 1)
+                } else {
+                    f32::NEG_INFINITY
+                };
                 left.max(right)
             };
 
             let e_time = {
-                let prev = if sym > 0 { wf.get(sym - 1, bin) } else { f32::NEG_INFINITY };
-                let next = if sym + 1 < wf.num_syms { wf.get(sym + 1, bin) } else { f32::NEG_INFINITY };
+                let prev = if sym > 0 {
+                    wf.get(sym - 1, bin)
+                } else {
+                    f32::NEG_INFINITY
+                };
+                let next = if sym + 1 < wf.num_syms {
+                    wf.get(sym + 1, bin)
+                } else {
+                    f32::NEG_INFINITY
+                };
                 prev.max(next)
             };
 
@@ -238,7 +256,12 @@ fn extract_ft4_llr(wf: &Waterfall, cand: &Candidate) -> [f32; N] {
 
         // s2[j] = log-energy indexed by binary value (reordered via Gray decode).
         // s2[j] = energy of tone FT4_GRAY4[j].
-        let s2 = [s[FT4_GRAY4[0]], s[FT4_GRAY4[1]], s[FT4_GRAY4[2]], s[FT4_GRAY4[3]]];
+        let s2 = [
+            s[FT4_GRAY4[0]],
+            s[FT4_GRAY4[1]],
+            s[FT4_GRAY4[2]],
+            s[FT4_GRAY4[3]],
+        ];
 
         // bit 0 (MSB): binary {2,3} have bit0=1
         let bit0 = (s2[2].max(s2[3])) - (s2[0].max(s2[1]));
@@ -246,7 +269,7 @@ fn extract_ft4_llr(wf: &Waterfall, cand: &Candidate) -> [f32; N] {
         let bit1 = (s2[1].max(s2[3])) - (s2[0].max(s2[2]));
 
         // Negate to match our LDPC convention (LLR > 0 = bit likely 0)
-        llr[llr_idx]     = -bit0;
+        llr[llr_idx] = -bit0;
         llr[llr_idx + 1] = -bit1;
         llr_idx += 2;
     }

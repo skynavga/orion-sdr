@@ -1,14 +1,13 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
-use orion_sdr::modulate::{Ft8Mod, Ft8Frame};
-use orion_sdr::demodulate::Ft8Demod;
-use orion_sdr::modulate::ft8::{FT8_DATA_SYMS, FT8_TONES};
-use orion_sdr::codec::ft8::{Ft8Codec, Ft8Bits, Ft8StreamDecoder};
-use orion_sdr::message::{CallsignHashTable, GridField, Ft8Message, pack77, unpack77};
-use orion_sdr::sync::ft8_sync;
 use super::helpers::make_ft8_test_buffer;
+use orion_sdr::codec::ft8::{Ft8Bits, Ft8Codec, Ft8StreamDecoder};
+use orion_sdr::demodulate::Ft8Demod;
+use orion_sdr::message::{CallsignHashTable, Ft8Message, GridField, pack77, unpack77};
+use orion_sdr::modulate::ft8::{FT8_DATA_SYMS, FT8_TONES};
+use orion_sdr::modulate::{Ft8Frame, Ft8Mod};
+use orion_sdr::sync::ft8_sync;
 
 #[test]
 fn roundtrip_ft8_noiseless() {
@@ -48,8 +47,7 @@ fn roundtrip_ft8_codec_noiseless() {
     let rx = Ft8Demod::new(12_000.0, 1_000.0);
     let frame_out = rx.demodulate(&iq).expect("FT8 demodulate returned None");
 
-    let decoded = Ft8Codec::decode_hard(&frame_out)
-        .expect("FT8 codec decode failed (noiseless)");
+    let decoded = Ft8Codec::decode_hard(&frame_out).expect("FT8 codec decode failed (noiseless)");
     assert_eq!(payload, decoded, "FT8 full-stack codec roundtrip failed");
 }
 
@@ -80,9 +78,12 @@ fn sync_ft8_noiseless_aligned() {
 
     assert!(!results.is_empty(), "FT8 sync returned no candidates");
     let best = &results[0];
-    let decoded = Ft8Codec::decode_soft(&best.llr)
-        .expect("FT8 sync+decode_soft failed (noiseless, aligned)");
-    assert_eq!(payload, decoded, "FT8 sync noiseless aligned: payload mismatch");
+    let decoded =
+        Ft8Codec::decode_soft(&best.llr).expect("FT8 sync+decode_soft failed (noiseless, aligned)");
+    assert_eq!(
+        payload, decoded,
+        "FT8 sync noiseless aligned: payload mismatch"
+    );
 }
 
 #[test]
@@ -103,11 +104,17 @@ fn sync_ft8_noiseless_time_offset() {
         5,
     );
 
-    assert!(!results.is_empty(), "FT8 sync (time offset) returned no candidates");
+    assert!(
+        !results.is_empty(),
+        "FT8 sync (time offset) returned no candidates"
+    );
     let best = &results[0];
     let decoded = Ft8Codec::decode_soft(&best.llr)
         .expect("FT8 sync+decode_soft failed (noiseless, time offset)");
-    assert_eq!(payload, decoded, "FT8 sync noiseless time-offset: payload mismatch");
+    assert_eq!(
+        payload, decoded,
+        "FT8 sync noiseless time-offset: payload mismatch"
+    );
 }
 
 #[test]
@@ -126,10 +133,12 @@ fn sync_ft8_noisy_high_snr() {
         5,
     );
 
-    assert!(!results.is_empty(), "FT8 sync (high SNR) returned no candidates");
+    assert!(
+        !results.is_empty(),
+        "FT8 sync (high SNR) returned no candidates"
+    );
     let best = &results[0];
-    let decoded = Ft8Codec::decode_soft(&best.llr)
-        .expect("FT8 sync+decode_soft failed (high SNR)");
+    let decoded = Ft8Codec::decode_soft(&best.llr).expect("FT8 sync+decode_soft failed (high SNR)");
     assert_eq!(payload, decoded, "FT8 sync high-SNR: payload mismatch");
 }
 
@@ -159,11 +168,7 @@ fn ft8_decodes_at_minus_15db_snr_2500hz() {
     let noise_power = snr_to_noise_power(-15.0);
     let (buf, payload) = make_ft8_test_buffer(0, base_hz, noise_power);
 
-    let results = ft8_sync(
-        &buf, SNR_FS,
-        base_hz - 6.25, base_hz + 50.0 + 6.25,
-        0, 0, 5,
-    );
+    let results = ft8_sync(&buf, SNR_FS, base_hz - 6.25, base_hz + 50.0 + 6.25, 0, 0, 5);
 
     assert!(
         !results.is_empty(),
@@ -174,7 +179,8 @@ fn ft8_decodes_at_minus_15db_snr_2500hz() {
     assert!(
         decoded == Some(payload),
         "FT8 decode_soft failed at -15 dB SNR/2500 Hz (noise_power={:.5}, got={:?})",
-        noise_power, decoded
+        noise_power,
+        decoded
     );
 }
 
@@ -233,17 +239,18 @@ fn stream_decoder_ft8_standard_message_noiseless() {
     let frame = Ft8Codec::encode(&payload);
     let iq = Ft8Mod::new(12_000.0, base_hz, 0.0, 1.0).modulate(&frame);
 
-    let mut dec = Ft8StreamDecoder::new_ft8(
-        12_000.0,
-        base_hz - 6.25,
-        base_hz + 50.0 + 6.25,
-        5,
-    );
+    let mut dec = Ft8StreamDecoder::new_ft8(12_000.0, base_hz - 6.25, base_hz + 50.0 + 6.25, 5);
 
     // Feed the full frame; this will trigger an automatic decode.
     let results = dec.feed(&iq);
-    assert!(!results.is_empty(), "Ft8StreamDecoder: no result for standard message");
-    assert_eq!(results[0].message, msg, "Ft8StreamDecoder: standard message mismatch");
+    assert!(
+        !results.is_empty(),
+        "Ft8StreamDecoder: no result for standard message"
+    );
+    assert_eq!(
+        results[0].message, msg,
+        "Ft8StreamDecoder: standard message mismatch"
+    );
 }
 
 /// Feed a free-text FT8 frame in chunks; verify the decoded message matches.
@@ -257,12 +264,7 @@ fn stream_decoder_ft8_free_text_chunked() {
     let frame = Ft8Codec::encode(&payload);
     let iq = Ft8Mod::new(12_000.0, base_hz, 0.0, 1.0).modulate(&frame);
 
-    let mut dec = Ft8StreamDecoder::new_ft8(
-        12_000.0,
-        base_hz - 6.25,
-        base_hz + 50.0 + 6.25,
-        5,
-    );
+    let mut dec = Ft8StreamDecoder::new_ft8(12_000.0, base_hz - 6.25, base_hz + 50.0 + 6.25, 5);
 
     // Feed in 4 kHz chunks; the last chunk that reaches frame_len triggers decode.
     let chunk = 4096;
@@ -277,8 +279,14 @@ fn stream_decoder_ft8_free_text_chunked() {
         results = dec.flush();
     }
 
-    assert!(!results.is_empty(), "Ft8StreamDecoder: no result for free-text message (chunked)");
-    assert_eq!(results[0].message, msg, "Ft8StreamDecoder: free-text message mismatch");
+    assert!(
+        !results.is_empty(),
+        "Ft8StreamDecoder: no result for free-text message (chunked)"
+    );
+    assert_eq!(
+        results[0].message, msg,
+        "Ft8StreamDecoder: free-text message mismatch"
+    );
 }
 
 /// SNR regression: stream decoder must decode FT8 at -15 dB SNR/2500 Hz.
@@ -291,12 +299,7 @@ fn stream_decoder_ft8_minus_15db_snr() {
         0.5 * 12_000.0 / (2_500.0 * snr_linear)
     });
 
-    let mut dec = Ft8StreamDecoder::new_ft8(
-        12_000.0,
-        base_hz - 6.25,
-        base_hz + 50.0 + 6.25,
-        5,
-    );
+    let mut dec = Ft8StreamDecoder::new_ft8(12_000.0, base_hz - 6.25, base_hz + 50.0 + 6.25, 5);
     let mut results = dec.feed(&buf);
     if results.is_empty() {
         results = dec.flush();
@@ -311,8 +314,8 @@ fn stream_decoder_ft8_minus_15db_snr() {
 /// FT4 stream decoder: feed a complete frame, verify decoded message.
 #[test]
 fn stream_decoder_ft4_standard_message_noiseless() {
-    use orion_sdr::modulate::Ft4Mod;
     use orion_sdr::codec::ft4::Ft4Codec;
+    use orion_sdr::modulate::Ft4Mod;
     let base_hz = 1_000.0_f32;
     let mut ht = CallsignHashTable::new();
     let msg = Ft8Message::Standard {
@@ -326,14 +329,15 @@ fn stream_decoder_ft4_standard_message_noiseless() {
     let iq = Ft4Mod::new(12_000.0, base_hz, 0.0, 1.0).modulate(&frame);
 
     // FT4 tone spacing is ~20.833 Hz; search ±1 tone around carrier.
-    let mut dec = Ft8StreamDecoder::new_ft4(
-        12_000.0,
-        base_hz - 20.834,
-        base_hz + 4.0 * 20.834,
-        5,
-    );
+    let mut dec = Ft8StreamDecoder::new_ft4(12_000.0, base_hz - 20.834, base_hz + 4.0 * 20.834, 5);
 
     let results = dec.feed(&iq);
-    assert!(!results.is_empty(), "Ft8StreamDecoder(FT4): no result for standard message");
-    assert_eq!(results[0].message, msg, "Ft8StreamDecoder(FT4): standard message mismatch");
+    assert!(
+        !results.is_empty(),
+        "Ft8StreamDecoder(FT4): no result for standard message"
+    );
+    assert_eq!(
+        results[0].message, msg,
+        "Ft8StreamDecoder(FT4): standard message mismatch"
+    );
 }

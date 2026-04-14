@@ -1,11 +1,10 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
-use orion_sdr::codec::varicode::{varicode_encode, VaricodeEncoder, VaricodeDecoder};
-use orion_sdr::codec::psk31::{conv_encode, viterbi_decode_hard, StreamingViterbi, Psk31Stream};
-use orion_sdr::modulate::psk31::{psk31_sps, PSK31_BAUD, PSK31_SPS_8000, PSK31_SPS_12000};
-use orion_sdr::util::{best_sync, PSK31_BW_HZ};
+use orion_sdr::codec::psk31::{Psk31Stream, StreamingViterbi, conv_encode, viterbi_decode_hard};
+use orion_sdr::codec::varicode::{VaricodeDecoder, VaricodeEncoder, varicode_encode};
+use orion_sdr::modulate::psk31::{PSK31_BAUD, PSK31_SPS_8000, PSK31_SPS_12000, psk31_sps};
+use orion_sdr::util::{PSK31_BW_HZ, best_sync};
 
 // -- Varicode tests --------------------------------------------------------
 
@@ -19,16 +18,28 @@ fn varicode_encode_space() {
 #[test]
 fn varicode_decode_roundtrip() {
     // Verify that every ASCII byte 0-127 survives encode -> decode.
-    use orion_sdr::codec::varicode::varicode_encode as enc;
     use orion_sdr::codec::varicode::varicode_decode as dec;
+    use orion_sdr::codec::varicode::varicode_encode as enc;
 
     for b in 0u8..128u8 {
         let (cw, len) = enc(b);
         let decoded = dec(cw, len);
-        assert!(decoded.is_some(), "no decode for byte {} (cw=0b{:b}, len={})", b, cw, len);
-        assert_eq!(decoded.unwrap(), b,
+        assert!(
+            decoded.is_some(),
+            "no decode for byte {} (cw=0b{:b}, len={})",
+            b,
+            cw,
+            len
+        );
+        assert_eq!(
+            decoded.unwrap(),
+            b,
             "roundtrip mismatch: byte {} encoded to (0b{:b},{}) but decoded as {}",
-            b, cw, len, decoded.unwrap());
+            b,
+            cw,
+            len,
+            decoded.unwrap()
+        );
     }
 }
 
@@ -43,8 +54,10 @@ fn varicode_table_no_collisions() {
     for b in 0u8..128u8 {
         let (cw, len) = enc(b);
         if let Some(&prev) = seen.get(&(cw, len)) {
-            panic!("collision: byte {} and byte {} both encode to (0b{:b}, {})",
-                prev, b, cw, len);
+            panic!(
+                "collision: byte {} and byte {} both encode to (0b{:b}, {})",
+                prev, b, cw, len
+            );
         }
         seen.insert((cw, len), b);
     }
@@ -63,8 +76,14 @@ fn varicode_no_internal_zero_pairs() {
             let b0 = (cw >> (i - 1)) & 1;
             let b1 = (cw >> i) & 1;
             if b0 == 0 && b1 == 0 {
-                panic!("byte {} (0b{:b}, len={}) has internal 00 at bit positions {}-{}",
-                    b, cw, len, i - 1, i);
+                panic!(
+                    "byte {} (0b{:b}, len={}) has internal 00 at bit positions {}-{}",
+                    b,
+                    cw,
+                    len,
+                    i - 1,
+                    i
+                );
             }
         }
     }
@@ -97,13 +116,19 @@ fn varicode_stream_roundtrip_all_printable() {
     }
 
     let expected: Vec<u8> = (32u8..127u8).collect();
-    assert_eq!(decoded, expected,
+    assert_eq!(
+        decoded,
+        expected,
         "stream roundtrip failed: expected {} chars, got {}.\n\
          First mismatch at index {}",
-        expected.len(), decoded.len(),
-        decoded.iter().zip(expected.iter())
+        expected.len(),
+        decoded.len(),
+        decoded
+            .iter()
+            .zip(expected.iter())
             .position(|(a, b)| a != b)
-            .unwrap_or(decoded.len().min(expected.len())));
+            .unwrap_or(decoded.len().min(expected.len()))
+    );
 }
 
 #[test]
@@ -123,11 +148,14 @@ fn varicode_encoder_stream_cq() {
     assert_eq!(&bits[4..4 + c_len as usize], c_bits.as_slice());
     // After C: "00" gap then Q's codeword.
     let gap_start = 4 + c_len as usize;
-    assert_eq!(bits[gap_start],     0);
+    assert_eq!(bits[gap_start], 0);
     assert_eq!(bits[gap_start + 1], 0);
     let (q_cw, q_len) = varicode_encode(b'Q');
     let q_bits: Vec<u8> = (0..q_len).rev().map(|i| ((q_cw >> i) & 1) as u8).collect();
-    assert_eq!(&bits[gap_start + 2..gap_start + 2 + q_len as usize], q_bits.as_slice());
+    assert_eq!(
+        &bits[gap_start + 2..gap_start + 2 + q_len as usize],
+        q_bits.as_slice()
+    );
 }
 
 #[test]
@@ -169,7 +197,7 @@ fn psk31_hann_endpoints() {
     let denom = (sps - 1) as f32;
     let h0 = 0.5 - 0.5 * (std::f32::consts::PI * 0.0 / denom).cos();
     let hn = 0.5 - 0.5 * (std::f32::consts::PI * denom / denom).cos();
-    assert!(h0.abs() < 1e-4,      "hann[0] = {}", h0);
+    assert!(h0.abs() < 1e-4, "hann[0] = {}", h0);
     assert!((hn - 1.0).abs() < 1e-4, "hann[sps-1] = {}", hn);
 }
 
@@ -177,8 +205,8 @@ fn psk31_hann_endpoints() {
 
 #[test]
 fn bpsk31_decider_sign() {
-    use orion_sdr::demodulate::psk31::Bpsk31Decider;
     use orion_sdr::core::Block;
+    use orion_sdr::demodulate::psk31::Bpsk31Decider;
 
     let soft = [1.0f32, -1.0, 2.5, -0.5];
     let mut out = [0u8; 4];
@@ -247,12 +275,12 @@ fn psk31_baud_constant() {
 #[test]
 fn qpsk31_hard_decide_dqpsk_four_quadrants() {
     use orion_sdr::demodulate::psk31::hard_decide_dqpsk;
-    assert_eq!(hard_decide_dqpsk( 0.8,  0.2), ( 1.0,  0.0)); // 0 deg
-    assert_eq!(hard_decide_dqpsk(-0.8,  0.2), (-1.0,  0.0)); // 180 deg
-    assert_eq!(hard_decide_dqpsk( 0.2,  0.8), ( 0.0,  1.0)); // +90 deg
-    assert_eq!(hard_decide_dqpsk( 0.2, -0.8), ( 0.0, -1.0)); // -90 deg
+    assert_eq!(hard_decide_dqpsk(0.8, 0.2), (1.0, 0.0)); // 0 deg
+    assert_eq!(hard_decide_dqpsk(-0.8, 0.2), (-1.0, 0.0)); // 180 deg
+    assert_eq!(hard_decide_dqpsk(0.2, 0.8), (0.0, 1.0)); // +90 deg
+    assert_eq!(hard_decide_dqpsk(0.2, -0.8), (0.0, -1.0)); // -90 deg
     // Tie (|re| == |im|) -> real axis wins
-    assert_eq!(hard_decide_dqpsk( 0.707,  0.707), (1.0, 0.0));
+    assert_eq!(hard_decide_dqpsk(0.707, 0.707), (1.0, 0.0));
 }
 
 // -- Streaming Viterbi tests -----------------------------------------------
@@ -261,7 +289,7 @@ fn qpsk31_hard_decide_dqpsk_four_quadrants() {
 /// coded bits (hard-decision DQPSK phasors).
 #[test]
 fn streaming_viterbi_matches_batch() {
-    use orion_sdr::codec::psk31::{viterbi_decode, DQPSK_EXP};
+    use orion_sdr::codec::psk31::{DQPSK_EXP, viterbi_decode};
 
     // Encode a known bit sequence.
     let bits_in: Vec<u8> = (0..200).map(|i| ((i * 7 + 3) & 1) as u8).collect();
@@ -299,14 +327,24 @@ fn streaming_viterbi_matches_batch() {
     // n_syms bits (25 from feed + 25 from flush = n_syms total after startup).
     // Compare the overlapping region.
     let compare_len = batch.len().min(streaming.len());
-    assert!(compare_len > 100, "too few bits to compare: batch={} streaming={}",
-        batch.len(), streaming.len());
+    assert!(
+        compare_len > 100,
+        "too few bits to compare: batch={} streaming={}",
+        batch.len(),
+        streaming.len()
+    );
 
     let errors: usize = (0..compare_len)
         .filter(|&i| batch[i] != streaming[i])
         .count();
-    println!("streaming vs batch: {} bits compared, {} errors", compare_len, errors);
-    assert_eq!(errors, 0, "streaming Viterbi diverges from batch: {errors} errors in {compare_len} bits");
+    println!(
+        "streaming vs batch: {} bits compared, {} errors",
+        compare_len, errors
+    );
+    assert_eq!(
+        errors, 0,
+        "streaming Viterbi diverges from batch: {errors} errors in {compare_len} bits"
+    );
 }
 
 /// Verify streaming Viterbi produces correct text via full encode -> decode
@@ -320,7 +358,9 @@ fn streaming_viterbi_text_roundtrip() {
     // Encode: text -> varicode bits -> convolutional bits -> DQPSK phasors.
     let mut enc = VaricodeEncoder::new();
     enc.push_preamble(64);
-    for &b in text { enc.push_byte(b); }
+    for &b in text {
+        enc.push_byte(b);
+    }
     enc.push_postamble(32);
     let var_bits = enc.drain_bits();
     let coded = conv_encode(&var_bits);
@@ -357,13 +397,17 @@ fn streaming_viterbi_text_roundtrip() {
         decoded.push(ch);
     }
 
-    let decoded_str: String = decoded.iter()
+    let decoded_str: String = decoded
+        .iter()
         .filter(|&&c| (0x20..0x7f).contains(&c))
         .map(|&c| c as char)
         .collect();
     println!("streaming Viterbi text: {:?}", decoded_str);
-    assert!(decoded_str.contains("CQ CQ CQ DE N0GNR"),
-        "expected message not found in {:?}", decoded_str);
+    assert!(
+        decoded_str.contains("CQ CQ CQ DE N0GNR"),
+        "expected message not found in {:?}",
+        decoded_str
+    );
 }
 
 // -- Psk31Stream unit tests ---------------------------------------------------
@@ -397,9 +441,27 @@ fn best_sync_picks_earliest_near_carrier() {
     use orion_sdr::sync::psk31_sync::Psk31SyncResult;
 
     let results = vec![
-        Psk31SyncResult { carrier_hz: 1000.0, time_sym: 10, freq_bin: 0, score: 1.0, soft_bits: vec![] },
-        Psk31SyncResult { carrier_hz: 1001.0, time_sym: 5,  freq_bin: 0, score: 1.0, soft_bits: vec![] },
-        Psk31SyncResult { carrier_hz: 5000.0, time_sym: 1,  freq_bin: 0, score: 1.0, soft_bits: vec![] },
+        Psk31SyncResult {
+            carrier_hz: 1000.0,
+            time_sym: 10,
+            freq_bin: 0,
+            score: 1.0,
+            soft_bits: vec![],
+        },
+        Psk31SyncResult {
+            carrier_hz: 1001.0,
+            time_sym: 5,
+            freq_bin: 0,
+            score: 1.0,
+            soft_bits: vec![],
+        },
+        Psk31SyncResult {
+            carrier_hz: 5000.0,
+            time_sym: 1,
+            freq_bin: 0,
+            score: 1.0,
+            soft_bits: vec![],
+        },
     ];
     let (hz, sym) = best_sync(&results, 1000.0, 31.25).unwrap();
     assert_eq!(sym, 5);
@@ -410,9 +472,13 @@ fn best_sync_picks_earliest_near_carrier() {
 fn best_sync_none_when_no_match() {
     use orion_sdr::sync::psk31_sync::Psk31SyncResult;
 
-    let results = vec![
-        Psk31SyncResult { carrier_hz: 5000.0, time_sym: 1, freq_bin: 0, score: 1.0, soft_bits: vec![] },
-    ];
+    let results = vec![Psk31SyncResult {
+        carrier_hz: 5000.0,
+        time_sym: 1,
+        freq_bin: 0,
+        score: 1.0,
+        soft_bits: vec![],
+    }];
     assert!(best_sync(&results, 1000.0, 31.25).is_none());
 }
 

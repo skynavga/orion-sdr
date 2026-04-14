@@ -1,12 +1,14 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::tables::{nchar, charn, Table};
+use super::tables::{Table, charn, nchar};
 
 /// Encode a free-text string (up to 13 chars, base-42 alphabet) into 9 bytes (71 bits).
 /// Returns None if any character is not in the FULL table or the string is too long.
 pub fn encode_free_text(text: &str) -> Option<[u8; 9]> {
-    if text.len() > 13 { return None; }
+    if text.len() > 13 {
+        return None;
+    }
 
     let mut b71 = [0u8; 9];
 

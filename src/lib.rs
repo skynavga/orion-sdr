@@ -3,15 +3,15 @@
 
 //! orion-sdr — toplevel exports
 
-pub mod core;
-pub mod dsp;
-pub mod demodulate;
-pub mod modulate;
 pub mod codec;
-pub mod sync;
+pub mod core;
+pub mod demodulate;
+pub mod dsp;
 pub mod message;
-pub mod util;
+pub mod modulate;
 #[cfg(feature = "extension-module")]
 pub mod python;
+pub mod sync;
+pub mod util;
 
-pub use core::{Block, WorkReport, AudioToIqChain, IqToAudioChain, IqToIqChain};
+pub use core::{AudioToIqChain, Block, IqToAudioChain, IqToIqChain, WorkReport};

@@ -78,10 +78,10 @@ fn next_state(s: u8, b: u8) -> u8 {
 //   dibit 2 (c0=1,c1=0): step = ( 0, +1)
 //   dibit 3 (c0=1,c1=1): step = (-1,  0)
 pub const DQPSK_EXP: [(f32, f32); 4] = [
-    ( 1.0,  0.0), // dibit 0
-    ( 0.0, -1.0), // dibit 1
-    ( 0.0,  1.0), // dibit 2
-    (-1.0,  0.0), // dibit 3
+    (1.0, 0.0),  // dibit 0
+    (0.0, -1.0), // dibit 1
+    (0.0, 1.0),  // dibit 2
+    (-1.0, 0.0), // dibit 3
 ];
 
 /// Soft Viterbi decoder for the rate-1/2, K=5 code.
@@ -113,7 +113,9 @@ pub fn viterbi_decode(soft: &[f32]) -> Vec<u8> {
         let mut new_pm = [inf; NUM_STATES];
 
         for (prev, &pm_prev) in pm.iter().enumerate().take(NUM_STATES) {
-            if pm_prev >= inf { continue; }
+            if pm_prev >= inf {
+                continue;
+            }
             for &bit in &[0u8, 1u8] {
                 let (c0, c1) = branch_bits(prev as u8, bit);
                 // Expected soft values are the DQPSK phasor for this dibit,
@@ -189,11 +191,13 @@ pub fn viterbi_decode_coherent(soft: &[f32], phase_steps: &[(f32, f32); 4]) -> V
     for t in 0..n_syms {
         let s_re = soft[t * 2];
         let s_im = soft[t * 2 + 1];
-        let mut new_pm  = [inf; NUM_STATES];
+        let mut new_pm = [inf; NUM_STATES];
         let mut new_hyp = [(0.0f32, 0.0f32); NUM_STATES];
 
         for prev in 0..NUM_STATES {
-            if pm[prev] >= inf { continue; }
+            if pm[prev] >= inf {
+                continue;
+            }
             let (h_re, h_im) = hyp[prev];
             for &bit in &[0u8, 1u8] {
                 let (c0, c1) = branch_bits(prev as u8, bit);
@@ -203,8 +207,7 @@ pub fn viterbi_decode_coherent(soft: &[f32], phase_steps: &[(f32, f32); 4]) -> V
                 let nh_re = h_re * step_re - h_im * step_im;
                 let nh_im = h_im * step_re + h_re * step_im;
                 // Coherent branch metric: |sym_c - hyp|².
-                let bm = (s_re - nh_re) * (s_re - nh_re)
-                       + (s_im - nh_im) * (s_im - nh_im);
+                let bm = (s_re - nh_re) * (s_re - nh_re) + (s_im - nh_im) * (s_im - nh_im);
                 let ns = next_state(prev as u8, bit) as usize;
                 let cand = pm[prev] + bm;
                 if cand < new_pm[ns] {
@@ -215,7 +218,7 @@ pub fn viterbi_decode_coherent(soft: &[f32], phase_steps: &[(f32, f32); 4]) -> V
                 }
             }
         }
-        pm  = new_pm;
+        pm = new_pm;
         hyp = new_hyp;
     }
 
@@ -252,10 +255,10 @@ pub fn viterbi_decode_coherent(soft: &[f32], phase_steps: &[(f32, f32); 4]) -> V
 /// accumulated, traceback from the best-metric state and emit the oldest
 /// undecoded bit.
 pub struct StreamingViterbi {
-    pm:      [f32; NUM_STATES],
-    history: Vec<[u8; NUM_STATES]>,  // circular buffer of prev_state
-    ptr:     usize,                  // write pointer into circular buffer
-    count:   usize,                  // total symbols processed
+    pm: [f32; NUM_STATES],
+    history: Vec<[u8; NUM_STATES]>, // circular buffer of prev_state
+    ptr: usize,                     // write pointer into circular buffer
+    count: usize,                   // total symbols processed
     phase_steps: [(f32, f32); 4],
 }
 
@@ -275,8 +278,8 @@ impl StreamingViterbi {
         Self {
             pm,
             history: vec![[0u8; NUM_STATES]; PATHMEM],
-            ptr:     0,
-            count:   0,
+            ptr: 0,
+            count: 0,
             phase_steps: *phase_steps,
         }
     }
@@ -294,13 +297,14 @@ impl StreamingViterbi {
 
         // ACS step — non-coherent DQPSK branch metric.
         for prev in 0..NUM_STATES {
-            if self.pm[prev] >= inf { continue; }
+            if self.pm[prev] >= inf {
+                continue;
+            }
             for &bit in &[0u8, 1u8] {
                 let (c0, c1) = branch_bits(prev as u8, bit);
                 let dibit = (c0 & 1) * 2 + (c1 & 1);
                 let (exp_re, exp_im) = self.phase_steps[dibit as usize];
-                let bm = (s_re - exp_re) * (s_re - exp_re)
-                       + (s_im - exp_im) * (s_im - exp_im);
+                let bm = (s_re - exp_re) * (s_re - exp_re) + (s_im - exp_im) * (s_im - exp_im);
                 let ns = next_state(prev as u8, bit) as usize;
                 let cand = self.pm[prev] + bm;
                 if cand < new_pm[ns] {
@@ -313,12 +317,17 @@ impl StreamingViterbi {
 
         // Periodic metric normalisation to prevent f32 overflow.
         if self.count % 256 == 255 {
-            let min_pm = self.pm.iter().copied()
+            let min_pm = self
+                .pm
+                .iter()
+                .copied()
                 .filter(|&v| v < inf)
                 .fold(inf, f32::min);
             if min_pm > 0.0 {
                 for p in &mut self.pm {
-                    if *p < inf { *p -= min_pm; }
+                    if *p < inf {
+                        *p -= min_pm;
+                    }
                 }
             }
         }
@@ -333,7 +342,8 @@ impl StreamingViterbi {
 
         // Fixed-lag traceback: find best state now, trace back TRACEBACK_DEPTH
         // steps, emit the decoded bit at the traceback endpoint.
-        let mut state = self.pm
+        let mut state = self
+            .pm
             .iter()
             .enumerate()
             .min_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
@@ -387,10 +397,10 @@ pub fn viterbi_decode_hard(bits: &[u8]) -> Vec<u8> {
 
 // ── Streaming PSK31 decode pipeline ──────────────────────────────────────────
 
-use num_complex::Complex32 as C32;
 use crate::Block;
-use crate::demodulate::psk31::{Bpsk31Demod, Bpsk31Decider, Qpsk31Demod};
 use crate::codec::varicode::VaricodeDecoder;
+use crate::demodulate::psk31::{Bpsk31Decider, Bpsk31Demod, Qpsk31Demod};
+use num_complex::Complex32 as C32;
 
 /// Persistent streaming PSK31 decode state.
 ///
@@ -405,15 +415,15 @@ use crate::codec::varicode::VaricodeDecoder;
 /// latency of 32 symbols, then through the `VaricodeDecoder`.
 pub enum Psk31Stream {
     Bpsk {
-        demod:     Bpsk31Demod,
-        decider:   Bpsk31Decider,
-        vdec:      VaricodeDecoder,
+        demod: Bpsk31Demod,
+        decider: Bpsk31Decider,
+        vdec: VaricodeDecoder,
         fed_up_to: usize,
     },
     Qpsk {
-        demod:     Qpsk31Demod,
-        viterbi:   StreamingViterbi,
-        vdec:      VaricodeDecoder,
+        demod: Qpsk31Demod,
+        viterbi: StreamingViterbi,
+        vdec: VaricodeDecoder,
         fed_up_to: usize,
     },
 }
@@ -422,9 +432,9 @@ impl Psk31Stream {
     /// Create a new BPSK31 streaming decoder.
     pub fn new_bpsk(fs: f32, carrier_hz: f32, gain: f32) -> Self {
         Psk31Stream::Bpsk {
-            demod:     Bpsk31Demod::new(fs, carrier_hz, gain),
-            decider:   Bpsk31Decider::new(),
-            vdec:      VaricodeDecoder::new(),
+            demod: Bpsk31Demod::new(fs, carrier_hz, gain),
+            decider: Bpsk31Decider::new(),
+            vdec: VaricodeDecoder::new(),
             fed_up_to: 0,
         }
     }
@@ -432,9 +442,9 @@ impl Psk31Stream {
     /// Create a new QPSK31 streaming decoder.
     pub fn new_qpsk(fs: f32, carrier_hz: f32, gain: f32) -> Self {
         Psk31Stream::Qpsk {
-            demod:     Qpsk31Demod::new(fs, carrier_hz, gain),
-            viterbi:   StreamingViterbi::new(&DQPSK_EXP),
-            vdec:      VaricodeDecoder::new(),
+            demod: Qpsk31Demod::new(fs, carrier_hz, gain),
+            viterbi: StreamingViterbi::new(&DQPSK_EXP),
+            vdec: VaricodeDecoder::new(),
             fed_up_to: 0,
         }
     }
@@ -458,10 +468,17 @@ impl Psk31Stream {
     /// Feed new IQ samples through the demod chain.
     /// Returns any newly decoded printable ASCII characters.
     pub fn feed(&mut self, iq: &[C32]) -> String {
-        if iq.is_empty() { return String::new(); }
+        if iq.is_empty() {
+            return String::new();
+        }
 
         match self {
-            Psk31Stream::Bpsk { demod, decider, vdec, .. } => {
+            Psk31Stream::Bpsk {
+                demod,
+                decider,
+                vdec,
+                ..
+            } => {
                 let max_syms = iq.len() / 32 + 4;
                 let mut soft = vec![0.0_f32; max_syms];
                 let wr = demod.process(iq, &mut soft);
@@ -482,7 +499,12 @@ impl Psk31Stream {
                 }
                 text
             }
-            Psk31Stream::Qpsk { demod, viterbi, vdec, .. } => {
+            Psk31Stream::Qpsk {
+                demod,
+                viterbi,
+                vdec,
+                ..
+            } => {
                 let max_soft = iq.len() / 32 + 8;
                 let mut soft = vec![0.0_f32; max_soft];
                 let wr = demod.process(iq, &mut soft);
@@ -494,7 +516,9 @@ impl Psk31Stream {
                     let d_re = soft[i * 2];
                     let d_im = soft[i * 2 + 1];
                     // Skip near-zero symbols (silence/startup).
-                    if d_re * d_re + d_im * d_im < 0.01 { continue; }
+                    if d_re * d_re + d_im * d_im < 0.01 {
+                        continue;
+                    }
 
                     if let Some(b) = viterbi.feed_symbol(d_re, d_im) {
                         vdec.push_bit(b);

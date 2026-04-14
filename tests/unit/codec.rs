@@ -1,10 +1,9 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
 // CRC tests (moved from src/codec/crc.rs)
 
-use orion_sdr::codec::crc::{ft8_crc14, ft8_add_crc, ft8_extract_crc};
+use orion_sdr::codec::crc::{ft8_add_crc, ft8_crc14, ft8_extract_crc};
 
 fn recompute_crc(payload: &[u8; 10]) -> u16 {
     let mut buf = [0u8; 12];
@@ -59,7 +58,9 @@ fn crc_changes_with_payload() {
 
 // LDPC tests (moved from src/codec/ldpc.rs)
 
-use orion_sdr::codec::ldpc::{ldpc_encode, ldpc_decode_soft, ldpc_count_errors, K_BYTES, N_BYTES, N, K};
+use orion_sdr::codec::ldpc::{
+    K, K_BYTES, N, N_BYTES, ldpc_count_errors, ldpc_decode_soft, ldpc_encode,
+};
 
 fn make_a91(payload: &[u8; 10]) -> [u8; K_BYTES] {
     let mut a91 = [0u8; K_BYTES];
@@ -77,7 +78,11 @@ fn ldpc_encode_syndrome_zero() {
     for i in 0..N {
         hard[i] = (codeword[i / 8] >> (7 - (i % 8))) & 1;
     }
-    assert_eq!(ldpc_count_errors(&hard), 0, "Syndrome check failed on encoded codeword");
+    assert_eq!(
+        ldpc_count_errors(&hard),
+        0,
+        "Syndrome check failed on encoded codeword"
+    );
 }
 
 #[test]
@@ -110,7 +115,10 @@ fn ldpc_hard_roundtrip() {
     buf_for_crc[10] = 0;
     buf_for_crc[11] = 0;
     let crc_recomputed = ft8_crc14(&buf_for_crc, 82);
-    assert_eq!(crc_in_message, crc_recomputed, "CRC mismatch in decoded message");
+    assert_eq!(
+        crc_in_message, crc_recomputed,
+        "CRC mismatch in decoded message"
+    );
 }
 
 #[test]
@@ -121,7 +129,9 @@ fn ldpc_encode_preserves_message_bits() {
     ldpc_encode(&a91, &mut codeword);
     assert_eq!(&codeword[..K_BYTES - 1], &a91[..K_BYTES - 1]);
     let msg_mask: u8 = 0xE0;
-    assert_eq!(codeword[K_BYTES - 1] & msg_mask, a91[K_BYTES - 1] & msg_mask,
-        "Top 3 bits of codeword byte 11 must match a91 byte 11");
+    assert_eq!(
+        codeword[K_BYTES - 1] & msg_mask,
+        a91[K_BYTES - 1] & msg_mask,
+        "Top 3 bits of codeword byte 11 must match a91 byte 11"
+    );
 }
-

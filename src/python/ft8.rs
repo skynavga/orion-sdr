@@ -3,20 +3,22 @@
 
 // src/python/ft8.rs — PyO3 bindings for FT8/FT4 waveform, codec, sync, and message layers.
 
+use num_complex::Complex32;
+use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
-use numpy::{PyReadonlyArray1, PyArray1, IntoPyArray};
-use num_complex::Complex32;
 
-use crate::modulate::ft8::{Ft8Frame, Ft8Mod, FT8_DATA_SYMS, FT8_FRAME_LEN};
-use crate::modulate::ft4::{Ft4Frame, Ft4Mod, FT4_DATA_SYMS, FT4_FRAME_LEN};
-use crate::demodulate::ft8::Ft8Demod;
-use crate::demodulate::ft4::Ft4Demod;
-use crate::codec::ft8::Ft8Codec;
 use crate::codec::ft4::Ft4Codec;
+use crate::codec::ft8::Ft8Codec;
 use crate::codec::ldpc::N;
-use crate::message::{CallsignHashTable, Ft8Message, GridField, gridfield_to_str, pack77, unpack77};
+use crate::demodulate::ft4::Ft4Demod;
+use crate::demodulate::ft8::Ft8Demod;
 use crate::message::message::NonstdExtra;
+use crate::message::{
+    CallsignHashTable, Ft8Message, GridField, gridfield_to_str, pack77, unpack77,
+};
+use crate::modulate::ft4::{FT4_DATA_SYMS, FT4_FRAME_LEN, Ft4Frame, Ft4Mod};
+use crate::modulate::ft8::{FT8_DATA_SYMS, FT8_FRAME_LEN, Ft8Frame, Ft8Mod};
 
 // ── Ft8Mod ────────────────────────────────────────────────────────────────────
 
@@ -95,7 +97,9 @@ pub struct PyFt8Codec;
 #[pymethods]
 impl PyFt8Codec {
     #[new]
-    fn new() -> Self { Self }
+    fn new() -> Self {
+        Self
+    }
 
     /// Encode a 10-byte payload into 58 Gray-coded tone indices (uint8).
     #[staticmethod]
@@ -235,7 +239,9 @@ pub struct PyFt4Codec;
 #[pymethods]
 impl PyFt4Codec {
     #[new]
-    fn new() -> Self { Self }
+    fn new() -> Self {
+        Self
+    }
 
     /// Encode a 10-byte payload into 87 Gray-coded tone indices (uint8).
     #[staticmethod]
@@ -318,7 +324,8 @@ pub fn ft8_sync<'py>(
     max_cand: usize,
 ) -> PyResult<Bound<'py, PyList>> {
     let input = iq.as_slice()?;
-    let results = crate::sync::ft8_sync::ft8_sync(input, fs, base_hz, max_hz, t_min, t_max, max_cand);
+    let results =
+        crate::sync::ft8_sync::ft8_sync(input, fs, base_hz, max_hz, t_min, t_max, max_cand);
 
     let list = PyList::empty(py);
     for r in results {
@@ -353,7 +360,8 @@ pub fn ft4_sync<'py>(
     max_cand: usize,
 ) -> PyResult<Bound<'py, PyList>> {
     let input = iq.as_slice()?;
-    let results = crate::sync::ft4_sync::ft4_sync(input, fs, base_hz, max_hz, t_min, t_max, max_cand);
+    let results =
+        crate::sync::ft4_sync::ft4_sync(input, fs, base_hz, max_hz, t_min, t_max, max_cand);
 
     let list = PyList::empty(py);
     for r in results {
@@ -451,7 +459,11 @@ pub fn ft8_unpack<'py>(py: Python<'py>, payload: &[u8]) -> PyResult<Bound<'py, P
 
     let d = PyDict::new(py);
     match msg {
-        Ft8Message::Standard { call_to, call_de, extra } => {
+        Ft8Message::Standard {
+            call_to,
+            call_de,
+            extra,
+        } => {
             d.set_item("type", "standard")?;
             d.set_item("call_to", call_to)?;
             d.set_item("call_de", call_de)?;
@@ -465,15 +477,19 @@ pub fn ft8_unpack<'py>(py: Python<'py>, payload: &[u8]) -> PyResult<Bound<'py, P
             d.set_item("type", "telemetry")?;
             d.set_item("data", PyBytes::new(py, &data))?;
         }
-        Ft8Message::NonStd { call_to, call_de, extra } => {
+        Ft8Message::NonStd {
+            call_to,
+            call_de,
+            extra,
+        } => {
             d.set_item("type", "nonstd")?;
             d.set_item("call_to", call_to)?;
             d.set_item("call_de", call_de)?;
             let extra_str = match extra {
-                NonstdExtra::RRR      => "RRR",
-                NonstdExtra::RR73     => "RR73",
+                NonstdExtra::RRR => "RRR",
+                NonstdExtra::RR73 => "RR73",
                 NonstdExtra::Seventy3 => "73",
-                NonstdExtra::None     => "",
+                NonstdExtra::None => "",
             };
             d.set_item("extra", extra_str)?;
         }
@@ -489,22 +505,25 @@ pub fn ft8_unpack<'py>(py: Python<'py>, payload: &[u8]) -> PyResult<Bound<'py, P
 
 fn str_to_gridfield(s: &str) -> GridField {
     match s {
-        "RRR"  => GridField::RRR,
+        "RRR" => GridField::RRR,
         "RR73" => GridField::RR73,
-        "73"   => GridField::Seventy3,
-        ""     => GridField::None,
+        "73" => GridField::Seventy3,
+        "" => GridField::None,
         _ => {
             let bytes = s.as_bytes();
             // R-prefixed report ("R+07", "R-12")
-            if bytes.first() == Some(&b'R') && s.len() >= 2
-                && let Ok(v) = s[1..].parse::<i8>() {
-                    return GridField::RReport(v);
-                }
+            if bytes.first() == Some(&b'R')
+                && s.len() >= 2
+                && let Ok(v) = s[1..].parse::<i8>()
+            {
+                return GridField::RReport(v);
+            }
             // Plain signal report ("+07", "-12")
             if (s.starts_with('+') || s.starts_with('-'))
-                && let Ok(v) = s.parse::<i8>() {
-                    return GridField::Report(v);
-                }
+                && let Ok(v) = s.parse::<i8>()
+            {
+                return GridField::Report(v);
+            }
             // Otherwise treat as Maidenhead grid
             GridField::Grid(s.to_string())
         }

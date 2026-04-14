@@ -8,9 +8,9 @@
 //   - 174 codeword bits are split into 87 × 2-bit groups (not 58 × 3-bit).
 //   - Gray code is the 4-symbol table [0,1,3,2] (not the 8-symbol FT8 table).
 
-use crate::codec::crc::{ft8_add_crc, ft8_extract_crc, ft8_crc14};
-use crate::codec::gray::{gray4_encode, gray4_decode};
-use crate::codec::ldpc::{self, ldpc_encode, ldpc_decode_soft};
+use crate::codec::crc::{ft8_add_crc, ft8_crc14, ft8_extract_crc};
+use crate::codec::gray::{gray4_decode, gray4_encode};
+use crate::codec::ldpc::{self, ldpc_decode_soft, ldpc_encode};
 use crate::modulate::Ft4Frame;
 use crate::modulate::ft4::FT4_DATA_SYMS;
 
@@ -108,9 +108,9 @@ impl Ft4Codec {
         // detailed explanation.
         let extracted = ft8_extract_crc(&a91);
         let mut buf = a91;
-        buf[9]  &= 0xF8;
-        buf[10]  = 0;
-        buf[11]  = 0;
+        buf[9] &= 0xF8;
+        buf[10] = 0;
+        buf[11] = 0;
         let computed = ft8_crc14(&buf, 82);
         if extracted != computed {
             return None;
