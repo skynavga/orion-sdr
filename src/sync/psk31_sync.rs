@@ -245,7 +245,7 @@ fn median_f32(v: &mut [f32]) -> f32 {
     }
     v.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let mid = v.len() / 2;
-    if v.len() % 2 == 0 {
+    if v.len().is_multiple_of(2) {
         (v[mid - 1] + v[mid]) * 0.5
     } else {
         v[mid]

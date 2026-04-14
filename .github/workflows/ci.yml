@@ -101,10 +101,13 @@ jobs:
         run: pip install maturin numpy pytest
 
       - name: Build and install extension
-        run: maturin develop --release
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install numpy pytest
+          .venv/bin/maturin develop --release
 
       - name: Run pytest
-        run: pytest -v
+        run: .venv/bin/pytest -v
 
   # ── Throughput + SNR regression (main only) ────────────────────────────────
   performance:

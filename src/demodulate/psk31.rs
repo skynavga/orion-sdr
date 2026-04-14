@@ -108,7 +108,7 @@ impl Bpsk31Demod {
         } else {
             None
         };
-        let count = if offset % sps == 0 {
+        let count = if offset.is_multiple_of(sps) {
             0
         } else {
             sps - (offset % sps)
