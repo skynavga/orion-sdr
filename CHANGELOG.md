@@ -9,6 +9,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.32] - 2026-04-13
+
+### Changed
+
+- Opt into Node.js 24 on GitHub Actions runners via
+  `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true` in both CI and publish
+  workflows, ahead of the June 2026 forced cutover.
+
 ## [0.0.31] - 2026-04-13
 
 ### Added
