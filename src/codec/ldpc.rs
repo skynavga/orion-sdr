@@ -702,9 +702,11 @@ pub fn ldpc_decode_soft(llr: &[f32; N], max_iter: usize, plain: &mut [u8; N]) ->
         // Check-node update
         for j in 0..M {
             let nr = NUM_ROWS[j] as usize;
+            #[allow(clippy::needless_range_loop)]
             for ii1 in 0..nr {
                 let i1 = NM[j][ii1] as usize - 1;
                 let mut a = 1.0f32;
+                #[allow(clippy::needless_range_loop)]
                 for ii2 in 0..nr {
                     if ii2 != ii1 {
                         let i2 = NM[j][ii2] as usize - 1;
@@ -734,6 +736,7 @@ pub fn ldpc_decode_soft(llr: &[f32; N], max_iter: usize, plain: &mut [u8; N]) ->
         }
 
         // Variable-to-check update
+        #[allow(clippy::needless_range_loop)]
         for i in 0..N {
             for ji1 in 0..3 {
                 let j1 = MN[i][ji1] as usize - 1;
