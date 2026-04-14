@@ -17,7 +17,9 @@ const FT8_GRAY_INV: [u8; 8] = {
     loop {
         inv[FT8_GRAY[i as usize] as usize] = i;
         i += 1;
-        if i == 8 { break; }
+        if i == 8 {
+            break;
+        }
     }
     inv
 };
@@ -32,7 +34,9 @@ const FT4_GRAY_INV: [u8; 4] = {
     loop {
         inv[FT4_GRAY[i as usize] as usize] = i;
         i += 1;
-        if i == 4 { break; }
+        if i == 4 {
+            break;
+        }
     }
     inv
 };

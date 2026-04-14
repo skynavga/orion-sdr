@@ -1,11 +1,10 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
-use orion_sdr::core::IqToAudioChain;
-use orion_sdr::dsp::{Nco, mix_with_nco};
-use orion_sdr::demodulate::{CwEnvelopeDemod, AmEnvelopeDemod, SsbProductDemod};
 use num_complex::Complex32 as C32;
+use orion_sdr::core::IqToAudioChain;
+use orion_sdr::demodulate::{AmEnvelopeDemod, CwEnvelopeDemod, SsbProductDemod};
+use orion_sdr::dsp::{Nco, mix_with_nco};
 
 #[test]
 fn chain_runs_ssb_cw_and_am() {
@@ -14,7 +13,7 @@ fn chain_runs_ssb_cw_and_am() {
     let mut tone = Vec::with_capacity(n);
     let mut nco = Nco::new(1_000.0, fs);
     for _ in 0..n {
-        tone.push(mix_with_nco(C32::new(1.0,0.0), &mut nco));
+        tone.push(mix_with_nco(C32::new(1.0, 0.0), &mut nco));
     }
 
     // CW chain

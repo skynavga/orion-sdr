@@ -70,14 +70,12 @@ pub fn ft8_add_crc(payload: &[u8; 10], a91: &mut [u8; 12]) {
     let checksum = ft8_crc14(a91, 96 - 14);
 
     // Pack the 14-bit CRC into bits 77..90 (a91[9] bits 2..0, a91[10], a91[11] bits 7..5)
-    a91[9]  |= (checksum >> 11) as u8;
-    a91[10]  = (checksum >> 3) as u8;
-    a91[11]  = (checksum << 5) as u8;
+    a91[9] |= (checksum >> 11) as u8;
+    a91[10] = (checksum >> 3) as u8;
+    a91[11] = (checksum << 5) as u8;
 }
 
 /// Extract the 14-bit CRC from bits 77..90 of a packed 91-bit `a91` block.
 pub fn ft8_extract_crc(a91: &[u8; 12]) -> u16 {
-    ((a91[9] & 0x07) as u16) << 11
-        | (a91[10] as u16) << 3
-        | (a91[11] >> 5) as u16
+    ((a91[9] & 0x07) as u16) << 11 | (a91[10] as u16) << 3 | (a91[11] >> 5) as u16
 }

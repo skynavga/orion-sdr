@@ -1,12 +1,11 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
-use orion_sdr::core::{AudioToIqChain, IqToAudioChain};
-use orion_sdr::modulate::PmDirectPhaseMod;
-use orion_sdr::demodulate::PmQuadratureDemod;
-use crate::common::snr_db_at;
 use super::helpers::{real_tone, tail};
+use crate::common::snr_db_at;
+use orion_sdr::core::{AudioToIqChain, IqToAudioChain};
+use orion_sdr::demodulate::PmQuadratureDemod;
+use orion_sdr::modulate::PmDirectPhaseMod;
 
 #[test]
 fn roundtrip_pm_quadrature() {

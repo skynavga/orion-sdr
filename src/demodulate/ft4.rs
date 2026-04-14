@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // src/demodulate/ft4.rs
-use num_complex::Complex32 as C32;
 use crate::modulate::ft4::{
-    Ft4Frame, FT4_DATA_SYMS, FT4_SAMPLES_PER_SYM, FT4_TONE_SPACING_HZ,
-    FT4_TONES, FT4_TOTAL_SYMS, FT4_FRAME_LEN,
+    FT4_DATA_SYMS, FT4_FRAME_LEN, FT4_SAMPLES_PER_SYM, FT4_TONE_SPACING_HZ, FT4_TONES,
+    FT4_TOTAL_SYMS, Ft4Frame,
 };
+use num_complex::Complex32 as C32;
 
 // Costas sync positions in the 105-symbol frame: [start, end)
 // Ramp symbols at positions 0 and 104 are handled separately.
@@ -90,22 +90,22 @@ fn detect_tone(slice: &[C32], steps: &[C32; FT4_TONES]) -> u8 {
             acc += slice[i] * phasor;
             let p1 = C32::new(
                 phasor.re.mul_add(w.re, -phasor.im * w.im),
-                phasor.im.mul_add(w.re,  phasor.re * w.im),
+                phasor.im.mul_add(w.re, phasor.re * w.im),
             );
-            acc += slice[i+1] * p1;
+            acc += slice[i + 1] * p1;
             let p2 = C32::new(
                 p1.re.mul_add(w.re, -p1.im * w.im),
-                p1.im.mul_add(w.re,  p1.re * w.im),
+                p1.im.mul_add(w.re, p1.re * w.im),
             );
-            acc += slice[i+2] * p2;
+            acc += slice[i + 2] * p2;
             let p3 = C32::new(
                 p2.re.mul_add(w.re, -p2.im * w.im),
-                p2.im.mul_add(w.re,  p2.re * w.im),
+                p2.im.mul_add(w.re, p2.re * w.im),
             );
-            acc += slice[i+3] * p3;
+            acc += slice[i + 3] * p3;
             phasor = C32::new(
                 p3.re.mul_add(w.re, -p3.im * w.im),
-                p3.im.mul_add(w.re,  p3.re * w.im),
+                p3.im.mul_add(w.re, p3.re * w.im),
             );
             i += 4;
         }
@@ -113,7 +113,7 @@ fn detect_tone(slice: &[C32], steps: &[C32; FT4_TONES]) -> u8 {
             acc += slice[i] * phasor;
             phasor = C32::new(
                 phasor.re.mul_add(w.re, -phasor.im * w.im),
-                phasor.im.mul_add(w.re,  phasor.re * w.im),
+                phasor.im.mul_add(w.re, phasor.re * w.im),
             );
             i += 1;
         }

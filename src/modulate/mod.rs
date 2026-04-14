@@ -1,7 +1,6 @@
 // Copyright (c) 2025-2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
 pub mod am;
 pub use am::AmDsbMod;
 
@@ -15,23 +14,22 @@ pub mod fm;
 pub use fm::FmPhaseAccumMod;
 
 pub mod ft4;
-pub use ft4::{Ft4Mod, Ft4Frame};
+pub use ft4::{Ft4Frame, Ft4Mod};
 
 pub mod ft8;
-pub use ft8::{Ft8Mod, Ft8Frame};
+pub use ft8::{Ft8Frame, Ft8Mod};
 
 pub mod pm;
 pub use pm::PmDirectPhaseMod;
 
 pub mod psk31;
 pub use psk31::{
-    Bpsk31Mod, Qpsk31Mod,
-    PSK31_BAUD, PSK31_SPS_8000, PSK31_SPS_12000, PSK31_PREAMBLE_BITS, PSK31_POSTAMBLE_BITS,
-    psk31_sps,
+    Bpsk31Mod, PSK31_BAUD, PSK31_POSTAMBLE_BITS, PSK31_PREAMBLE_BITS, PSK31_SPS_8000,
+    PSK31_SPS_12000, Qpsk31Mod, psk31_sps,
 };
 
 pub mod qam;
-pub use qam::{QamMapper, QamMod, Qam16Mapper, Qam64Mapper, Qam256Mapper};
+pub use qam::{Qam16Mapper, Qam64Mapper, Qam256Mapper, QamMapper, QamMod};
 
 pub mod qpsk;
 pub use qpsk::{QpskMapper, QpskMod};

@@ -2,14 +2,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // src/demodulate/qam.rs
-use num_complex::Complex32 as C32;
 use crate::core::{Block, WorkReport};
+use num_complex::Complex32 as C32;
 
 // ── compile-time validation ──────────────────────────────────────────────────
 
 const fn check_bits(bits: usize) {
-    assert!(bits == 4 || bits == 6 || bits == 8,
-        "QamDecider: BITS must be 4 (QAM-16), 6 (QAM-64), or 8 (QAM-256)");
+    assert!(
+        bits == 4 || bits == 6 || bits == 8,
+        "QamDecider: BITS must be 4 (QAM-16), 6 (QAM-64), or 8 (QAM-256)"
+    );
 }
 
 // ── decision threshold table ─────────────────────────────────────────────────
@@ -54,12 +56,16 @@ pub struct QamDemod {
 }
 
 impl QamDemod {
-    pub fn new(gain: f32) -> Self { Self { gain } }
-    pub fn set_gain(&mut self, g: f32) { self.gain = g; }
+    pub fn new(gain: f32) -> Self {
+        Self { gain }
+    }
+    pub fn set_gain(&mut self, g: f32) {
+        self.gain = g;
+    }
 }
 
 impl Block for QamDemod {
-    type In  = C32;
+    type In = C32;
     type Out = C32;
 
     #[inline(always)]
@@ -69,17 +75,20 @@ impl Block for QamDemod {
         let mut i = 0;
         let nn = n & !3;
         while i < nn {
-            output[i]   = C32::new(g * input[i].re,   g * input[i].im);
-            output[i+1] = C32::new(g * input[i+1].re, g * input[i+1].im);
-            output[i+2] = C32::new(g * input[i+2].re, g * input[i+2].im);
-            output[i+3] = C32::new(g * input[i+3].re, g * input[i+3].im);
+            output[i] = C32::new(g * input[i].re, g * input[i].im);
+            output[i + 1] = C32::new(g * input[i + 1].re, g * input[i + 1].im);
+            output[i + 2] = C32::new(g * input[i + 2].re, g * input[i + 2].im);
+            output[i + 3] = C32::new(g * input[i + 3].re, g * input[i + 3].im);
             i += 4;
         }
         while i < n {
             output[i] = C32::new(g * input[i].re, g * input[i].im);
             i += 1;
         }
-        WorkReport { in_read: n, out_written: n }
+        WorkReport {
+            in_read: n,
+            out_written: n,
+        }
     }
 }
 
@@ -103,8 +112,12 @@ pub struct QamDecider<const BITS: usize> {
 
 impl<const BITS: usize> QamDecider<BITS> {
     pub fn new() -> Self {
-        const { check_bits(BITS); }
-        Self { thresholds: build_threshold_table(BITS, axis_scale(BITS)) }
+        const {
+            check_bits(BITS);
+        }
+        Self {
+            thresholds: build_threshold_table(BITS, axis_scale(BITS)),
+        }
     }
 
     /// Map one soft axis value to `K = BITS/2` Gray-coded bit bytes (LSBs).
@@ -116,7 +129,9 @@ impl<const BITS: usize> QamDecider<BITS> {
         let mut nat = 0usize;
         let mut t = 0;
         while t < m - 1 {
-            if v > self.thresholds[t] { nat += 1; }
+            if v > self.thresholds[t] {
+                nat += 1;
+            }
             t += 1;
         }
         // Binary → Gray
@@ -131,11 +146,13 @@ impl<const BITS: usize> QamDecider<BITS> {
 }
 
 impl<const BITS: usize> Default for QamDecider<BITS> {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<const BITS: usize> Block for QamDecider<BITS> {
-    type In  = C32;
+    type In = C32;
     type Out = u8;
 
     #[inline(always)]
@@ -145,27 +162,30 @@ impl<const BITS: usize> Block for QamDecider<BITS> {
         let mut i = 0;
         let nn = n_syms & !3;
         while i < nn {
-            self.decide_axis(input[i].re,   output, i*BITS);
-            self.decide_axis(input[i].im,   output, i*BITS+k);
-            self.decide_axis(input[i+1].re, output, (i+1)*BITS);
-            self.decide_axis(input[i+1].im, output, (i+1)*BITS+k);
-            self.decide_axis(input[i+2].re, output, (i+2)*BITS);
-            self.decide_axis(input[i+2].im, output, (i+2)*BITS+k);
-            self.decide_axis(input[i+3].re, output, (i+3)*BITS);
-            self.decide_axis(input[i+3].im, output, (i+3)*BITS+k);
+            self.decide_axis(input[i].re, output, i * BITS);
+            self.decide_axis(input[i].im, output, i * BITS + k);
+            self.decide_axis(input[i + 1].re, output, (i + 1) * BITS);
+            self.decide_axis(input[i + 1].im, output, (i + 1) * BITS + k);
+            self.decide_axis(input[i + 2].re, output, (i + 2) * BITS);
+            self.decide_axis(input[i + 2].im, output, (i + 2) * BITS + k);
+            self.decide_axis(input[i + 3].re, output, (i + 3) * BITS);
+            self.decide_axis(input[i + 3].im, output, (i + 3) * BITS + k);
             i += 4;
         }
         while i < n_syms {
-            self.decide_axis(input[i].re, output, i*BITS);
-            self.decide_axis(input[i].im, output, i*BITS+k);
+            self.decide_axis(input[i].re, output, i * BITS);
+            self.decide_axis(input[i].im, output, i * BITS + k);
             i += 1;
         }
-        WorkReport { in_read: n_syms, out_written: n_syms * BITS }
+        WorkReport {
+            in_read: n_syms,
+            out_written: n_syms * BITS,
+        }
     }
 }
 
 // ── type aliases ─────────────────────────────────────────────────────────────
 
-pub type Qam16Decider  = QamDecider<4>;
-pub type Qam64Decider  = QamDecider<6>;
+pub type Qam16Decider = QamDecider<4>;
+pub type Qam64Decider = QamDecider<6>;
 pub type Qam256Decider = QamDecider<8>;

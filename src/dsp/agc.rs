@@ -29,8 +29,13 @@ impl AgcRms {
             env: 0.0,
         }
     }
-    #[inline] fn update_env(&mut self, x2: f32) {
-        let a = if x2 > self.env { self.attack_a } else { self.release_a };
+    #[inline]
+    fn update_env(&mut self, x2: f32) {
+        let a = if x2 > self.env {
+            self.attack_a
+        } else {
+            self.release_a
+        };
         self.env = a * self.env + (1.0 - a) * x2;
     }
 }
@@ -42,7 +47,10 @@ impl Block for AgcRms {
     fn process(&mut self, input: &[Self::In], output: &mut [Self::Out]) -> WorkReport {
         let n = input.len().min(output.len());
         if n == 0 {
-            return WorkReport { in_read: 0, out_written: 0 };
+            return WorkReport {
+                in_read: 0,
+                out_written: 0,
+            };
         }
 
         // Seed env on the first call to avoid huge initial gain
@@ -59,7 +67,10 @@ impl Block for AgcRms {
             g = g.clamp(self.min_gain, self.max_gain);
             output[i] = g * x;
         }
-        WorkReport { in_read: n, out_written: n }
+        WorkReport {
+            in_read: n,
+            out_written: n,
+        }
     }
 }
 
@@ -94,19 +105,26 @@ impl AgcRmsIq {
 
     #[inline]
     fn update_env(&mut self, x2: f32) {
-        let a = if x2 > self.env { self.attack_a } else { self.release_a };
+        let a = if x2 > self.env {
+            self.attack_a
+        } else {
+            self.release_a
+        };
         self.env = a * self.env + (1.0 - a) * x2;
     }
 }
 
 impl Block for AgcRmsIq {
-    type In  = C32;
+    type In = C32;
     type Out = C32;
 
     fn process(&mut self, input: &[Self::In], output: &mut [Self::Out]) -> WorkReport {
         let n = input.len().min(output.len());
         if n == 0 {
-            return WorkReport { in_read: 0, out_written: 0 };
+            return WorkReport {
+                in_read: 0,
+                out_written: 0,
+            };
         }
 
         // Seed env on first use to prevent initial clamp blast
@@ -124,6 +142,9 @@ impl Block for AgcRmsIq {
             g = g.clamp(self.min_gain, self.max_gain);
             output[i] = C32::new(g * x.re, g * x.im);
         }
-        WorkReport { in_read: n, out_written: n }
+        WorkReport {
+            in_read: n,
+            out_written: n,
+        }
     }
 }

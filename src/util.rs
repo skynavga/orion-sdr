@@ -1,20 +1,24 @@
 // Copyright (c) 2025-2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use num_complex::Complex32 as C32;
 use crate::core::{Block, WorkReport};
+use num_complex::Complex32 as C32;
 
 /// Root-mean-square of a real slice.
 #[inline]
 pub fn rms(x: &[f32]) -> f32 {
-    if x.is_empty() { return 0.0; }
-    let s: f32 = x.iter().map(|v| v*v).sum();
+    if x.is_empty() {
+        return 0.0;
+    }
+    let s: f32 = x.iter().map(|v| v * v).sum();
     (s / (x.len() as f32)).sqrt()
 }
 
 /// Hann window (periodic) of length n.
 pub fn hann(n: usize) -> Vec<f32> {
-    (0..n).map(|k| 0.5 - 0.5 * (core::f32::consts::TAU * k as f32 / n as f32).cos()).collect()
+    (0..n)
+        .map(|k| 0.5 - 0.5 * (core::f32::consts::TAU * k as f32 / n as f32).cos())
+        .collect()
 }
 
 /// Generate a real tone (sine) with amplitude `amp`.
@@ -46,9 +50,9 @@ pub fn snr_db_at(fs: f32, f_hz: f32, x: &[f32]) -> f32 {
         re += wi * xi * ph.cos();
         im += wi * xi * ph.sin();
     }
-    let sig = (re*re + im*im).sqrt() / (w.iter().sum::<f32>() + 1e-12);
+    let sig = (re * re + im * im).sqrt() / (w.iter().sum::<f32>() + 1e-12);
     // noise estimate: total power minus signal power (coarse but stable for tests)
-    let p_total: f32 = x.iter().map(|v| v*v).sum::<f32>() / (n as f32);
+    let p_total: f32 = x.iter().map(|v| v * v).sum::<f32>() / (n as f32);
     let p_sig = sig * sig;
     let p_noise = (p_total - p_sig).max(1e-12);
     10.0 * (p_sig / p_noise).log10()
@@ -123,7 +127,9 @@ pub fn power_spectrum(samples: &[f32], fs: f32) -> (Vec<f32>, f32) {
 pub fn spectrum_snr_db(samples: &[f32], fs: f32, carrier_hz: f32) -> f32 {
     let (power_db, bin_hz) = power_spectrum(samples, fs);
     let n_bins = power_db.len();
-    if n_bins < 3 { return 0.0; }
+    if n_bins < 3 {
+        return 0.0;
+    }
 
     let peak_bin = ((carrier_hz / bin_hz).round() as usize).min(n_bins - 1);
 
@@ -132,7 +138,11 @@ pub fn spectrum_snr_db(samples: &[f32], fs: f32, carrier_hz: f32) -> f32 {
     let lo = peak_bin.saturating_sub(search_r);
     let hi = (peak_bin + search_r).min(n_bins - 1);
     let sig_bin = (lo..=hi)
-        .max_by(|&a, &b| power_db[a].partial_cmp(&power_db[b]).unwrap_or(std::cmp::Ordering::Equal))
+        .max_by(|&a, &b| {
+            power_db[a]
+                .partial_cmp(&power_db[b])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
         .unwrap_or(peak_bin);
 
     let sig_db = power_db[sig_bin];
@@ -147,7 +157,9 @@ pub fn spectrum_snr_db(samples: &[f32], fs: f32, carrier_hz: f32) -> f32 {
         .map(|(_, &v)| v)
         .collect();
 
-    if noise_bins.is_empty() { return 0.0; }
+    if noise_bins.is_empty() {
+        return 0.0;
+    }
     noise_bins.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let noise_db = noise_bins[noise_bins.len() / 2];
 
@@ -163,13 +175,15 @@ pub fn spectrum_snr_db(samples: &[f32], fs: f32, carrier_hz: f32) -> f32 {
 /// `_threshold_db` is reserved for future use (currently uses a fixed 35 dB
 /// carrier-relative cutoff).
 pub fn spectrum_bw_hz(samples: &[f32], fs: f32, carrier_hz: f32, _threshold_db: f32) -> f32 {
-    let search_hz         = 4_000.0_f32;
-    let carrier_drop_db   = 35.0_f32;
+    let search_hz = 4_000.0_f32;
+    let carrier_drop_db = 35.0_f32;
     let carrier_guard_bins = 3_usize;
 
     let (power_db, bin_hz) = power_spectrum(samples, fs);
     let n_bins = power_db.len();
-    if n_bins < 3 { return bin_hz; }
+    if n_bins < 3 {
+        return bin_hz;
+    }
 
     // Locate the carrier bin.
     let nominal_bin = ((carrier_hz / bin_hz).round() as usize).min(n_bins - 1);
@@ -177,7 +191,11 @@ pub fn spectrum_bw_hz(samples: &[f32], fs: f32, carrier_hz: f32, _threshold_db: 
     let c_lo = nominal_bin.saturating_sub(cr);
     let c_hi = (nominal_bin + cr).min(n_bins - 1);
     let carrier_bin = (c_lo..=c_hi)
-        .max_by(|&a, &b| power_db[a].partial_cmp(&power_db[b]).unwrap_or(std::cmp::Ordering::Equal))
+        .max_by(|&a, &b| {
+            power_db[a]
+                .partial_cmp(&power_db[b])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
         .unwrap_or(nominal_bin);
 
     let cutoff = power_db[carrier_bin] - carrier_drop_db;
@@ -187,7 +205,9 @@ pub fn spectrum_bw_hz(samples: &[f32], fs: f32, carrier_hz: f32, _threshold_db: 
     let lsb_lo = carrier_bin.saturating_sub(search_bins);
     let lsb_hi = carrier_bin.saturating_sub(carrier_guard_bins);
     let left_edge = if lsb_lo < lsb_hi {
-        (lsb_lo..=lsb_hi).find(|&i| power_db[i] >= cutoff).unwrap_or(carrier_bin)
+        (lsb_lo..=lsb_hi)
+            .find(|&i| power_db[i] >= cutoff)
+            .unwrap_or(carrier_bin)
     } else {
         carrier_bin
     };
@@ -196,7 +216,9 @@ pub fn spectrum_bw_hz(samples: &[f32], fs: f32, carrier_hz: f32, _threshold_db: 
     let usb_lo = (carrier_bin + carrier_guard_bins).min(n_bins - 1);
     let usb_hi = (carrier_bin + search_bins).min(n_bins - 1);
     let right_edge = if usb_lo < usb_hi {
-        (usb_lo..=usb_hi).rfind(|&i| power_db[i] >= cutoff).unwrap_or(carrier_bin)
+        (usb_lo..=usb_hi)
+            .rfind(|&i| power_db[i] >= cutoff)
+            .unwrap_or(carrier_bin)
     } else {
         carrier_bin
     };
@@ -222,7 +244,8 @@ pub fn best_sync(
         .min_by(|a, b| {
             let da = (a.carrier_hz - carrier_hz).abs();
             let db = (b.carrier_hz - carrier_hz).abs();
-            a.time_sym.cmp(&b.time_sym)
+            a.time_sym
+                .cmp(&b.time_sym)
                 .then(da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal))
         })
         .map(|r| (r.carrier_hz, r.time_sym))
@@ -244,7 +267,11 @@ pub fn atan2_approx(y: f32, x: f32) -> f32 {
     let r = mn / (mx + f32::EPSILON);
     let r2 = r * r;
     let phi = r * (std::f32::consts::FRAC_PI_4 + r2 * (-0.2447 + r2 * 0.0663));
-    let phi = if ax < ay { std::f32::consts::FRAC_PI_2 - phi } else { phi };
+    let phi = if ax < ay {
+        std::f32::consts::FRAC_PI_2 - phi
+    } else {
+        phi
+    };
     if x < 0.0 {
         (std::f32::consts::PI - phi) * if y < 0.0 { -1.0 } else { 1.0 }
     } else {

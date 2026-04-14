@@ -1,11 +1,13 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use num_complex::Complex32 as C32;
 use crate::common::add_awgn;
+use num_complex::Complex32 as C32;
 
 pub fn rms(x: &[f32]) -> f32 {
-    if x.is_empty() { return 0.0; }
+    if x.is_empty() {
+        return 0.0;
+    }
     let sum_sq: f32 = x.iter().map(|v| v * v).sum();
     (sum_sq / x.len() as f32).sqrt()
 }
@@ -25,7 +27,7 @@ pub fn make_ft8_test_buffer(
     base_hz: f32,
     noise_power: f32,
 ) -> (Vec<C32>, orion_sdr::codec::ft8::Ft8Bits) {
-    use orion_sdr::codec::ft8::{Ft8Codec, Ft8Bits};
+    use orion_sdr::codec::ft8::{Ft8Bits, Ft8Codec};
     use orion_sdr::modulate::Ft8Mod;
     use orion_sdr::modulate::ft8::FT8_FRAME_LEN;
 
@@ -52,7 +54,7 @@ pub fn make_ft4_test_buffer(
     base_hz: f32,
     noise_power: f32,
 ) -> (Vec<C32>, orion_sdr::codec::ft4::Ft4Bits) {
-    use orion_sdr::codec::ft4::{Ft4Codec, Ft4Bits};
+    use orion_sdr::codec::ft4::{Ft4Bits, Ft4Codec};
     use orion_sdr::modulate::Ft4Mod;
     use orion_sdr::modulate::ft4::FT4_FRAME_LEN;
 

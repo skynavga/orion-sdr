@@ -1,15 +1,14 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
-use num_complex::Complex32 as C32;
-use orion_sdr::modulate::psk31::{Bpsk31Mod, Qpsk31Mod, psk31_sps, PSK31_BAUD};
-use orion_sdr::demodulate::psk31::{Bpsk31Demod, Bpsk31Decider, Qpsk31Demod, Qpsk31Decider};
-use orion_sdr::codec::psk31::Psk31Stream;
-use orion_sdr::codec::varicode::{varicode_encode, VaricodeDecoder};
-use orion_sdr::sync::psk31_sync::psk31_sync;
-use orion_sdr::core::Block;
 use crate::common::add_awgn;
+use num_complex::Complex32 as C32;
+use orion_sdr::codec::psk31::Psk31Stream;
+use orion_sdr::codec::varicode::{VaricodeDecoder, varicode_encode};
+use orion_sdr::core::Block;
+use orion_sdr::demodulate::psk31::{Bpsk31Decider, Bpsk31Demod, Qpsk31Decider, Qpsk31Demod};
+use orion_sdr::modulate::psk31::{Bpsk31Mod, PSK31_BAUD, Qpsk31Mod, psk31_sps};
+use orion_sdr::sync::psk31_sync::psk31_sync;
 
 // -- BPSK31 roundtrip tests ------------------------------------------------
 
@@ -116,7 +115,7 @@ fn roundtrip_bpsk31_no_flip_constant() {
     // All 1-bits: no phase changes.
     let iq = modulator.modulate_bits(&[1u8; 4]);
     // Check the middle two symbols have consistent amplitude.
-    let amp: Vec<f32> = iq[sps..3*sps]
+    let amp: Vec<f32> = iq[sps..3 * sps]
         .iter()
         .map(|s| (s.re * s.re + s.im * s.im).sqrt())
         .collect();
@@ -228,12 +227,19 @@ fn roundtrip_bpsk31_all_ascii() {
         decoded.push(c);
     }
 
-    assert_eq!(decoded.len(), 128,
+    assert_eq!(
+        decoded.len(),
+        128,
         "expected 128 decoded bytes, got {} -- decoded: {:?}",
-        decoded.len(), &decoded[..decoded.len().min(20)]);
+        decoded.len(),
+        &decoded[..decoded.len().min(20)]
+    );
     for (i, (&got, &exp)) in decoded.iter().zip(text.iter()).enumerate() {
-        assert_eq!(got, exp,
-            "mismatch at index {}: expected 0x{:02X}, got 0x{:02X}", i, exp, got);
+        assert_eq!(
+            got, exp,
+            "mismatch at index {}: expected 0x{:02X}, got 0x{:02X}",
+            i, exp, got
+        );
     }
 }
 
@@ -241,8 +247,8 @@ fn roundtrip_bpsk31_all_ascii() {
 
 #[test]
 fn roundtrip_psk31_sync_finds_bpsk31() {
-    use orion_sdr::sync::psk31_sync::psk31_sync;
     use orion_sdr::modulate::psk31::PSK31_BAUD;
+    use orion_sdr::sync::psk31_sync::psk31_sync;
 
     let fs = 8000.0;
     let base_hz = 900.0;
@@ -267,7 +273,10 @@ fn roundtrip_psk31_sync_finds_bpsk31() {
     // Run sync.
     let results = psk31_sync(&buf, fs, base_hz, base_hz + 200.0, 4, 3.0, 256, 5);
 
-    assert!(!results.is_empty(), "psk31_sync should find the BPSK31 carrier");
+    assert!(
+        !results.is_empty(),
+        "psk31_sync should find the BPSK31 carrier"
+    );
     let best = &results[0];
     assert!(
         (best.carrier_hz - carrier_hz).abs() < 40.0,
@@ -280,8 +289,8 @@ fn roundtrip_psk31_sync_finds_bpsk31() {
 
 #[test]
 fn roundtrip_psk31_sync_finds_qpsk31() {
-    use orion_sdr::sync::psk31_sync::psk31_sync;
     use orion_sdr::modulate::psk31::PSK31_BAUD;
+    use orion_sdr::sync::psk31_sync::psk31_sync;
 
     let fs = 8000.0;
     let base_hz = 1400.0;
@@ -303,7 +312,10 @@ fn roundtrip_psk31_sync_finds_qpsk31() {
 
     let results = psk31_sync(&buf, fs, base_hz, base_hz + 200.0, 4, 3.0, 256, 5);
 
-    assert!(!results.is_empty(), "psk31_sync should find the QPSK31 carrier");
+    assert!(
+        !results.is_empty(),
+        "psk31_sync should find the QPSK31 carrier"
+    );
     let best = &results[0];
     assert!(
         (best.carrier_hz - carrier_hz).abs() < 40.0,
@@ -327,8 +339,7 @@ fn try_bpsk31(text: &[u8], snr_db: f32, seed: u64) -> bool {
     let base_hz = 900.0_f32;
     let carrier_hz = base_hz + 3.0 * PSK31_BAUD;
 
-    let sig_iq = Bpsk31Mod::new(SNR_FS, carrier_hz, 1.0)
-        .modulate_text(text, 64, 32);
+    let sig_iq = Bpsk31Mod::new(SNR_FS, carrier_hz, 1.0).modulate_text(text, 64, 32);
 
     let sig_len = sig_iq.len();
     let total = sig_len + SNR_FS as usize;
@@ -337,8 +348,12 @@ fn try_bpsk31(text: &[u8], snr_db: f32, seed: u64) -> bool {
     add_awgn(&mut buf, snr_to_noise_power(snr_db), seed);
 
     let results = psk31_sync(&buf, SNR_FS, base_hz, base_hz + 200.0, 4, 3.0, 32, 5);
-    if results.is_empty() { return false; }
-    if (results[0].carrier_hz - carrier_hz).abs() > 40.0 { return false; }
+    if results.is_empty() {
+        return false;
+    }
+    if (results[0].carrier_hz - carrier_hz).abs() > 40.0 {
+        return false;
+    }
 
     let found_hz = results[0].carrier_hz;
     let mut demod = Bpsk31Demod::new(SNR_FS, found_hz, 1.0);
@@ -352,10 +367,15 @@ fn try_bpsk31(text: &[u8], snr_db: f32, seed: u64) -> bool {
     bits.truncate(dr.out_written);
 
     let mut vdec = VaricodeDecoder::new();
-    for &b in &bits { vdec.push_bit(b); }
-    vdec.push_bit(0); vdec.push_bit(0);
+    for &b in &bits {
+        vdec.push_bit(b);
+    }
+    vdec.push_bit(0);
+    vdec.push_bit(0);
     let mut decoded = Vec::new();
-    while let Some(c) = vdec.pop_char() { decoded.push(c); }
+    while let Some(c) = vdec.pop_char() {
+        decoded.push(c);
+    }
 
     decoded.windows(text.len()).any(|w| w == text)
 }
@@ -364,8 +384,7 @@ fn try_qpsk31(text: &[u8], snr_db: f32, seed: u64) -> bool {
     let base_hz = 1400.0_f32;
     let carrier_hz = base_hz + 2.0 * PSK31_BAUD;
 
-    let sig_iq = Qpsk31Mod::new(SNR_FS, carrier_hz, 1.0)
-        .modulate_text(text, 64, 32);
+    let sig_iq = Qpsk31Mod::new(SNR_FS, carrier_hz, 1.0).modulate_text(text, 64, 32);
 
     let sig_len = sig_iq.len();
     let total = sig_len + SNR_FS as usize;
@@ -374,13 +393,20 @@ fn try_qpsk31(text: &[u8], snr_db: f32, seed: u64) -> bool {
     add_awgn(&mut buf, snr_to_noise_power(snr_db), seed);
 
     let results = psk31_sync(&buf, SNR_FS, base_hz, base_hz + 200.0, 4, 3.0, 32, 5);
-    if results.is_empty() { return false; }
-    let best = results.iter().min_by(|a, b| {
-        let da = (a.carrier_hz - carrier_hz).abs();
-        let db = (b.carrier_hz - carrier_hz).abs();
-        da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
-    }).unwrap();
-    if (best.carrier_hz - carrier_hz).abs() > 2.0 * PSK31_BAUD { return false; }
+    if results.is_empty() {
+        return false;
+    }
+    let best = results
+        .iter()
+        .min_by(|a, b| {
+            let da = (a.carrier_hz - carrier_hz).abs();
+            let db = (b.carrier_hz - carrier_hz).abs();
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .unwrap();
+    if (best.carrier_hz - carrier_hz).abs() > 2.0 * PSK31_BAUD {
+        return false;
+    }
 
     let sps = (SNR_FS / PSK31_BAUD).round() as usize;
     let _ = (best, sps);
@@ -396,10 +422,15 @@ fn try_qpsk31(text: &[u8], snr_db: f32, seed: u64) -> bool {
     decider.flush(&mut decoded_bits);
 
     let mut vdec = VaricodeDecoder::new();
-    for &b in &decoded_bits { vdec.push_bit(b); }
-    vdec.push_bit(0); vdec.push_bit(0);
+    for &b in &decoded_bits {
+        vdec.push_bit(b);
+    }
+    vdec.push_bit(0);
+    vdec.push_bit(0);
     let mut decoded = Vec::new();
-    while let Some(c) = vdec.pop_char() { decoded.push(c); }
+    while let Some(c) = vdec.pop_char() {
+        decoded.push(c);
+    }
 
     decoded.windows(text.len()).any(|w| w == text)
 }
@@ -412,7 +443,8 @@ fn bpsk31_decodes_at_minus_5db_snr_2500hz() {
     assert!(
         try_bpsk31(text, snr_db, 0x1234_5678_9ABC_DEF0),
         "BPSK31 failed to decode at {} dB SNR/2500 Hz (noise_power={:.5})",
-        snr_db, noise_power
+        snr_db,
+        noise_power
     );
 }
 
@@ -424,7 +456,8 @@ fn qpsk31_decodes_at_minus_6db_snr_2500hz() {
     assert!(
         try_qpsk31(text, snr_db, 0xFEDC_BA98_7654_3210),
         "QPSK31 failed to decode at {} dB SNR/2500 Hz (noise_power={:.5})",
-        snr_db, noise_power
+        snr_db,
+        noise_power
     );
 }
 
@@ -476,8 +509,12 @@ fn bpsk31_stream_decodes_hello() {
     let mut decoded = stream.feed(&iq);
     decoded += &stream.flush();
 
-    assert!(decoded.contains(msg),
-        "expected '{}' in decoded output '{}'", msg, decoded);
+    assert!(
+        decoded.contains(msg),
+        "expected '{}' in decoded output '{}'",
+        msg,
+        decoded
+    );
 }
 
 #[test]
@@ -490,8 +527,12 @@ fn qpsk31_stream_decodes_hello() {
     let mut decoded = stream.feed(&iq);
     decoded += &stream.flush();
 
-    assert!(decoded.contains(msg),
-        "expected '{}' in decoded output '{}'", msg, decoded);
+    assert!(
+        decoded.contains(msg),
+        "expected '{}' in decoded output '{}'",
+        msg,
+        decoded
+    );
 }
 
 #[test]
@@ -505,8 +546,12 @@ fn bpsk31_stream_decodes_all_printable_ascii() {
     decoded += &stream.flush();
 
     for ch in msg.chars() {
-        assert!(decoded.contains(ch),
-            "missing char '{}' (0x{:02x}) in decoded output", ch, ch as u8);
+        assert!(
+            decoded.contains(ch),
+            "missing char '{}' (0x{:02x}) in decoded output",
+            ch,
+            ch as u8
+        );
     }
 }
 
@@ -521,8 +566,12 @@ fn qpsk31_stream_decodes_all_printable_ascii() {
     decoded += &stream.flush();
 
     for ch in msg.chars() {
-        assert!(decoded.contains(ch),
-            "missing char '{}' (0x{:02x}) in decoded output", ch, ch as u8);
+        assert!(
+            decoded.contains(ch),
+            "missing char '{}' (0x{:02x}) in decoded output",
+            ch,
+            ch as u8
+        );
     }
 }
 
@@ -540,6 +589,10 @@ fn bpsk31_stream_incremental_feed() {
     }
     decoded += &stream.flush();
 
-    assert!(decoded.contains(msg),
-        "expected '{}' in decoded output '{}'", msg, decoded);
+    assert!(
+        decoded.contains(msg),
+        "expected '{}' in decoded output '{}'",
+        msg,
+        decoded
+    );
 }

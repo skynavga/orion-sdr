@@ -19,7 +19,7 @@ pub mod psk31_sync;
 pub mod waterfall;
 
 pub use costas::Candidate;
-pub use ft4_sync::{ft4_sync, Ft4SyncResult};
-pub use ft8_sync::{ft8_sync, Ft8SyncResult};
-pub use psk31_sync::{psk31_sync, Psk31SyncResult};
+pub use ft4_sync::{Ft4SyncResult, ft4_sync};
+pub use ft8_sync::{Ft8SyncResult, ft8_sync};
+pub use psk31_sync::{Psk31SyncResult, psk31_sync};
 pub use waterfall::{Waterfall, compute_waterfall};

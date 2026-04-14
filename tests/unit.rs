@@ -4,7 +4,6 @@
 mod common;
 
 mod unit {
-    pub mod helpers;
     pub mod agc;
     pub mod am;
     pub mod bpsk;
@@ -14,12 +13,13 @@ mod unit {
     pub mod fm;
     pub mod ft4;
     pub mod ft8;
+    pub mod helpers;
     pub mod message;
     pub mod pm;
     pub mod psk31;
     pub mod qam;
     pub mod qpsk;
+    pub mod spectral;
     pub mod ssb;
     pub mod sync;
-    pub mod spectral;
 }

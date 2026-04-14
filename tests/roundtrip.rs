@@ -4,13 +4,13 @@
 mod common;
 
 mod roundtrip {
-    pub mod helpers;
     pub mod am;
     pub mod bpsk;
     pub mod cw;
     pub mod fm;
     pub mod ft4;
     pub mod ft8;
+    pub mod helpers;
     pub mod pm;
     pub mod psk31;
     pub mod qam;

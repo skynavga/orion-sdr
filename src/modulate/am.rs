@@ -2,20 +2,19 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // src/modulate/am.rs
-use num_complex::Complex32 as C32;
 use crate::core::{Block, WorkReport};
 use crate::dsp::Rotator;
-
+use num_complex::Complex32 as C32;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AmDsbMod {
     fs: f32,
     gain: f32,
-    carrier_level: f32,     // 1.0 => full carrier (A3E), 0.0 => DSB-SC (A3)
-    modulation_index: f32,  // <= 1.0 recommended
+    carrier_level: f32,    // 1.0 => full carrier (A3E), 0.0 => DSB-SC (A3)
+    modulation_index: f32, // <= 1.0 recommended
     clamp: bool,
-    rf_nco: Rotator,        // rf_hz==0.0 => baseband AM
+    rf_nco: Rotator, // rf_hz==0.0 => baseband AM
 }
 
 impl AmDsbMod {
@@ -29,20 +28,24 @@ impl AmDsbMod {
             rf_nco: Rotator::new(rf_hz, fs),
         }
     }
-    pub fn set_gain(&mut self, g: f32) { self.gain = g; }
-    pub fn set_clamp(&mut self, on: bool) { self.clamp = on; }
+    pub fn set_gain(&mut self, g: f32) {
+        self.gain = g;
+    }
+    pub fn set_clamp(&mut self, on: bool) {
+        self.clamp = on;
+    }
 }
 
 impl Block for AmDsbMod {
-    type In  = f32;  // mono audio (-1..+1 recommended)
-    type Out = C32;  // complex IQ
+    type In = f32; // mono audio (-1..+1 recommended)
+    type Out = C32; // complex IQ
 
     #[inline(always)]
     fn process(&mut self, input: &[Self::In], output: &mut [Self::Out]) -> WorkReport {
         let n = input.len().min(output.len());
         let mi = self.modulation_index;
         let cl = self.carrier_level;
-        let g  = self.gain;
+        let g = self.gain;
 
         let mut i = 0;
         let nn = n & !3;
@@ -55,19 +58,19 @@ impl Block for AmDsbMod {
                 output[i] = C32::new(m0 * r0.re, m0 * r0.im);
 
                 // 1
-                let m1 = (cl + mi * input[i+1]).clamp(-1.0, 1.0) * g;
+                let m1 = (cl + mi * input[i + 1]).clamp(-1.0, 1.0) * g;
                 let r1 = self.rf_nco.next();
-                output[i+1] = C32::new(m1 * r1.re, m1 * r1.im);
+                output[i + 1] = C32::new(m1 * r1.re, m1 * r1.im);
 
                 // 2
-                let m2 = (cl + mi * input[i+2]).clamp(-1.0, 1.0) * g;
+                let m2 = (cl + mi * input[i + 2]).clamp(-1.0, 1.0) * g;
                 let r2 = self.rf_nco.next();
-                output[i+2] = C32::new(m2 * r2.re, m2 * r2.im);
+                output[i + 2] = C32::new(m2 * r2.re, m2 * r2.im);
 
                 // 3
-                let m3 = (cl + mi * input[i+3]).clamp(-1.0, 1.0) * g;
+                let m3 = (cl + mi * input[i + 3]).clamp(-1.0, 1.0) * g;
                 let r3 = self.rf_nco.next();
-                output[i+3] = C32::new(m3 * r3.re, m3 * r3.im);
+                output[i + 3] = C32::new(m3 * r3.re, m3 * r3.im);
 
                 i += 4;
             }
@@ -86,19 +89,19 @@ impl Block for AmDsbMod {
                 output[i] = C32::new(m0 * r0.re, m0 * r0.im);
 
                 // 1
-                let m1 = (cl + mi * input[i+1]) * g;
+                let m1 = (cl + mi * input[i + 1]) * g;
                 let r1 = self.rf_nco.next();
-                output[i+1] = C32::new(m1 * r1.re, m1 * r1.im);
+                output[i + 1] = C32::new(m1 * r1.re, m1 * r1.im);
 
                 // 2
-                let m2 = (cl + mi * input[i+2]) * g;
+                let m2 = (cl + mi * input[i + 2]) * g;
                 let r2 = self.rf_nco.next();
-                output[i+2] = C32::new(m2 * r2.re, m2 * r2.im);
+                output[i + 2] = C32::new(m2 * r2.re, m2 * r2.im);
 
                 // 3
-                let m3 = (cl + mi * input[i+3]) * g;
+                let m3 = (cl + mi * input[i + 3]) * g;
                 let r3 = self.rf_nco.next();
-                output[i+3] = C32::new(m3 * r3.re, m3 * r3.im);
+                output[i + 3] = C32::new(m3 * r3.re, m3 * r3.im);
 
                 i += 4;
             }
@@ -110,6 +113,9 @@ impl Block for AmDsbMod {
             }
         }
 
-        WorkReport { in_read: n, out_written: n }
+        WorkReport {
+            in_read: n,
+            out_written: n,
+        }
     }
 }

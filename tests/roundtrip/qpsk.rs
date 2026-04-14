@@ -1,19 +1,18 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
-use orion_sdr::modulate::{QpskMapper, QpskMod};
-use orion_sdr::demodulate::{QpskDemod, QpskDecider};
-use orion_sdr::core::Block;
 use num_complex::Complex32 as C32;
+use orion_sdr::core::Block;
+use orion_sdr::demodulate::{QpskDecider, QpskDemod};
+use orion_sdr::modulate::{QpskMapper, QpskMod};
 
 #[test]
 fn roundtrip_qpsk_noiseless() {
     let n_syms = 256;
     let bits_in: Vec<u8> = (0..n_syms * 2).map(|i| ((i / 2 + i) & 1) as u8).collect();
-    let mut syms     = vec![C32::default(); n_syms];
-    let mut iq       = vec![C32::default(); n_syms];
-    let mut soft     = vec![C32::default(); n_syms];
+    let mut syms = vec![C32::default(); n_syms];
+    let mut iq = vec![C32::default(); n_syms];
+    let mut soft = vec![C32::default(); n_syms];
     let mut bits_out = vec![0u8; n_syms * 2];
     QpskMapper::new().process(&bits_in, &mut syms);
     QpskMod::new(1.0, 0.0, 1.0).process(&syms, &mut iq);

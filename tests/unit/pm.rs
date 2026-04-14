@@ -1,11 +1,10 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
-use orion_sdr::demodulate::PmQuadratureDemod;
-use orion_sdr::core::Block;
 use crate::common::snr_db_at;
 use num_complex::Complex32 as C32;
+use orion_sdr::core::Block;
+use orion_sdr::demodulate::PmQuadratureDemod;
 
 #[test]
 fn pm_quadrature_demod_recovers_tone() {
@@ -16,7 +15,7 @@ fn pm_quadrature_demod_recovers_tone() {
     let mut iq = Vec::with_capacity(n);
     for k in 0..n {
         let t = k as f32 / fs;
-        let phi = beta * (2.0*std::f32::consts::PI * f_mod * t).sin();
+        let phi = beta * (2.0 * std::f32::consts::PI * f_mod * t).sin();
         iq.push(C32::new(phi.cos(), phi.sin()));
     }
     let mut dem = PmQuadratureDemod::new(fs, beta, 5_000.0);

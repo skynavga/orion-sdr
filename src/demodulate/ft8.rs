@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // src/demodulate/ft8.rs
-use num_complex::Complex32 as C32;
 use crate::modulate::ft8::{
-    Ft8Frame, FT8_DATA_SYMS, FT8_SAMPLES_PER_SYM, FT8_TONE_SPACING_HZ,
-    FT8_TONES, FT8_TOTAL_SYMS, FT8_FRAME_LEN,
+    FT8_DATA_SYMS, FT8_FRAME_LEN, FT8_SAMPLES_PER_SYM, FT8_TONE_SPACING_HZ, FT8_TONES,
+    FT8_TOTAL_SYMS, Ft8Frame,
 };
+use num_complex::Complex32 as C32;
 
 // Costas sync positions (imported via constants from modulate side)
 const FT8_SYNC_POS: [(usize, usize); 3] = [(0, 7), (36, 43), (72, 79)];
@@ -84,26 +84,26 @@ fn detect_tone(slice: &[C32], steps: &[C32; FT8_TONES]) -> u8 {
         let mut i = 0;
         let nn = n & !3;
         while i < nn {
-            acc += slice[i]   * phasor;
+            acc += slice[i] * phasor;
             let p1 = C32::new(
                 phasor.re.mul_add(w.re, -phasor.im * w.im),
-                phasor.im.mul_add(w.re,  phasor.re * w.im),
+                phasor.im.mul_add(w.re, phasor.re * w.im),
             );
-            acc += slice[i+1] * p1;
+            acc += slice[i + 1] * p1;
             let p2 = C32::new(
                 p1.re.mul_add(w.re, -p1.im * w.im),
-                p1.im.mul_add(w.re,  p1.re * w.im),
+                p1.im.mul_add(w.re, p1.re * w.im),
             );
-            acc += slice[i+2] * p2;
+            acc += slice[i + 2] * p2;
             let p3 = C32::new(
                 p2.re.mul_add(w.re, -p2.im * w.im),
-                p2.im.mul_add(w.re,  p2.re * w.im),
+                p2.im.mul_add(w.re, p2.re * w.im),
             );
-            acc += slice[i+3] * p3;
+            acc += slice[i + 3] * p3;
             // advance phasor by 4 steps
             phasor = C32::new(
                 p3.re.mul_add(w.re, -p3.im * w.im),
-                p3.im.mul_add(w.re,  p3.re * w.im),
+                p3.im.mul_add(w.re, p3.re * w.im),
             );
             i += 4;
         }
@@ -111,7 +111,7 @@ fn detect_tone(slice: &[C32], steps: &[C32; FT8_TONES]) -> u8 {
             acc += slice[i] * phasor;
             phasor = C32::new(
                 phasor.re.mul_add(w.re, -phasor.im * w.im),
-                phasor.im.mul_add(w.re,  phasor.re * w.im),
+                phasor.im.mul_add(w.re, phasor.re * w.im),
             );
             i += 1;
         }

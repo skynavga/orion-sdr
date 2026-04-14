@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // src/modulate/ft4.rs
-use num_complex::Complex32 as C32;
 use crate::dsp::Rotator;
+use num_complex::Complex32 as C32;
 
 // FT4 protocol constants
 pub const FT4_TONE_SPACING_HZ: f32 = 20.833_334; // 500/24 Hz (exact: 20000/960)
@@ -18,12 +18,7 @@ pub const FT4_TONES: usize = 4;
 pub const FT4_FRAME_LEN: usize = FT4_TOTAL_SYMS * FT4_SAMPLES_PER_SYM; // 60_480
 
 // FT4 Costas arrays (4 × 4-symbol arrays). Source: ft8_lib kFT4_Costas_pattern.
-const FT4_COSTAS: [[u8; 4]; 4] = [
-    [0, 1, 3, 2],
-    [1, 0, 2, 3],
-    [2, 3, 1, 0],
-    [3, 2, 0, 1],
-];
+const FT4_COSTAS: [[u8; 4]; 4] = [[0, 1, 3, 2], [1, 0, 2, 3], [2, 3, 1, 0], [3, 2, 0, 1]];
 // Costas block positions in the 105-symbol sequence: [start, end)
 // Ramp symbols occupy positions 0 and 104 (not included here).
 const FT4_SYNC_POS: [(usize, usize); 4] = [(1, 5), (34, 38), (67, 71), (100, 104)];
@@ -33,8 +28,12 @@ const FT4_SYNC_POS: [(usize, usize); 4] = [(1, 5), (34, 38), (67, 71), (100, 104
 pub struct Ft4Frame(pub [u8; FT4_DATA_SYMS]);
 
 impl Ft4Frame {
-    pub fn new(tones: [u8; FT4_DATA_SYMS]) -> Self { Self(tones) }
-    pub fn zeros() -> Self { Self([0u8; FT4_DATA_SYMS]) }
+    pub fn new(tones: [u8; FT4_DATA_SYMS]) -> Self {
+        Self(tones)
+    }
+    pub fn zeros() -> Self {
+        Self([0u8; FT4_DATA_SYMS])
+    }
 }
 
 /// FT4 modulator: frame-at-a-time rectangular 4-FSK.
@@ -57,7 +56,12 @@ impl Ft4Mod {
     /// * `rf_hz`   — IF upconversion frequency (0.0 = baseband)
     /// * `gain`    — output amplitude scale
     pub fn new(fs: f32, base_hz: f32, rf_hz: f32, gain: f32) -> Self {
-        Self { fs, base_hz, rf_hz, gain }
+        Self {
+            fs,
+            base_hz,
+            rf_hz,
+            gain,
+        }
     }
 
     /// Build the 105-symbol tone sequence from an Ft4Frame, inserting ramps and Costas sync.
@@ -121,22 +125,22 @@ impl Ft4Mod {
             let nn = FT4_SAMPLES_PER_SYM & !3;
             while i < nn {
                 let zr0 = z.re.mul_add(w.re, -z.im * w.im);
-                let zi0 = z.im.mul_add(w.re,  z.re * w.im);
+                let zi0 = z.im.mul_add(w.re, z.re * w.im);
                 z = C32::new(zr0, zi0);
                 out[base + i] = C32::new(g * z.re, g * z.im);
 
                 let zr1 = z.re.mul_add(w.re, -z.im * w.im);
-                let zi1 = z.im.mul_add(w.re,  z.re * w.im);
+                let zi1 = z.im.mul_add(w.re, z.re * w.im);
                 z = C32::new(zr1, zi1);
                 out[base + i + 1] = C32::new(g * z.re, g * z.im);
 
                 let zr2 = z.re.mul_add(w.re, -z.im * w.im);
-                let zi2 = z.im.mul_add(w.re,  z.re * w.im);
+                let zi2 = z.im.mul_add(w.re, z.re * w.im);
                 z = C32::new(zr2, zi2);
                 out[base + i + 2] = C32::new(g * z.re, g * z.im);
 
                 let zr3 = z.re.mul_add(w.re, -z.im * w.im);
-                let zi3 = z.im.mul_add(w.re,  z.re * w.im);
+                let zi3 = z.im.mul_add(w.re, z.re * w.im);
                 z = C32::new(zr3, zi3);
                 out[base + i + 3] = C32::new(g * z.re, g * z.im);
 
@@ -151,7 +155,7 @@ impl Ft4Mod {
             }
             while i < FT4_SAMPLES_PER_SYM {
                 let zr = z.re.mul_add(w.re, -z.im * w.im);
-                let zi = z.im.mul_add(w.re,  z.re * w.im);
+                let zi = z.im.mul_add(w.re, z.re * w.im);
                 z = C32::new(zr, zi);
                 out[base + i] = C32::new(g * z.re, g * z.im);
                 i += 1;

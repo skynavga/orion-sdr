@@ -6,12 +6,12 @@ const MAXGRID4: u16 = 32_400;
 /// The "extra" field in a standard FT8 message.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GridField {
-    Grid(String),   // 4-char Maidenhead, e.g. "FN31"
-    Report(i8),     // signal report in dB, e.g. +7 or -12
-    RReport(i8),    // same with "R" prefix
+    Grid(String), // 4-char Maidenhead, e.g. "FN31"
+    Report(i8),   // signal report in dB, e.g. +7 or -12
+    RReport(i8),  // same with "R" prefix
     RRR,
     RR73,
-    Seventy3,       // "73"
+    Seventy3, // "73"
     None,
 }
 
@@ -23,9 +23,9 @@ pub fn packgrid(extra: &str) -> u16 {
         return MAXGRID4 + 1; // No extra field
     }
     match extra {
-        "RRR"  => return MAXGRID4 + 2,
+        "RRR" => return MAXGRID4 + 2,
         "RR73" => return MAXGRID4 + 3,
-        "73"   => return MAXGRID4 + 4,
+        "73" => return MAXGRID4 + 4,
         _ => {}
     }
 
@@ -33,8 +33,10 @@ pub fn packgrid(extra: &str) -> u16 {
 
     // 4-char Maidenhead grid
     if bytes.len() == 4
-        && bytes[0] >= b'A' && bytes[0] <= b'R'
-        && bytes[1] >= b'A' && bytes[1] <= b'R'
+        && bytes[0] >= b'A'
+        && bytes[0] <= b'R'
+        && bytes[1] >= b'A'
+        && bytes[1] <= b'R'
         && bytes[2].is_ascii_digit()
         && bytes[3].is_ascii_digit()
     {
@@ -49,21 +51,23 @@ pub fn packgrid(extra: &str) -> u16 {
     if bytes[0] == b'R' && bytes.len() >= 2 {
         let dd = dd_to_int(&extra[1..]);
         let irpt = (35i32 + dd as i32) as u16;
-        (MAXGRID4 + irpt) | 0x8000// ir = 1
+        (MAXGRID4 + irpt) | 0x8000 // ir = 1
     } else {
         let dd = dd_to_int(extra);
         let irpt = (35i32 + dd as i32) as u16;
-        MAXGRID4 + irpt// ir = 0
+        MAXGRID4 + irpt // ir = 0
     }
 }
 
 fn dd_to_int(s: &str) -> i8 {
     let bytes = s.as_bytes();
-    if bytes.is_empty() { return 0; }
+    if bytes.is_empty() {
+        return 0;
+    }
     let (neg, start) = match bytes[0] {
         b'-' => (true, 1),
         b'+' => (false, 1),
-        _    => (false, 0),
+        _ => (false, 0),
     };
     let mut val: i8 = 0;
     for &b in &bytes[start..] {
@@ -82,9 +86,12 @@ pub fn unpackgrid(igrid4: u16, ir: bool) -> GridField {
     if igrid4 <= MAXGRID4 {
         // 4-char Maidenhead grid
         let mut n = igrid4;
-        let d3 = (n % 10) as u8; n /= 10;
-        let d2 = (n % 10) as u8; n /= 10;
-        let c1 = (n % 18) as u8; n /= 18;
+        let d3 = (n % 10) as u8;
+        n /= 10;
+        let d2 = (n % 10) as u8;
+        n /= 10;
+        let c1 = (n % 18) as u8;
+        n /= 18;
         let c0 = (n % 18) as u8;
         let grid = format!(
             "{}{}{}{}",
@@ -121,26 +128,26 @@ pub fn unpackgrid(igrid4: u16, ir: bool) -> GridField {
 /// Convert a `GridField` back to its string representation for display.
 pub fn gridfield_to_str(gf: &GridField) -> String {
     match gf {
-        GridField::Grid(s)    => s.clone(),
-        GridField::Report(n)  => format!("{:+03}", n),
+        GridField::Grid(s) => s.clone(),
+        GridField::Report(n) => format!("{:+03}", n),
         GridField::RReport(n) => format!("R{:+03}", n),
-        GridField::RRR        => "RRR".to_string(),
-        GridField::RR73       => "RR73".to_string(),
-        GridField::Seventy3   => "73".to_string(),
-        GridField::None       => String::new(),
+        GridField::RRR => "RRR".to_string(),
+        GridField::RR73 => "RR73".to_string(),
+        GridField::Seventy3 => "73".to_string(),
+        GridField::None => String::new(),
     }
 }
 
 /// Convert a `GridField` to (igrid4_15bits, ir) for packing.
 pub fn gridfield_to_pack(gf: &GridField) -> (u16, bool) {
     let raw = match gf {
-        GridField::Grid(s)    => packgrid(s),
-        GridField::Report(n)  => packgrid(&format!("{:+03}", n)),
+        GridField::Grid(s) => packgrid(s),
+        GridField::Report(n) => packgrid(&format!("{:+03}", n)),
         GridField::RReport(n) => packgrid(&format!("R{:+03}", n)),
-        GridField::RRR        => packgrid("RRR"),
-        GridField::RR73       => packgrid("RR73"),
-        GridField::Seventy3   => packgrid("73"),
-        GridField::None       => packgrid(""),
+        GridField::RRR => packgrid("RRR"),
+        GridField::RR73 => packgrid("RR73"),
+        GridField::Seventy3 => packgrid("73"),
+        GridField::None => packgrid(""),
     };
     let ir = (raw & 0x8000) != 0;
     let igrid4 = raw & 0x7FFF;

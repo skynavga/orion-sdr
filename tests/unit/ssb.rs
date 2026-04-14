@@ -1,11 +1,10 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
-use orion_sdr::demodulate::SsbProductDemod;
-use orion_sdr::core::Block;
-use orion_sdr::util::gen_complex_tone;
 use super::helpers::dft_power;
+use orion_sdr::core::Block;
+use orion_sdr::demodulate::SsbProductDemod;
+use orion_sdr::util::gen_complex_tone;
 
 #[test]
 fn ssb_product_demod_yields_strong_tone_and_low_dc() {
@@ -28,6 +27,8 @@ fn ssb_product_demod_yields_strong_tone_and_low_dc() {
     assert!(
         snr_db > 25.0,
         "Expected >25 dB at 1 kHz vs 700 Hz, got {:.2} dB (p_sig={}, p_off={})",
-        snr_db, p_sig, p_off
+        snr_db,
+        p_sig,
+        p_off
     );
 }

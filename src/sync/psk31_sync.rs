@@ -11,11 +11,11 @@
 //
 // Works for both BPSK31 and QPSK31 (same carrier characteristics at 31.25 baud).
 
-use num_complex::Complex32 as C32;
-use crate::modulate::psk31::{psk31_sps, PSK31_BAUD};
-use crate::sync::waterfall::compute_waterfall;
-use crate::demodulate::psk31::Bpsk31Demod;
 use crate::core::Block;
+use crate::demodulate::psk31::Bpsk31Demod;
+use crate::modulate::psk31::{PSK31_BAUD, psk31_sps};
+use crate::sync::waterfall::compute_waterfall;
+use num_complex::Complex32 as C32;
 
 /// Result of a successful PSK31 sync operation.
 pub struct Psk31SyncResult {
@@ -135,13 +135,22 @@ pub fn psk31_sync(
             // Spectral sharpness: local maximum in frequency.
             // Use ≥ to handle the case where a carrier falls between two bins
             // (both adjacent bins share energy equally).
-            let e_left  = if bin > 0            { wf.get(sym, bin - 1) } else { f32::NEG_INFINITY };
-            let e_right = if bin + 1 < num_bins { wf.get(sym, bin + 1) } else { f32::NEG_INFINITY };
+            let e_left = if bin > 0 {
+                wf.get(sym, bin - 1)
+            } else {
+                f32::NEG_INFINITY
+            };
+            let e_right = if bin + 1 < num_bins {
+                wf.get(sym, bin + 1)
+            } else {
+                f32::NEG_INFINITY
+            };
 
             // Accept via per-bin temporal threshold (short burst in silence)
             // OR via cross-bin global threshold (constant full-duration carrier).
             let is_peak = (e > per_bin_threshold || bin_median > global_threshold)
-                && e >= e_left && e >= e_right;
+                && e >= e_left
+                && e >= e_right;
 
             if is_peak {
                 if run_start.is_none() {
@@ -170,22 +179,27 @@ pub fn psk31_sync(
 
         // Flush a run that reaches end of buffer.
         if let Some(start) = run_start.take()
-            && run_len >= min_run {
-                record_candidate(
-                    &mut candidates,
-                    start,
-                    bin,
-                    base_hz,
-                    run_energy_sum / run_len as f32,
-                    iq,
-                    fs,
-                    n_bits,
-                );
-            }
+            && run_len >= min_run
+        {
+            record_candidate(
+                &mut candidates,
+                start,
+                bin,
+                base_hz,
+                run_energy_sum / run_len as f32,
+                iq,
+                fs,
+                n_bits,
+            );
+        }
     }
 
     // Sort by score descending, keep top N.
-    candidates.sort_unstable_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    candidates.sort_unstable_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     candidates.truncate(max_cand);
     candidates
 }
@@ -205,7 +219,9 @@ fn record_candidate(
     let sps = psk31_sps(fs);
     let carrier_hz = base_hz + freq_bin as f32 * PSK31_BAUD;
     let start_sample = time_sym * sps;
-    if start_sample >= iq.len() { return; }
+    if start_sample >= iq.len() {
+        return;
+    }
 
     let slice = &iq[start_sample..];
     let mut demod = Bpsk31Demod::new(fs, carrier_hz, 1.0);
@@ -224,10 +240,12 @@ fn record_candidate(
 
 /// Compute the median of an `f32` slice (mutates the slice to sort it).
 fn median_f32(v: &mut [f32]) -> f32 {
-    if v.is_empty() { return 0.0; }
+    if v.is_empty() {
+        return 0.0;
+    }
     v.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let mid = v.len() / 2;
-    if v.len() % 2 == 0 {
+    if v.len().is_multiple_of(2) {
         (v[mid - 1] + v[mid]) * 0.5
     } else {
         v[mid]
