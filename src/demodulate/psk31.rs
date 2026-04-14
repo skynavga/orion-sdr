@@ -30,15 +30,19 @@
 //   which tracks a hypothesised absolute phasor per trellis state, eliminating
 //   the ~3 dB noise-product penalty of differential detection.
 
-use num_complex::Complex32 as C32;
+use crate::codec::psk31::viterbi_decode;
 use crate::core::{Block, WorkReport};
 use crate::dsp::Rotator;
-use crate::codec::psk31::viterbi_decode;
 use crate::modulate::psk31::psk31_sps;
+use num_complex::Complex32 as C32;
 
 fn make_hann(sps: usize) -> Vec<f32> {
-    if sps == 0 { return Vec::new(); }
-    if sps == 1 { return vec![1.0]; }
+    if sps == 0 {
+        return Vec::new();
+    }
+    if sps == 1 {
+        return vec![1.0];
+    }
     let denom = (sps - 1) as f32;
     (0..sps)
         .map(|i| 0.5 - 0.5 * (std::f32::consts::PI * i as f32 / denom).cos())
@@ -61,7 +65,11 @@ pub(crate) fn hard_decide_dbpsk(d_re: f32) -> f32 {
 pub fn hard_decide_dqpsk(d_re: f32, d_im: f32) -> (f32, f32) {
     if d_re.abs() >= d_im.abs() {
         if d_re >= 0.0 { (1.0, 0.0) } else { (-1.0, 0.0) }
-    } else if d_im >= 0.0 { (0.0, 1.0) } else { (0.0, -1.0) }
+    } else if d_im >= 0.0 {
+        (0.0, 1.0)
+    } else {
+        (0.0, -1.0)
+    }
 }
 
 // ── BPSK31 demodulator ────────────────────────────────────────────────────────
@@ -73,16 +81,16 @@ pub fn hard_decide_dqpsk(d_re: f32, d_im: f32) -> (f32, f32) {
 ///   Positive → bit 1 (no phase change), negative → bit 0 (phase flip).
 #[derive(Debug, Clone)]
 pub struct Bpsk31Demod {
-    sps:         usize,
-    gain:        f32,
-    count:       usize,
-    acc:         C32,
-    hann:        Vec<f32>,
-    hann_sq_sum: f32,     // Σ h[n]²
-    prev_sym:    C32,
-    rot:         Option<Rotator>,
-    phase_acc:   f32,     // accumulated phase correction (rad)
-    loop_gain:   f32,     // first-order loop gain K
+    sps: usize,
+    gain: f32,
+    count: usize,
+    acc: C32,
+    hann: Vec<f32>,
+    hann_sq_sum: f32, // Σ h[n]²
+    prev_sym: C32,
+    rot: Option<Rotator>,
+    phase_acc: f32, // accumulated phase correction (rad)
+    loop_gain: f32, // first-order loop gain K
 }
 
 impl Bpsk31Demod {
@@ -95,8 +103,16 @@ impl Bpsk31Demod {
     /// As `new` but start integration at a given sample offset (for sync alignment).
     pub fn new_with_offset(fs: f32, rf_hz: f32, gain: f32, offset: usize) -> Self {
         let sps = psk31_sps(fs);
-        let rot = if rf_hz != 0.0 { Some(Rotator::new(-rf_hz, fs)) } else { None };
-        let count = if offset % sps == 0 { 0 } else { sps - (offset % sps) };
+        let rot = if rf_hz != 0.0 {
+            Some(Rotator::new(-rf_hz, fs))
+        } else {
+            None
+        };
+        let count = if offset.is_multiple_of(sps) {
+            0
+        } else {
+            sps - (offset % sps)
+        };
         let hann = make_hann(sps);
         let hann_sq_sum: f32 = hann.iter().map(|&h| h * h).sum();
         Self {
@@ -113,23 +129,27 @@ impl Bpsk31Demod {
         }
     }
 
-    pub fn set_gain(&mut self, g: f32) { self.gain = g; }
+    pub fn set_gain(&mut self, g: f32) {
+        self.gain = g;
+    }
 
     pub fn reset(&mut self) {
-        self.count    = 0;
-        self.acc      = C32::new(0.0, 0.0);
+        self.count = 0;
+        self.acc = C32::new(0.0, 0.0);
         self.prev_sym = C32::new(1.0, 0.0);
         self.phase_acc = 0.0;
-        if let Some(r) = &mut self.rot { r.reset_phase(); }
+        if let Some(r) = &mut self.rot {
+            r.reset_phase();
+        }
     }
 }
 
 impl Block for Bpsk31Demod {
-    type In  = C32;
+    type In = C32;
     type Out = f32;
 
     fn process(&mut self, input: &[C32], output: &mut [f32]) -> WorkReport {
-        let mut in_pos  = 0;
+        let mut in_pos = 0;
         let mut out_pos = 0;
 
         while in_pos < input.len() && out_pos < output.len() {
@@ -155,7 +175,7 @@ impl Block for Bpsk31Demod {
             if self.count == self.sps {
                 let scale = self.gain / self.hann_sq_sum;
                 let sym = C32::new(self.acc.re * scale, self.acc.im * scale);
-                self.acc   = C32::new(0.0, 0.0);
+                self.acc = C32::new(0.0, 0.0);
                 self.count = 0;
 
                 // Phase correction: rotate sym by -phase_acc.
@@ -170,13 +190,21 @@ impl Block for Bpsk31Demod {
 
                 // Decision-directed phase error.
                 let dec_re = hard_decide_dbpsk(d_re);
-                let d_im   = sym_im * self.prev_sym.re - sym_re * self.prev_sym.im;
-                let cross_im  = d_im * dec_re;   // dec_im = 0
-                let mag_sq    = d_re * d_re + d_im * d_im;
-                let phase_err = if mag_sq > 1e-6 { cross_im / mag_sq.sqrt() } else { 0.0 };
+                let d_im = sym_im * self.prev_sym.re - sym_re * self.prev_sym.im;
+                let cross_im = d_im * dec_re; // dec_im = 0
+                let mag_sq = d_re * d_re + d_im * d_im;
+                let phase_err = if mag_sq > 1e-6 {
+                    cross_im / mag_sq.sqrt()
+                } else {
+                    0.0
+                };
                 self.phase_acc += self.loop_gain * phase_err;
-                if self.phase_acc >  std::f32::consts::PI { self.phase_acc -= std::f32::consts::TAU; }
-                if self.phase_acc < -std::f32::consts::PI { self.phase_acc += std::f32::consts::TAU; }
+                if self.phase_acc > std::f32::consts::PI {
+                    self.phase_acc -= std::f32::consts::TAU;
+                }
+                if self.phase_acc < -std::f32::consts::PI {
+                    self.phase_acc += std::f32::consts::TAU;
+                }
 
                 self.prev_sym = C32::new(sym_re, sym_im);
             }
@@ -184,7 +212,10 @@ impl Block for Bpsk31Demod {
             in_pos += 1;
         }
 
-        WorkReport { in_read: in_pos, out_written: out_pos }
+        WorkReport {
+            in_read: in_pos,
+            out_written: out_pos,
+        }
     }
 }
 
@@ -197,11 +228,13 @@ impl Block for Bpsk31Demod {
 pub struct Bpsk31Decider;
 
 impl Bpsk31Decider {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 impl Block for Bpsk31Decider {
-    type In  = f32;
+    type In = f32;
     type Out = u8;
 
     #[inline(always)]
@@ -210,17 +243,20 @@ impl Block for Bpsk31Decider {
         let mut i = 0;
         let nn = n & !3;
         while i < nn {
-            output[i]   = u8::from(input[i]   >= 0.0);
-            output[i+1] = u8::from(input[i+1] >= 0.0);
-            output[i+2] = u8::from(input[i+2] >= 0.0);
-            output[i+3] = u8::from(input[i+3] >= 0.0);
+            output[i] = u8::from(input[i] >= 0.0);
+            output[i + 1] = u8::from(input[i + 1] >= 0.0);
+            output[i + 2] = u8::from(input[i + 2] >= 0.0);
+            output[i + 3] = u8::from(input[i + 3] >= 0.0);
             i += 4;
         }
         while i < n {
             output[i] = u8::from(input[i] >= 0.0);
             i += 1;
         }
-        WorkReport { in_read: n, out_written: n }
+        WorkReport {
+            in_read: n,
+            out_written: n,
+        }
     }
 }
 
@@ -233,22 +269,26 @@ impl Block for Bpsk31Decider {
 /// absolute phasor estimate, fed to the coherent Viterbi MLSE decoder.
 #[derive(Debug, Clone)]
 pub struct Qpsk31Demod {
-    sps:         usize,
-    gain:        f32,
-    count:       usize,
-    acc:         C32,
-    hann:        Vec<f32>,
+    sps: usize,
+    gain: f32,
+    count: usize,
+    acc: C32,
+    hann: Vec<f32>,
     hann_sq_sum: f32,
-    prev_sym:    C32,
-    rot:         Option<Rotator>,
-    phase_acc:   f32,     // accumulated phase correction (rad)
-    loop_gain:   f32,     // first-order loop gain K
+    prev_sym: C32,
+    rot: Option<Rotator>,
+    phase_acc: f32, // accumulated phase correction (rad)
+    loop_gain: f32, // first-order loop gain K
 }
 
 impl Qpsk31Demod {
     pub fn new(fs: f32, rf_hz: f32, gain: f32) -> Self {
         let sps = psk31_sps(fs);
-        let rot = if rf_hz != 0.0 { Some(Rotator::new(-rf_hz, fs)) } else { None };
+        let rot = if rf_hz != 0.0 {
+            Some(Rotator::new(-rf_hz, fs))
+        } else {
+            None
+        };
         let hann = make_hann(sps);
         let hann_sq_sum: f32 = hann.iter().map(|&h| h * h).sum();
         Self {
@@ -265,25 +305,29 @@ impl Qpsk31Demod {
         }
     }
 
-    pub fn set_gain(&mut self, g: f32) { self.gain = g; }
+    pub fn set_gain(&mut self, g: f32) {
+        self.gain = g;
+    }
 
     pub fn reset(&mut self) {
-        self.count    = 0;
-        self.acc      = C32::new(0.0, 0.0);
+        self.count = 0;
+        self.acc = C32::new(0.0, 0.0);
         self.prev_sym = C32::new(1.0, 0.0);
         self.phase_acc = 0.0;
-        if let Some(r) = &mut self.rot { r.reset_phase(); }
+        if let Some(r) = &mut self.rot {
+            r.reset_phase();
+        }
     }
 }
 
 impl Block for Qpsk31Demod {
-    type In  = C32;
+    type In = C32;
     type Out = f32;
 
     /// Output: pairs of soft values `[Re(d), Im(d)]` per symbol, where
     /// `d = sym × conj(prev_sym)` is the differential detection product.
     fn process(&mut self, input: &[C32], output: &mut [f32]) -> WorkReport {
-        let mut in_pos  = 0;
+        let mut in_pos = 0;
         let mut out_pos = 0;
 
         while in_pos < input.len() && out_pos + 1 < output.len() {
@@ -308,7 +352,7 @@ impl Block for Qpsk31Demod {
             if self.count == self.sps {
                 let scale = self.gain / self.hann_sq_sum;
                 let sym = C32::new(self.acc.re * scale, self.acc.im * scale);
-                self.acc   = C32::new(0.0, 0.0);
+                self.acc = C32::new(0.0, 0.0);
                 self.count = 0;
 
                 // Phase correction: rotate sym by -phase_acc.
@@ -319,25 +363,36 @@ impl Block for Qpsk31Demod {
                 // Differential detection: d = sym_c × conj(prev_sym).
                 let d_re = sym_re * self.prev_sym.re + sym_im * self.prev_sym.im;
                 let d_im = sym_im * self.prev_sym.re - sym_re * self.prev_sym.im;
-                output[out_pos]   = d_re;
-                output[out_pos+1] = d_im;
+                output[out_pos] = d_re;
+                output[out_pos + 1] = d_im;
                 out_pos += 2;
 
                 // Decision-directed phase error on the differential product.
                 let (dec_re, dec_im) = hard_decide_dqpsk(d_re, d_im);
-                let cross_im  = d_im * dec_re - d_re * dec_im;
-                let mag_sq    = d_re * d_re + d_im * d_im;
-                let phase_err = if mag_sq > 1e-6 { cross_im / mag_sq.sqrt() } else { 0.0 };
+                let cross_im = d_im * dec_re - d_re * dec_im;
+                let mag_sq = d_re * d_re + d_im * d_im;
+                let phase_err = if mag_sq > 1e-6 {
+                    cross_im / mag_sq.sqrt()
+                } else {
+                    0.0
+                };
                 self.phase_acc += self.loop_gain * phase_err;
-                if self.phase_acc >  std::f32::consts::PI { self.phase_acc -= std::f32::consts::TAU; }
-                if self.phase_acc < -std::f32::consts::PI { self.phase_acc += std::f32::consts::TAU; }
+                if self.phase_acc > std::f32::consts::PI {
+                    self.phase_acc -= std::f32::consts::TAU;
+                }
+                if self.phase_acc < -std::f32::consts::PI {
+                    self.phase_acc += std::f32::consts::TAU;
+                }
 
                 // Keep prev_sym as phase-corrected absolute phasor for DFM cancellation.
                 self.prev_sym = C32::new(sym_re, sym_im);
             }
         }
 
-        WorkReport { in_read: in_pos, out_written: out_pos }
+        WorkReport {
+            in_read: in_pos,
+            out_written: out_pos,
+        }
     }
 }
 
@@ -358,7 +413,9 @@ pub struct Qpsk31Decider {
 }
 
 impl Qpsk31Decider {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Run Viterbi on the accumulated differential symbol estimates and append
     /// decoded bits to `output`.
@@ -372,11 +429,14 @@ impl Qpsk31Decider {
 }
 
 impl Block for Qpsk31Decider {
-    type In  = f32;
+    type In = f32;
     type Out = u8;
 
     fn process(&mut self, input: &[f32], _output: &mut [u8]) -> WorkReport {
         self.soft_buf.extend_from_slice(input);
-        WorkReport { in_read: input.len(), out_written: 0 }
+        WorkReport {
+            in_read: input.len(),
+            out_written: 0,
+        }
     }
 }

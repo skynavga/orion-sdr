@@ -11,7 +11,6 @@ pub struct FirLowpass {
 }
 
 impl FirLowpass {
-
     /// Minimal LPF design (sinc + Hann).
     pub fn design(fs: f32, pass_hz: f32, trans_hz: f32) -> Self {
         let pass_hz = pass_hz.max(10.0);
@@ -28,12 +27,19 @@ impl FirLowpass {
                 let x = core::f32::consts::PI * m as f32;
                 (2.0 * fc) * (2.0 * core::f32::consts::PI * fc * m as f32).sin() / x
             };
-            let w = 0.5 - 0.5 * (2.0 * core::f32::consts::PI * n as f32 / (ntaps as f32 - 1.0)).cos();
+            let w =
+                0.5 - 0.5 * (2.0 * core::f32::consts::PI * n as f32 / (ntaps as f32 - 1.0)).cos();
             *tap = sinc * w;
         }
         let s: f32 = taps.iter().sum();
-        for t in &mut taps { *t /= s; }
-        Self { taps, delay: vec![0.0; ntaps], idx: 0 }
+        for t in &mut taps {
+            *t /= s;
+        }
+        Self {
+            taps,
+            delay: vec![0.0; ntaps],
+            idx: 0,
+        }
     }
 
     #[inline]
@@ -57,7 +63,6 @@ impl FirLowpass {
         }
         acc
     }
-
 }
 
 // ── Half-cosine matched filter ────────────────────────────────────────────────
@@ -79,10 +84,10 @@ impl FirLowpass {
 /// matching the pattern used by `FirDecimator`.
 #[derive(Debug, Clone)]
 pub struct HalfCosineMf {
-    taps:     Vec<f32>,
+    taps: Vec<f32>,
     delay_re: Vec<f32>,
     delay_im: Vec<f32>,
-    idx:      usize,
+    idx: usize,
 }
 
 impl HalfCosineMf {
@@ -99,7 +104,11 @@ impl HalfCosineMf {
         };
         // Normalise to unit energy.
         let energy: f32 = hann.iter().map(|&h| h * h).sum();
-        let scale = if energy > 0.0 { energy.sqrt().recip() } else { 1.0 };
+        let scale = if energy > 0.0 {
+            energy.sqrt().recip()
+        } else {
+            1.0
+        };
         let taps: Vec<f32> = hann.iter().map(|&h| h * scale).collect();
         let len = taps.len();
         Self {

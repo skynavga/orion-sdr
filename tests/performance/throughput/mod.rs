@@ -1,9 +1,8 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
-use std::time::Instant;
 use std::hint::black_box;
+use std::time::Instant;
 
 pub fn real_tone(fs: f32, f_hz: f32, n: usize, amp: f32) -> Vec<f32> {
     (0..n)
@@ -24,7 +23,11 @@ pub fn minsps_from_env(default_msps: f32) -> f32 {
         .unwrap_or(default_msps)
 }
 
-pub fn measure_throughput(mut f: impl FnMut() -> usize, samples_per_pass: usize, repeats: usize) -> (f32, f64) {
+pub fn measure_throughput(
+    mut f: impl FnMut() -> usize,
+    samples_per_pass: usize,
+    repeats: usize,
+) -> (f32, f64) {
     let start = Instant::now();
     let mut sink = 0.0f64;
     for _ in 0..repeats {

@@ -1,14 +1,13 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
-use orion_sdr::modulate::{Ft4Mod, Ft4Frame};
-use orion_sdr::demodulate::Ft4Demod;
-use orion_sdr::modulate::ft4::{FT4_DATA_SYMS, FT4_TONES};
-use orion_sdr::codec::ft4::{Ft4Codec, Ft4Bits};
-use orion_sdr::message::{CallsignHashTable, GridField, Ft8Message, pack77, unpack77};
-use orion_sdr::sync::ft4_sync;
 use super::helpers::make_ft4_test_buffer;
+use orion_sdr::codec::ft4::{Ft4Bits, Ft4Codec};
+use orion_sdr::demodulate::Ft4Demod;
+use orion_sdr::message::{CallsignHashTable, Ft8Message, GridField, pack77, unpack77};
+use orion_sdr::modulate::ft4::{FT4_DATA_SYMS, FT4_TONES};
+use orion_sdr::modulate::{Ft4Frame, Ft4Mod};
+use orion_sdr::sync::ft4_sync;
 
 #[test]
 fn roundtrip_ft4_noiseless() {
@@ -48,8 +47,7 @@ fn roundtrip_ft4_codec_noiseless() {
     let rx = Ft4Demod::new(12_000.0, 1_000.0);
     let frame_out = rx.demodulate(&iq).expect("FT4 demodulate returned None");
 
-    let decoded = Ft4Codec::decode_hard(&frame_out)
-        .expect("FT4 codec decode failed (noiseless)");
+    let decoded = Ft4Codec::decode_hard(&frame_out).expect("FT4 codec decode failed (noiseless)");
     assert_eq!(payload, decoded, "FT4 full-stack codec roundtrip failed");
 }
 
@@ -80,9 +78,12 @@ fn sync_ft4_noiseless_aligned() {
 
     assert!(!results.is_empty(), "FT4 sync returned no candidates");
     let best = &results[0];
-    let decoded = Ft4Codec::decode_soft(&best.llr)
-        .expect("FT4 sync+decode_soft failed (noiseless, aligned)");
-    assert_eq!(payload, decoded, "FT4 sync noiseless aligned: payload mismatch");
+    let decoded =
+        Ft4Codec::decode_soft(&best.llr).expect("FT4 sync+decode_soft failed (noiseless, aligned)");
+    assert_eq!(
+        payload, decoded,
+        "FT4 sync noiseless aligned: payload mismatch"
+    );
 }
 
 #[test]
@@ -103,11 +104,17 @@ fn sync_ft4_noiseless_time_offset() {
         5,
     );
 
-    assert!(!results.is_empty(), "FT4 sync (time offset) returned no candidates");
+    assert!(
+        !results.is_empty(),
+        "FT4 sync (time offset) returned no candidates"
+    );
     let best = &results[0];
     let decoded = Ft4Codec::decode_soft(&best.llr)
         .expect("FT4 sync+decode_soft failed (noiseless, time offset)");
-    assert_eq!(payload, decoded, "FT4 sync noiseless time-offset: payload mismatch");
+    assert_eq!(
+        payload, decoded,
+        "FT4 sync noiseless time-offset: payload mismatch"
+    );
 }
 
 // -- SNR sensitivity regression -----------------------------------------------
@@ -126,9 +133,13 @@ fn ft4_decodes_at_minus_11db_snr_2500hz() {
     let (buf, payload) = make_ft4_test_buffer(0, base_hz, noise_power);
 
     let results = ft4_sync(
-        &buf, SNR_FS,
-        base_hz - 20.833, base_hz + 100.0 + 20.833,
-        0, 0, 5,
+        &buf,
+        SNR_FS,
+        base_hz - 20.833,
+        base_hz + 100.0 + 20.833,
+        0,
+        0,
+        5,
     );
 
     assert!(
@@ -140,7 +151,8 @@ fn ft4_decodes_at_minus_11db_snr_2500hz() {
     assert!(
         decoded == Some(payload),
         "FT4 decode_soft failed at -11 dB SNR/2500 Hz (noise_power={:.5}, got={:?})",
-        noise_power, decoded
+        noise_power,
+        decoded
     );
 }
 

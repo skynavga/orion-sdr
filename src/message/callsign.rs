@@ -1,8 +1,8 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::tables::{Table, charn, nchar};
 use std::collections::HashMap;
-use super::tables::{nchar, charn, Table};
 
 pub const NTOKENS: u32 = 2_063_592;
 pub const MAX22: u32 = 4_194_304; // 2^22
@@ -14,7 +14,9 @@ pub struct CallsignHashTable {
 
 impl CallsignHashTable {
     pub fn new() -> Self {
-        Self { inner: HashMap::new() }
+        Self {
+            inner: HashMap::new(),
+        }
     }
 
     /// Compute the 22-bit hash of a callsign and store it.
@@ -47,7 +49,9 @@ impl CallsignHashTable {
 }
 
 impl Default for CallsignHashTable {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Compute the 22-bit hash of a callsign (base-38 encode then multiply-shift).
@@ -55,7 +59,9 @@ pub fn hash22(call: &str) -> u32 {
     let mut n58: u64 = 0;
     let mut i = 0;
     for c in call.chars() {
-        if i >= 11 { break; }
+        if i >= 11 {
+            break;
+        }
         let j = nchar(c, Table::AlphanumSpaceSlash).unwrap_or(0) as u64;
         n58 = 38 * n58 + j;
         i += 1;
@@ -74,7 +80,9 @@ pub fn hash22(call: &str) -> u32 {
 /// Returns `Some(n28)` in [0, MAX22) on success.
 pub fn pack_basecall(call: &str) -> Option<u32> {
     let len = call.len();
-    if len <= 2 { return None; }
+    if len <= 2 {
+        return None;
+    }
 
     let bytes = call.as_bytes();
     let mut c6 = [b' '; 6];
@@ -118,11 +126,16 @@ pub fn pack_basecall(call: &str) -> Option<u32> {
 /// Unpack a standard basecall from its packed integer (result of `pack_basecall`).
 fn unpack_basecall(n: u32) -> Option<String> {
     let mut n = n;
-    let c5 = charn((n % 27) as u8, Table::LettersSpace); n /= 27;
-    let c4 = charn((n % 27) as u8, Table::LettersSpace); n /= 27;
-    let c3 = charn((n % 27) as u8, Table::LettersSpace); n /= 27;
-    let c2 = charn((n % 10) as u8, Table::Numeric);       n /= 10;
-    let c1 = charn((n % 36) as u8, Table::Alphanum);      n /= 36;
+    let c5 = charn((n % 27) as u8, Table::LettersSpace);
+    n /= 27;
+    let c4 = charn((n % 27) as u8, Table::LettersSpace);
+    n /= 27;
+    let c3 = charn((n % 27) as u8, Table::LettersSpace);
+    n /= 27;
+    let c2 = charn((n % 10) as u8, Table::Numeric);
+    n /= 10;
+    let c1 = charn((n % 36) as u8, Table::Alphanum);
+    n /= 36;
     let c0 = charn((n % 37) as u8, Table::AlphanumSpace);
 
     // Build raw 6-char string, trim spaces
@@ -130,18 +143,30 @@ fn unpack_basecall(n: u32) -> Option<String> {
     let trimmed = raw.trim_matches(' ');
 
     // Apply reverse work-arounds
-    if trimmed.starts_with("3D0") && trimmed.len() > 3 && !trimmed.chars().nth(3).map(|c| c == ' ').unwrap_or(true) {
+    if trimmed.starts_with("3D0")
+        && trimmed.len() > 3
+        && !trimmed.chars().nth(3).map(|c| c == ' ').unwrap_or(true)
+    {
         // 3D0XYZ -> 3DA0XYZ
         let mut s = String::from("3DA0");
         s.push_str(&trimmed[3..]);
         Some(s)
-    } else if trimmed.starts_with('Q') && trimmed.len() > 1 && trimmed.chars().nth(1).map(|c| c.is_ascii_uppercase()).unwrap_or(false) {
+    } else if trimmed.starts_with('Q')
+        && trimmed.len() > 1
+        && trimmed
+            .chars()
+            .nth(1)
+            .map(|c| c.is_ascii_uppercase())
+            .unwrap_or(false)
+    {
         // QA0XYZ -> 3XA0XYZ
         let mut s = String::from("3X");
         s.push_str(&trimmed[1..]);
         Some(s)
     } else {
-        if trimmed.len() < 3 { return None; }
+        if trimmed.len() < 3 {
+            return None;
+        }
         Some(trimmed.to_string())
     }
 }
@@ -153,9 +178,15 @@ pub fn pack28(call: &str, ht: &mut CallsignHashTable, ip: &mut bool) -> Option<u
     *ip = false;
 
     // Special tokens
-    if call == "DE"  { return Some(0); }
-    if call == "QRZ" { return Some(1); }
-    if call == "CQ"  { return Some(2); }
+    if call == "DE" {
+        return Some(0);
+    }
+    if call == "QRZ" {
+        return Some(1);
+    }
+    if call == "CQ" {
+        return Some(2);
+    }
 
     let len = call.len();
 
@@ -172,7 +203,9 @@ pub fn pack28(call: &str, ht: &mut CallsignHashTable, ip: &mut bool) -> Option<u
         (call, false)
     };
 
-    if has_suffix { *ip = true; }
+    if has_suffix {
+        *ip = true;
+    }
 
     // Try standard basecall
     if let Some(n28) = pack_basecall(base) {
@@ -182,7 +215,9 @@ pub fn pack28(call: &str, ht: &mut CallsignHashTable, ip: &mut bool) -> Option<u
 
     // Non-standard: 3–11 chars, ALPHANUM_SPACE_SLASH
     if (3..=11).contains(&len) {
-        let all_valid = call.chars().all(|c| nchar(c, Table::AlphanumSpaceSlash).is_some());
+        let all_valid = call
+            .chars()
+            .all(|c| nchar(c, Table::AlphanumSpaceSlash).is_some());
         if all_valid {
             *ip = false;
             let (n22, _, _) = ht.save(call);
@@ -197,7 +232,14 @@ pub fn pack28(call: &str, ht: &mut CallsignHashTable, ip: &mut bool) -> Option<u
 pub fn unpack28(n28: u32, ip: bool, i3: u8, ht: &CallsignHashTable) -> Option<String> {
     if n28 < NTOKENS {
         if n28 <= 2 {
-            return Some(match n28 { 0 => "DE", 1 => "QRZ", _ => "CQ" }.to_string());
+            return Some(
+                match n28 {
+                    0 => "DE",
+                    1 => "QRZ",
+                    _ => "CQ",
+                }
+                .to_string(),
+            );
         }
         if n28 <= 1002 {
             // CQ NNN
@@ -222,7 +264,11 @@ pub fn unpack28(n28: u32, ip: bool, i3: u8, ht: &CallsignHashTable) -> Option<St
     if n28 < MAX22 {
         // 22-bit hash lookup
         let found = ht.lookup_n22(n28);
-        return Some(found.map(|s| format!("<{}>", s)).unwrap_or_else(|| "<...>".to_string()));
+        return Some(
+            found
+                .map(|s| format!("<{}>", s))
+                .unwrap_or_else(|| "<...>".to_string()),
+        );
     }
 
     // Standard callsign
@@ -249,7 +295,9 @@ fn parse_cq_modifier(s: &str) -> Option<u32> {
     let mut m: u32 = 0;
 
     for c in rest.chars() {
-        if c == ' ' { break; }
+        if c == ' ' {
+            break;
+        }
         if c.is_ascii_digit() {
             nnum += 1;
         } else if c.is_ascii_uppercase() {

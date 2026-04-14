@@ -1,9 +1,9 @@
 // Copyright (c) 2025-2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use num_complex::Complex32 as C32;
-use crate::core::{Block, WorkReport};
 use super::FirLowpass;
+use crate::core::{Block, WorkReport};
+use num_complex::Complex32 as C32;
 
 /// FIR-based decimator for complex IQ.
 #[derive(Debug, Clone)]
@@ -25,10 +25,14 @@ impl FirDecimator {
         let lp_i = FirLowpass::design(fs, cutoff_hz, trans_hz);
         let lp_q = FirLowpass::design(fs, cutoff_hz, trans_hz);
         Self {
-            fs, m: m.max(1),
-            lp_i, lp_q,
-            ri: Vec::new(), rq: Vec::new(),
-            yi: Vec::new(), yq: Vec::new(),
+            fs,
+            m: m.max(1),
+            lp_i,
+            lp_q,
+            ri: Vec::new(),
+            rq: Vec::new(),
+            yi: Vec::new(),
+            yq: Vec::new(),
         }
     }
 }
@@ -39,8 +43,14 @@ impl Block for FirDecimator {
 
     fn process(&mut self, input: &[Self::In], output: &mut [Self::Out]) -> WorkReport {
         let n = input.len();
-        if self.ri.len() < n { self.ri.resize(n, 0.0); self.rq.resize(n, 0.0); }
-        if self.yi.len() < n { self.yi.resize(n, 0.0); self.yq.resize(n, 0.0); }
+        if self.ri.len() < n {
+            self.ri.resize(n, 0.0);
+            self.rq.resize(n, 0.0);
+        }
+        if self.yi.len() < n {
+            self.yi.resize(n, 0.0);
+            self.yq.resize(n, 0.0);
+        }
 
         // split I/Q
         for (k, s) in input.iter().enumerate().take(n) {
@@ -59,6 +69,9 @@ impl Block for FirDecimator {
             let k = j * m;
             *out = C32::new(self.yi[k], self.yq[k]);
         }
-        WorkReport { in_read: n, out_written: n_write }
+        WorkReport {
+            in_read: n,
+            out_written: n_write,
+        }
     }
 }

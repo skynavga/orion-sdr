@@ -1,10 +1,7 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use orion_sdr::util::{
-    power_spectrum, spectrum_snr_db, spectrum_bw_hz,
-    tone, SIGNAL_THRESHOLD,
-};
+use orion_sdr::util::{SIGNAL_THRESHOLD, power_spectrum, spectrum_bw_hz, spectrum_snr_db, tone};
 
 const FS: f32 = 48_000.0;
 
@@ -24,13 +21,18 @@ fn power_spectrum_peak_at_tone_frequency() {
     let samples = tone(FS, freq, 4096, 1.0);
     let (bins, bin_hz) = power_spectrum(&samples, FS);
     let expected_bin = (freq / bin_hz).round() as usize;
-    let peak_bin = bins.iter()
+    let peak_bin = bins
+        .iter()
         .enumerate()
         .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
         .map(|(i, _)| i)
         .unwrap();
-    assert!((peak_bin as isize - expected_bin as isize).unsigned_abs() <= 1,
-        "peak at bin {} but expected ~{}", peak_bin, expected_bin);
+    assert!(
+        (peak_bin as isize - expected_bin as isize).unsigned_abs() <= 1,
+        "peak at bin {} but expected ~{}",
+        peak_bin,
+        expected_bin
+    );
 }
 
 #[test]
@@ -53,12 +55,14 @@ fn snr_high_for_clean_tone() {
 #[test]
 fn snr_low_for_noise() {
     let mut rng: u64 = 0x1234_5678_DEAD_BEEF;
-    let samples: Vec<f32> = (0..4096).map(|_| {
-        rng ^= rng << 13;
-        rng ^= rng >> 7;
-        rng ^= rng << 17;
-        (rng >> 11) as f32 * (1.0 / (1u64 << 53) as f32) * 2.0 - 1.0
-    }).collect();
+    let samples: Vec<f32> = (0..4096)
+        .map(|_| {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            (rng >> 11) as f32 * (1.0 / (1u64 << 53) as f32) * 2.0 - 1.0
+        })
+        .collect();
     let snr = spectrum_snr_db(&samples, FS, 3000.0);
     assert!(snr < 15.0, "expected low SNR for noise, got {snr}");
 }

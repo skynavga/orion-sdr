@@ -1,12 +1,11 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
-use orion_sdr::modulate::psk31::{Bpsk31Mod, Qpsk31Mod, psk31_sps};
-use orion_sdr::demodulate::psk31::{Bpsk31Demod, Bpsk31Decider, Qpsk31Demod, Qpsk31Decider};
+use super::{measure_throughput, minsps_from_env};
 use orion_sdr::core::Block;
+use orion_sdr::demodulate::psk31::{Bpsk31Decider, Bpsk31Demod, Qpsk31Decider, Qpsk31Demod};
+use orion_sdr::modulate::psk31::{Bpsk31Mod, Qpsk31Mod, psk31_sps};
 use std::hint::black_box;
-use super::{minsps_from_env, measure_throughput};
 
 #[test]
 #[cfg(feature = "throughput")]
@@ -37,7 +36,12 @@ fn throughput_bpsk31_roundtrip() {
 
     println!("[BPSK31] {:.2} Msps in {:.3}s", msps, dt);
     let min_msps = minsps_from_env(0.5);
-    assert!(msps >= min_msps, "BPSK31 throughput {:.2} Msps < min {:.2} Msps", msps, min_msps);
+    assert!(
+        msps >= min_msps,
+        "BPSK31 throughput {:.2} Msps < min {:.2} Msps",
+        msps,
+        min_msps
+    );
 }
 
 #[test]
@@ -71,5 +75,10 @@ fn throughput_qpsk31_roundtrip() {
 
     println!("[QPSK31] {:.2} Msps in {:.3}s", msps, dt);
     let min_msps = minsps_from_env(0.3);
-    assert!(msps >= min_msps, "QPSK31 throughput {:.2} Msps < min {:.2} Msps", msps, min_msps);
+    assert!(
+        msps >= min_msps,
+        "QPSK31 throughput {:.2} Msps < min {:.2} Msps",
+        msps,
+        min_msps
+    );
 }

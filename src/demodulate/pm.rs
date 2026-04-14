@@ -1,19 +1,19 @@
 // Copyright (c) 2025-2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use num_complex::Complex32 as C32;
 use crate::core::{Block, WorkReport};
 use crate::dsp::LpCascade;
 use crate::util::atan2_approx;
- 
+use num_complex::Complex32 as C32;
+
 /// PM demodulator via quadrature (phase difference) + post LPF
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PmQuadratureDemod {
-    fs: f32,           // sample rate (kept for future use; ok if unused)
-    k: f32,            // gain/sensitivity applied to phase difference
+    fs: f32, // sample rate (kept for future use; ok if unused)
+    k: f32,  // gain/sensitivity applied to phase difference
     post_lp: LpCascade,
-    prev: C32,         // previous complex sample for quadrature detector
+    prev: C32, // previous complex sample for quadrature detector
 }
 
 impl PmQuadratureDemod {
@@ -32,14 +32,17 @@ impl PmQuadratureDemod {
 }
 
 impl Block for PmQuadratureDemod {
-    type In  = C32;
+    type In = C32;
     type Out = f32;
 
     #[inline(always)]
     fn process(&mut self, input: &[Self::In], output: &mut [Self::Out]) -> WorkReport {
         let n = input.len().min(output.len());
         if n == 0 {
-            return WorkReport { in_read: 0, out_written: 0 };
+            return WorkReport {
+                in_read: 0,
+                out_written: 0,
+            };
         }
 
         // 1) Quadrature discriminator: angle( z[n] * conj(z[n-1]) )
@@ -56,6 +59,9 @@ impl Block for PmQuadratureDemod {
         }
         self.prev = prev;
 
-        WorkReport { in_read: n, out_written: n }
+        WorkReport {
+            in_read: n,
+            out_written: n,
+        }
     }
 }

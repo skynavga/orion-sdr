@@ -1,13 +1,11 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use orion_sdr::message::{
-    CallsignHashTable, GridField, Ft8Message, NonstdExtra, pack77, unpack77,
-};
 use orion_sdr::message::callsign::{pack_basecall, pack28, unpack28};
+use orion_sdr::message::free_text::{decode_free_text, encode_free_text};
 use orion_sdr::message::grid::{packgrid, unpackgrid};
-use orion_sdr::message::free_text::{encode_free_text, decode_free_text};
-use orion_sdr::message::tables::{nchar, charn, Table};
+use orion_sdr::message::tables::{Table, charn, nchar};
+use orion_sdr::message::{CallsignHashTable, Ft8Message, GridField, NonstdExtra, pack77, unpack77};
 
 // --------------------------------------------------------------------------
 // Callsign tests
@@ -76,15 +74,20 @@ fn packgrid_grid_roundtrip() {
     for g in &["FN31", "AA00", "RR99"] {
         let raw = packgrid(g);
         let gf = unpackgrid(raw & 0x7FFF, (raw & 0x8000) != 0);
-        assert_eq!(gf, GridField::Grid(g.to_string()), "Roundtrip failed for {}", g);
+        assert_eq!(
+            gf,
+            GridField::Grid(g.to_string()),
+            "Roundtrip failed for {}",
+            g
+        );
     }
 }
 
 #[test]
 fn packgrid_report_roundtrip() {
     let cases: &[(&str, GridField)] = &[
-        ("+07",  GridField::Report(7)),
-        ("-12",  GridField::Report(-12)),
+        ("+07", GridField::Report(7)),
+        ("-12", GridField::Report(-12)),
         ("R-05", GridField::RReport(-5)),
     ];
     for (s, expected) in cases {
@@ -114,10 +117,15 @@ fn packgrid_tokens() {
 fn free_text_roundtrip() {
     let cases = &["CQ DX", "HELLO WORLD", "TNX 73 GL", "73", ""];
     for &text in cases {
-        let encoded = encode_free_text(text)
-            .unwrap_or_else(|| panic!("encode failed for '{}'", text));
+        let encoded =
+            encode_free_text(text).unwrap_or_else(|| panic!("encode failed for '{}'", text));
         let decoded = decode_free_text(&encoded);
-        assert_eq!(decoded, text.trim_end(), "Free text roundtrip failed for '{}'", text);
+        assert_eq!(
+            decoded,
+            text.trim_end(),
+            "Free text roundtrip failed for '{}'",
+            text
+        );
     }
 }
 
@@ -244,9 +252,16 @@ fn pack77_type4_roundtrip() {
     let decoded = unpack77(&payload, &ht);
     // The decoded call_to should be wrapped in < > since it was looked up from hash
     match decoded {
-        Ft8Message::NonStd { call_to, call_de, extra } => {
-            assert!(call_to.contains("W9XYZ") || call_to == "<W9XYZ>",
-                "Expected W9XYZ in call_to, got {}", call_to);
+        Ft8Message::NonStd {
+            call_to,
+            call_de,
+            extra,
+        } => {
+            assert!(
+                call_to.contains("W9XYZ") || call_to == "<W9XYZ>",
+                "Expected W9XYZ in call_to, got {}",
+                call_to
+            );
             assert_eq!(call_de, "KD9ABC/R");
             assert_eq!(extra, NonstdExtra::RRR);
         }

@@ -1,7 +1,7 @@
 [alias]
-test-unit       = "test --release tests::unit"
-test-roundtrip  = "test --release tests::roundtrip"
-test-throughput = "test --release --features throughput tests::performance::throughput -- --nocapture --test-threads=1"
+test-unit       = "test --release unit"
+test-roundtrip  = "test --release roundtrip"
+test-throughput = "test --release --features throughput throughput -- --nocapture --test-threads=1"
 
 # Platform-specific build flags
 

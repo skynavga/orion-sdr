@@ -73,15 +73,31 @@ pub fn costas_score(
 
             // Frequency neighbour penalty: max energy in adjacent bins
             let e_freq = {
-                let left  = if bin > 0 { wf.get(sym, bin - 1) } else { f32::NEG_INFINITY };
-                let right = if bin + 1 < wf.num_tones { wf.get(sym, bin + 1) } else { f32::NEG_INFINITY };
+                let left = if bin > 0 {
+                    wf.get(sym, bin - 1)
+                } else {
+                    f32::NEG_INFINITY
+                };
+                let right = if bin + 1 < wf.num_tones {
+                    wf.get(sym, bin + 1)
+                } else {
+                    f32::NEG_INFINITY
+                };
                 left.max(right)
             };
 
             // Time neighbour penalty: max energy in adjacent symbols (same bin)
             let e_time = {
-                let prev = if sym > 0 { wf.get(sym - 1, bin) } else { f32::NEG_INFINITY };
-                let next = if sym + 1 < wf.num_syms { wf.get(sym + 1, bin) } else { f32::NEG_INFINITY };
+                let prev = if sym > 0 {
+                    wf.get(sym - 1, bin)
+                } else {
+                    f32::NEG_INFINITY
+                };
+                let next = if sym + 1 < wf.num_syms {
+                    wf.get(sym + 1, bin)
+                } else {
+                    f32::NEG_INFINITY
+                };
                 prev.max(next)
             };
 
@@ -131,13 +147,21 @@ pub fn find_candidates(
 
             // Keep track of top-N using a manual min-heap on score.
             if heap.len() < max_candidates {
-                heap.push(Candidate { time_sym, freq_bin, score });
+                heap.push(Candidate {
+                    time_sym,
+                    freq_bin,
+                    score,
+                });
                 if heap.len() == max_candidates {
                     // Build min-heap (smallest score at root)
                     heap.sort_by(|a, b| a.score.partial_cmp(&b.score).unwrap());
                 }
             } else if score > heap[0].score {
-                heap[0] = Candidate { time_sym, freq_bin, score };
+                heap[0] = Candidate {
+                    time_sym,
+                    freq_bin,
+                    score,
+                };
                 // Sift down to restore min-heap property (simple linear re-sort for small N)
                 heap.sort_by(|a, b| a.score.partial_cmp(&b.score).unwrap());
             }

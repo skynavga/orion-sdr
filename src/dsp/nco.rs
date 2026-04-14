@@ -1,8 +1,8 @@
 // Copyright (c) 2025-2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use num_complex::Complex32 as C32;
 use core::f32::consts::TAU;
+use num_complex::Complex32 as C32;
 
 /// Lightweight NCO used for RF/IF mixing in modulators.
 /// Uses a phasor-recurrence oscillator (one complex multiply per sample)
@@ -11,8 +11,8 @@ use core::f32::consts::TAU;
 pub struct Nco {
     fs: f32,
     freq_hz: f32,
-    z: C32,    // current phasor (cos + j*sin)
-    w: C32,    // per-sample step: e^{j 2π f/fs}
+    z: C32, // current phasor (cos + j*sin)
+    w: C32, // per-sample step: e^{j 2π f/fs}
     renorm_ctr: u32,
 }
 
@@ -42,13 +42,15 @@ impl Nco {
     pub fn next_cs(&mut self) -> (f32, f32) {
         // Complex multiply: z *= w
         let zr = self.z.re.mul_add(self.w.re, -self.z.im * self.w.im);
-        let zi = self.z.im.mul_add(self.w.re,  self.z.re * self.w.im);
+        let zi = self.z.im.mul_add(self.w.re, self.z.re * self.w.im);
         self.z = C32::new(zr, zi);
 
         // Periodic renormalization to keep |z| ~ 1.0
         self.renorm_ctr = self.renorm_ctr.wrapping_add(1);
         if (self.renorm_ctr & 0x3FF) == 0 {
-            let inv = (self.z.re * self.z.re + self.z.im * self.z.im).sqrt().recip();
+            let inv = (self.z.re * self.z.re + self.z.im * self.z.im)
+                .sqrt()
+                .recip();
             self.z.re *= inv;
             self.z.im *= inv;
         }

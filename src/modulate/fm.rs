@@ -1,9 +1,9 @@
 // Copyright (c) 2025-2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use num_complex::Complex32 as C32;
 use crate::core::{Block, WorkReport};
 use crate::dsp::{Nco, mix_with_nco};
+use num_complex::Complex32 as C32;
 
 /// FM (direct) – phase accumulator with deviation scaling (Hz per unit input).
 /// Uses a phasor-recurrence oscillator: each sample multiplies the running phasor
@@ -29,8 +29,12 @@ impl FmPhaseAccumMod {
             renorm_ctr: 0,
         }
     }
-    pub fn set_deviation(&mut self, deviation_hz: f32) { self.kf_hz_per_unit = deviation_hz; }
-    pub fn set_gain(&mut self, g: f32) { self.gain = g; }
+    pub fn set_deviation(&mut self, deviation_hz: f32) {
+        self.kf_hz_per_unit = deviation_hz;
+    }
+    pub fn set_gain(&mut self, g: f32) {
+        self.gain = g;
+    }
 }
 
 impl Block for FmPhaseAccumMod {
@@ -47,13 +51,15 @@ impl Block for FmPhaseAccumMod {
             let (ds, dc) = dphi.sin_cos();
             // z *= e^{jΔφ}
             let zr = self.z.re.mul_add(dc, -self.z.im * ds);
-            let zi = self.z.im.mul_add(dc,  self.z.re * ds);
+            let zi = self.z.im.mul_add(dc, self.z.re * ds);
             self.z = C32::new(zr, zi);
 
             // Periodic renormalization every 1024 samples
             self.renorm_ctr = self.renorm_ctr.wrapping_add(1);
             if (self.renorm_ctr & 0x3FF) == 0 {
-                let inv = (self.z.re * self.z.re + self.z.im * self.z.im).sqrt().recip();
+                let inv = (self.z.re * self.z.re + self.z.im * self.z.im)
+                    .sqrt()
+                    .recip();
                 self.z.re *= inv;
                 self.z.im *= inv;
             }
@@ -61,7 +67,10 @@ impl Block for FmPhaseAccumMod {
             let base = self.z * self.gain;
             output[i] = mix_with_nco(base, &mut self.rf_nco);
         }
-        WorkReport { in_read: n, out_written: n }
+        WorkReport {
+            in_read: n,
+            out_written: n,
+        }
     }
 }
 
@@ -81,8 +90,12 @@ impl PmDirectPhaseMod {
             gain: 1.0,
         }
     }
-    pub fn set_gain(&mut self, g: f32) { self.gain = g; }
-    pub fn set_sensitivity(&mut self, kp_rad_per_unit: f32) { self.kp_rad_per_unit = kp_rad_per_unit; }
+    pub fn set_gain(&mut self, g: f32) {
+        self.gain = g;
+    }
+    pub fn set_sensitivity(&mut self, kp_rad_per_unit: f32) {
+        self.kp_rad_per_unit = kp_rad_per_unit;
+    }
 }
 
 impl Block for PmDirectPhaseMod {
@@ -96,6 +109,9 @@ impl Block for PmDirectPhaseMod {
             let base = C32::new(phi.cos(), phi.sin()) * self.gain;
             output[i] = mix_with_nco(base, &mut self.rf_nco);
         }
-        WorkReport { in_read: n, out_written: n }
+        WorkReport {
+            in_read: n,
+            out_written: n,
+        }
     }
 }

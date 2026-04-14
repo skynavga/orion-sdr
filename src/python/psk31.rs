@@ -3,16 +3,24 @@
 
 // src/python/psk31.rs — PyO3 bindings for PSK31 (BPSK31 + QPSK31).
 
+use num_complex::Complex32;
+use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
-use numpy::{PyReadonlyArray1, PyArray1, IntoPyArray};
-use num_complex::Complex32;
 
-use crate::codec::varicode::{VaricodeEncoder as RsVaricodeEncoder, VaricodeDecoder as RsVaricodeDecoder};
 use crate::codec::psk31::Psk31Stream as RsPsk31Stream;
-use crate::modulate::psk31::{Bpsk31Mod as RsBpsk31Mod, Qpsk31Mod as RsQpsk31Mod, PSK31_PREAMBLE_BITS, PSK31_POSTAMBLE_BITS, PSK31_BAUD};
-use crate::demodulate::psk31::{Bpsk31Demod as RsBpsk31Demod, Bpsk31Decider as RsBpsk31Decider, Qpsk31Demod as RsQpsk31Demod, Qpsk31Decider as RsQpsk31Decider};
+use crate::codec::varicode::{
+    VaricodeDecoder as RsVaricodeDecoder, VaricodeEncoder as RsVaricodeEncoder,
+};
 use crate::core::Block;
+use crate::demodulate::psk31::{
+    Bpsk31Decider as RsBpsk31Decider, Bpsk31Demod as RsBpsk31Demod,
+    Qpsk31Decider as RsQpsk31Decider, Qpsk31Demod as RsQpsk31Demod,
+};
+use crate::modulate::psk31::{
+    Bpsk31Mod as RsBpsk31Mod, PSK31_BAUD, PSK31_POSTAMBLE_BITS, PSK31_PREAMBLE_BITS,
+    Qpsk31Mod as RsQpsk31Mod,
+};
 
 // ── VaricodeEncoder ───────────────────────────────────────────────────────────
 
@@ -91,8 +99,12 @@ impl PyBpsk31Mod {
         Self(RsBpsk31Mod::new(fs, rf_hz, gain))
     }
 
-    fn set_gain(&mut self, g: f32) { self.0.set_gain(g); }
-    fn reset(&mut self) { self.0.reset(); }
+    fn set_gain(&mut self, g: f32) {
+        self.0.set_gain(g);
+    }
+    fn reset(&mut self) {
+        self.0.reset();
+    }
 
     /// Modulate text bytes into a complex64 IQ waveform.
     #[pyo3(signature = (text, preamble_bits=PSK31_PREAMBLE_BITS, postamble_bits=PSK31_POSTAMBLE_BITS))]
@@ -103,7 +115,9 @@ impl PyBpsk31Mod {
         preamble_bits: usize,
         postamble_bits: usize,
     ) -> Bound<'py, PyArray1<Complex32>> {
-        self.0.modulate_text(text, preamble_bits, postamble_bits).into_pyarray(py)
+        self.0
+            .modulate_text(text, preamble_bits, postamble_bits)
+            .into_pyarray(py)
     }
 
     /// Modulate raw differential bits into a complex64 IQ waveform.
@@ -129,8 +143,12 @@ impl PyBpsk31Demod {
         Self(RsBpsk31Demod::new(fs, rf_hz, gain))
     }
 
-    fn set_gain(&mut self, g: f32) { self.0.set_gain(g); }
-    fn reset(&mut self) { self.0.reset(); }
+    fn set_gain(&mut self, g: f32) {
+        self.0.set_gain(g);
+    }
+    fn reset(&mut self) {
+        self.0.reset();
+    }
 
     /// Process a complex64 IQ array and return float32 soft bits.
     fn process<'py>(
@@ -160,8 +178,12 @@ impl PyQpsk31Mod {
         Self(RsQpsk31Mod::new(fs, rf_hz, gain))
     }
 
-    fn set_gain(&mut self, g: f32) { self.0.set_gain(g); }
-    fn reset(&mut self) { self.0.reset(); }
+    fn set_gain(&mut self, g: f32) {
+        self.0.set_gain(g);
+    }
+    fn reset(&mut self) {
+        self.0.reset();
+    }
 
     #[pyo3(signature = (text, preamble_bits=PSK31_PREAMBLE_BITS, postamble_bits=PSK31_POSTAMBLE_BITS))]
     fn modulate_text<'py>(
@@ -171,7 +193,9 @@ impl PyQpsk31Mod {
         preamble_bits: usize,
         postamble_bits: usize,
     ) -> Bound<'py, PyArray1<Complex32>> {
-        self.0.modulate_text(text, preamble_bits, postamble_bits).into_pyarray(py)
+        self.0
+            .modulate_text(text, preamble_bits, postamble_bits)
+            .into_pyarray(py)
     }
 
     fn modulate_bits<'py>(
@@ -202,7 +226,9 @@ impl PyQpsk31Demod {
         }
     }
 
-    fn set_gain(&mut self, g: f32) { self.demod.set_gain(g); }
+    fn set_gain(&mut self, g: f32) {
+        self.demod.set_gain(g);
+    }
 
     fn reset(&mut self) {
         self.demod.reset();
@@ -278,9 +304,10 @@ impl PyPsk31Stream {
         match mode.to_lowercase().as_str() {
             "bpsk" | "bpsk31" => Ok(Self(RsPsk31Stream::new_bpsk(fs, carrier_hz, gain))),
             "qpsk" | "qpsk31" => Ok(Self(RsPsk31Stream::new_qpsk(fs, carrier_hz, gain))),
-            _ => Err(pyo3::exceptions::PyValueError::new_err(
-                format!("mode must be 'bpsk' or 'qpsk', got '{}'", mode),
-            )),
+            _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "mode must be 'bpsk' or 'qpsk', got '{}'",
+                mode
+            ))),
         }
     }
 
@@ -366,19 +393,25 @@ pub fn psk31_sync<'py>(
 ) -> PyResult<Bound<'py, PyList>> {
     let input = iq.as_slice()?;
     let results = crate::sync::psk31_sync::psk31_sync(
-        input, fs, base_hz, max_hz,
-        min_carrier_syms, peak_margin_db, n_bits, max_cand,
+        input,
+        fs,
+        base_hz,
+        max_hz,
+        min_carrier_syms,
+        peak_margin_db,
+        n_bits,
+        max_cand,
     );
 
     let list = PyList::empty(py);
     for r in results {
         let d = PyDict::new(py);
-        d.set_item("time_sym",   r.time_sym)?;
-        d.set_item("freq_bin",   r.freq_bin)?;
+        d.set_item("time_sym", r.time_sym)?;
+        d.set_item("freq_bin", r.freq_bin)?;
         d.set_item("carrier_hz", r.carrier_hz)?;
-        d.set_item("score",      r.score)?;
+        d.set_item("score", r.score)?;
         let sb = r.soft_bits.into_pyarray(py);
-        d.set_item("soft_bits",  sb)?;
+        d.set_item("soft_bits", sb)?;
         list.append(d)?;
     }
     Ok(list)

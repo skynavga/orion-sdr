@@ -10,13 +10,11 @@ pub mod psk31;
 pub mod varicode;
 
 pub use crc::ft8_crc14;
-pub use ft4::{Ft4Codec, Ft4Bits};
-pub use ft8::{Ft8Codec, Ft8Bits, Ft8StreamDecoder, Ft8DecodeResult};
-pub use gray::{gray8_encode, gray8_decode, gray4_encode, gray4_decode};
-pub use ldpc::{ldpc_encode, ldpc_decode_soft};
-pub use psk31::{conv_encode, viterbi_decode, viterbi_decode_hard, StreamingViterbi, Psk31Stream};
+pub use ft4::{Ft4Bits, Ft4Codec};
+pub use ft8::{Ft8Bits, Ft8Codec, Ft8DecodeResult, Ft8StreamDecoder};
+pub use gray::{gray4_decode, gray4_encode, gray8_decode, gray8_encode};
+pub use ldpc::{ldpc_decode_soft, ldpc_encode};
+pub use psk31::{Psk31Stream, StreamingViterbi, conv_encode, viterbi_decode, viterbi_decode_hard};
 pub use varicode::{
-    varicode_encode, varicode_decode,
-    VaricodeEncoder, VaricodeDecoder,
-    VARICODE_MAX_BITS,
+    VARICODE_MAX_BITS, VaricodeDecoder, VaricodeEncoder, varicode_decode, varicode_encode,
 };

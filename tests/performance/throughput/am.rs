@@ -1,11 +1,10 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
+use super::{measure_throughput, minsps_from_env, real_tone};
 use orion_sdr::core::{AudioToIqChain, IqToAudioChain};
-use orion_sdr::modulate::AmDsbMod;
 use orion_sdr::demodulate::AmEnvelopeDemod;
-use super::{real_tone, minsps_from_env, measure_throughput};
+use orion_sdr::modulate::AmDsbMod;
 
 #[test]
 fn throughput_am_powersqrt_roundtrip() {
@@ -29,7 +28,12 @@ fn throughput_am_powersqrt_roundtrip() {
 
     println!("[AM](PowerSqrt) {:.2} Msps in {:.3}s", msps, dt);
     let min_msps = minsps_from_env(0.2);
-    assert!(msps >= min_msps, "AM-PowerSqrt throughput {:.2} Msps < min {:.2} Msps", msps, min_msps);
+    assert!(
+        msps >= min_msps,
+        "AM-PowerSqrt throughput {:.2} Msps < min {:.2} Msps",
+        msps,
+        min_msps
+    );
 }
 
 #[test]
@@ -40,9 +44,8 @@ fn throughput_am_absapprox_roundtrip() {
 
     let audio = real_tone(fs, 1000.0, n, 0.5);
     let mut tx = AudioToIqChain::new(AmDsbMod::new(fs, 0.0, 0.8, 0.5));
-    let mut rx = IqToAudioChain::new(
-        AmEnvelopeDemod::new(fs, 5_000.0).with_abs_approx(0.9475, 0.3925)
-    );
+    let mut rx =
+        IqToAudioChain::new(AmEnvelopeDemod::new(fs, 5_000.0).with_abs_approx(0.9475, 0.3925));
 
     let (msps, dt) = measure_throughput(
         || {
@@ -56,5 +59,10 @@ fn throughput_am_absapprox_roundtrip() {
 
     println!("[AM](AbsApprox) {:.2} Msps in {:.3}s", msps, dt);
     let min_msps = minsps_from_env(0.2);
-    assert!(msps >= min_msps,"AM-AbsApprox throughput {:.2} Msps < min {:.2} Msps", msps, min_msps);
+    assert!(
+        msps >= min_msps,
+        "AM-AbsApprox throughput {:.2} Msps < min {:.2} Msps",
+        msps,
+        min_msps
+    );
 }

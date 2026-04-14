@@ -1,11 +1,10 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
-use orion_sdr::modulate::{Ft8Mod, Ft8Frame};
-use orion_sdr::modulate::ft8::{FT8_FRAME_LEN, FT8_TOTAL_SYMS, FT8_DATA_SYMS};
-use orion_sdr::codec::ft8::{Ft8Codec, Ft8Bits, Ft8StreamDecoder};
-use orion_sdr::codec::gray::{gray8_encode, gray8_decode};
+use orion_sdr::codec::ft8::{Ft8Bits, Ft8Codec, Ft8StreamDecoder};
+use orion_sdr::codec::gray::{gray8_decode, gray8_encode};
+use orion_sdr::modulate::ft8::{FT8_DATA_SYMS, FT8_FRAME_LEN, FT8_TOTAL_SYMS};
+use orion_sdr::modulate::{Ft8Frame, Ft8Mod};
 
 #[test]
 fn ft8_frame_length() {
@@ -20,7 +19,9 @@ fn ft8_symbol_sequence_count() {
     assert_eq!(seq.len(), FT8_TOTAL_SYMS);
     let sync_pos: [(usize, usize); 3] = [(0, 7), (36, 43), (72, 79)];
     let mut is_sync = [false; FT8_TOTAL_SYMS];
-    for &(start, end) in &sync_pos { is_sync[start..end].fill(true); }
+    for &(start, end) in &sync_pos {
+        is_sync[start..end].fill(true);
+    }
     let data_count = is_sync.iter().filter(|&&s| !s).count();
     assert_eq!(data_count, FT8_DATA_SYMS);
 }
@@ -32,9 +33,14 @@ fn ft8_costas_positions_correct() {
     let seq = Ft8Mod::build_symbol_sequence(&Ft8Frame::zeros());
     for &start in &sync_starts {
         for i in 0..7 {
-            assert_eq!(seq[start + i], costas[i],
+            assert_eq!(
+                seq[start + i],
+                costas[i],
                 "FT8 Costas mismatch at sym {}: got {}, expected {}",
-                start + i, seq[start + i], costas[i]);
+                start + i,
+                seq[start + i],
+                costas[i]
+            );
         }
     }
 }
@@ -44,7 +50,11 @@ fn ft8_iq_power_unity() {
     let tx = Ft8Mod::new(12_000.0, 1_000.0, 0.0, 1.0);
     let iq = tx.modulate(&Ft8Frame::zeros());
     let power: f32 = iq.iter().map(|z| z.norm_sqr()).sum::<f32>() / (FT8_FRAME_LEN as f32);
-    assert!((power - 1.0).abs() < 0.01, "FT8 IQ power deviates from 1.0: {}", power);
+    assert!(
+        (power - 1.0).abs() < 0.01,
+        "FT8 IQ power deviates from 1.0: {}",
+        power
+    );
 }
 
 // -- FT8 codec tests ----------------------------------------------------------
@@ -88,7 +98,11 @@ fn ft8_codec_frame_has_valid_tones() {
 #[test]
 fn ft8_gray_roundtrip() {
     for i in 0u8..8 {
-        assert_eq!(gray8_decode(gray8_encode(i)), i, "FT8 Gray roundtrip failed for {i}");
+        assert_eq!(
+            gray8_decode(gray8_encode(i)),
+            i,
+            "FT8 Gray roundtrip failed for {i}"
+        );
     }
 }
 
@@ -115,7 +129,10 @@ fn stream_decoder_accumulates_without_decode() {
     let mut dec = Ft8StreamDecoder::new_ft8(12_000.0, 900.0, 1_100.0, 5);
     let chunk = vec![Complex32::new(0.0, 0.0); 1024];
     let results = dec.feed(&chunk);
-    assert!(results.is_empty(), "Should not decode before frame_len samples");
+    assert!(
+        results.is_empty(),
+        "Should not decode before frame_len samples"
+    );
     assert_eq!(dec.len(), 1024);
 }
 
@@ -144,12 +161,7 @@ fn stream_decoder_feed_full_frame_noiseless() {
     let frame = Ft8Codec::encode(&payload);
     let iq = Ft8Mod::new(12_000.0, base_hz, 0.0, 1.0).modulate(&frame);
 
-    let mut dec = Ft8StreamDecoder::new_ft8(
-        12_000.0,
-        base_hz - 6.25,
-        base_hz + 50.0 + 6.25,
-        5,
-    );
+    let mut dec = Ft8StreamDecoder::new_ft8(12_000.0, base_hz - 6.25, base_hz + 50.0 + 6.25, 5);
 
     // Feed in chunks; final chunk triggers decode.
     let chunk_size = 8192;
@@ -166,7 +178,10 @@ fn stream_decoder_feed_full_frame_noiseless() {
         results = dec.flush();
     }
 
-    assert!(!results.is_empty(), "Ft8StreamDecoder: no decode result from noiseless frame");
+    assert!(
+        !results.is_empty(),
+        "Ft8StreamDecoder: no decode result from noiseless frame"
+    );
     // The payload encodes to a NonStd message (raw bytes) — just assert something decoded.
     let _ = &results[0].message;
 }
@@ -180,12 +195,7 @@ fn stream_decoder_flush_partial_frame_noiseless() {
 
     // Feed only 90% of the frame — decoder won't auto-trigger.
     let partial_len = iq.len() * 9 / 10;
-    let mut dec = Ft8StreamDecoder::new_ft8(
-        12_000.0,
-        base_hz - 6.25,
-        base_hz + 50.0 + 6.25,
-        5,
-    );
+    let mut dec = Ft8StreamDecoder::new_ft8(12_000.0, base_hz - 6.25, base_hz + 50.0 + 6.25, 5);
     let r = dec.feed(&iq[..partial_len]);
     assert!(r.is_empty(), "Should not decode before frame_len reached");
     assert_eq!(dec.len(), partial_len);

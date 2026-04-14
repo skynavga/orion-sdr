@@ -1,12 +1,11 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
-use orion_sdr::core::{AudioToIqChain, IqToAudioChain};
-use orion_sdr::modulate::CwKeyedMod;
-use orion_sdr::demodulate::CwEnvelopeDemod;
+use super::{key_envelope_square, measure_throughput, minsps_from_env};
 use num_complex::Complex32 as C32;
-use super::{key_envelope_square, minsps_from_env, measure_throughput};
+use orion_sdr::core::{AudioToIqChain, IqToAudioChain};
+use orion_sdr::demodulate::CwEnvelopeDemod;
+use orion_sdr::modulate::CwKeyedMod;
 
 #[test]
 fn throughput_cw_roundtrip() {
@@ -30,5 +29,10 @@ fn throughput_cw_roundtrip() {
 
     println!("[CW] {:.2} Msps in {:.3}s", msps, dt);
     let min_msps = minsps_from_env(0.2);
-    assert!(msps >= min_msps, "CW throughput {:.2} Msps < min {:.2} Msps", msps, min_msps);
+    assert!(
+        msps >= min_msps,
+        "CW throughput {:.2} Msps < min {:.2} Msps",
+        msps,
+        min_msps
+    );
 }

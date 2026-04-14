@@ -1,11 +1,10 @@
 // Copyright (c) 2026 G & R Associates LLC
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-
-use orion_sdr::core::{AudioToIqChain, IqToAudioChain};
-use orion_sdr::modulate::SsbPhasingMod;
-use orion_sdr::demodulate::SsbProductDemod;
 use crate::common::snr_db_at;
+use orion_sdr::core::{AudioToIqChain, IqToAudioChain};
+use orion_sdr::demodulate::SsbProductDemod;
+use orion_sdr::modulate::SsbPhasingMod;
 
 #[test]
 fn roundtrip_ssb_usb_product() {

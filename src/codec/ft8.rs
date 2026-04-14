@@ -6,15 +6,15 @@
 // Encode path:  77-bit payload → CRC → LDPC → Gray → Ft8Frame (58 tone indices)
 // Decode path:  Ft8Frame → inverse Gray → LLRs → LDPC → CRC check → 77-bit payload
 
-use num_complex::Complex32 as C32;
-use crate::codec::crc::{ft8_add_crc, ft8_extract_crc, ft8_crc14};
-use crate::codec::gray::{gray8_encode, gray8_decode};
-use crate::codec::ldpc::{self, ldpc_encode, ldpc_decode_soft};
+use crate::codec::crc::{ft8_add_crc, ft8_crc14, ft8_extract_crc};
+use crate::codec::gray::{gray8_decode, gray8_encode};
+use crate::codec::ldpc::{self, ldpc_decode_soft, ldpc_encode};
 use crate::message::{CallsignHashTable, Ft8Message, unpack77};
 use crate::modulate::Ft8Frame;
-use crate::modulate::ft8::{FT8_DATA_SYMS, FT8_FRAME_LEN, FT8_TONE_SPACING_HZ};
 use crate::modulate::ft4::{FT4_FRAME_LEN, FT4_TONE_SPACING_HZ};
-use crate::sync::{ft8_sync, ft4_sync};
+use crate::modulate::ft8::{FT8_DATA_SYMS, FT8_FRAME_LEN, FT8_TONE_SPACING_HZ};
+use crate::sync::{ft4_sync, ft8_sync};
+use num_complex::Complex32 as C32;
 
 /// 77-bit FT8 payload packed into 10 bytes (MSB first; bits 77..79 of byte 9 are zero).
 pub type Ft8Bits = [u8; 10];
@@ -113,9 +113,9 @@ impl Ft8Codec {
         // produce a wrong answer.
         let extracted = ft8_extract_crc(&a91);
         let mut buf = a91;
-        buf[9]  &= 0xF8; // zero bits 77-79 (slack bits, also start of CRC)
-        buf[10]  = 0;    // zero bits 80-87 (CRC bits 3-10)
-        buf[11]  = 0;    // zero bits 88-95 (CRC bits 11-13 + unused)
+        buf[9] &= 0xF8; // zero bits 77-79 (slack bits, also start of CRC)
+        buf[10] = 0; // zero bits 80-87 (CRC bits 3-10)
+        buf[11] = 0; // zero bits 88-95 (CRC bits 11-13 + unused)
         let computed = ft8_crc14(&buf, 82);
         if extracted != computed {
             return None;
@@ -135,11 +135,11 @@ impl Ft8Codec {
 /// Result of one successfully decoded FT8 or FT4 frame.
 pub struct Ft8DecodeResult {
     /// Decoded message content.
-    pub message:    Ft8Message,
+    pub message: Ft8Message,
     /// Tone-0 frequency in Hz (carrier of the detected frame).
     pub carrier_hz: f32,
     /// SNR estimate in dB (Costas score, arbitrary but monotone with true SNR).
-    pub snr_db:     f32,
+    pub snr_db: f32,
 }
 
 /// Accumulates IQ samples at 12 kHz and decodes FT8 or FT4 frames.
@@ -157,13 +157,13 @@ pub struct Ft8DecodeResult {
 /// A single [`CallsignHashTable`] is maintained across frames so nonstandard
 /// callsigns hashed in earlier frames can be resolved in later ones.
 pub struct Ft8StreamDecoder {
-    buf:        Vec<C32>,
-    fs:         f32,
-    base_hz:    f32,
-    max_hz:     f32,
-    frame_len:  usize,
-    is_ft8:     bool,
-    max_cand:   usize,
+    buf: Vec<C32>,
+    fs: f32,
+    base_hz: f32,
+    max_hz: f32,
+    frame_len: usize,
+    is_ft8: bool,
+    max_cand: usize,
     hash_table: CallsignHashTable,
 }
 
@@ -176,13 +176,13 @@ impl Ft8StreamDecoder {
     /// - `max_cand` — maximum sync candidates to score per decode attempt
     pub fn new_ft8(fs: f32, base_hz: f32, max_hz: f32, max_cand: usize) -> Self {
         Self {
-            buf:        Vec::new(),
+            buf: Vec::new(),
             fs,
             base_hz,
             max_hz,
-            frame_len:  FT8_FRAME_LEN,
-            is_ft8:     true,
-            max_cand:   max_cand.max(1),
+            frame_len: FT8_FRAME_LEN,
+            is_ft8: true,
+            max_cand: max_cand.max(1),
             hash_table: CallsignHashTable::new(),
         }
     }
@@ -190,13 +190,13 @@ impl Ft8StreamDecoder {
     /// Create a decoder for FT4 frames.
     pub fn new_ft4(fs: f32, base_hz: f32, max_hz: f32, max_cand: usize) -> Self {
         Self {
-            buf:        Vec::new(),
+            buf: Vec::new(),
             fs,
             base_hz,
             max_hz,
-            frame_len:  FT4_FRAME_LEN,
-            is_ft8:     false,
-            max_cand:   max_cand.max(1),
+            frame_len: FT4_FRAME_LEN,
+            is_ft8: false,
+            max_cand: max_cand.max(1),
             hash_table: CallsignHashTable::new(),
         }
     }
@@ -268,29 +268,35 @@ impl Ft8StreamDecoder {
                 self.fs,
                 search_min,
                 search_max,
-                0, 0,
+                0,
+                0,
                 self.max_cand,
             );
             // Convert to unified representation for processing below.
-            raw.into_iter().map(|r| SyncCandidate {
-                freq_bin: r.freq_bin,
-                score:    r.score,
-                llr:      r.llr,
-            }).collect::<Vec<_>>()
+            raw.into_iter()
+                .map(|r| SyncCandidate {
+                    freq_bin: r.freq_bin,
+                    score: r.score,
+                    llr: r.llr,
+                })
+                .collect::<Vec<_>>()
         } else {
             let raw = ft4_sync(
                 &self.buf,
                 self.fs,
                 search_min,
                 search_max,
-                0, 0,
+                0,
+                0,
                 self.max_cand,
             );
-            raw.into_iter().map(|r| SyncCandidate {
-                freq_bin: r.freq_bin,
-                score:    r.score,
-                llr:      r.llr,
-            }).collect::<Vec<_>>()
+            raw.into_iter()
+                .map(|r| SyncCandidate {
+                    freq_bin: r.freq_bin,
+                    score: r.score,
+                    llr: r.llr,
+                })
+                .collect::<Vec<_>>()
         };
 
         for cand in candidates {
@@ -320,6 +326,6 @@ impl Ft8StreamDecoder {
 /// Internal unified sync result (avoids duplicating processing logic for FT8/FT4).
 struct SyncCandidate {
     freq_bin: usize,
-    score:    f32,
-    llr:      [f32; ldpc::N],
+    score: f32,
+    llr: [f32; ldpc::N],
 }

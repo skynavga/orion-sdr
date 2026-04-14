@@ -34,14 +34,11 @@
 //   scale    = sqrt(24.0 / variance)   [24 = 8 tones × 3 bits]
 //   llr_out  = llr_raw × scale
 
-use num_complex::Complex32 as C32;
 use crate::codec::ldpc::N;
-use crate::modulate::ft8::{
-    FT8_TONE_SPACING_HZ, FT8_SAMPLES_PER_SYM, FT8_TOTAL_SYMS,
-    FT8_TONES,
-};
-use crate::sync::waterfall::{Waterfall, compute_waterfall};
+use crate::modulate::ft8::{FT8_SAMPLES_PER_SYM, FT8_TONE_SPACING_HZ, FT8_TONES, FT8_TOTAL_SYMS};
 use crate::sync::costas::{Candidate, find_candidates};
+use crate::sync::waterfall::{Waterfall, compute_waterfall};
+use num_complex::Complex32 as C32;
 
 // FT8 Costas pattern and sync block symbol positions within the 79-symbol frame.
 const FT8_COSTAS: [u8; 7] = [3, 1, 4, 0, 6, 5, 2];
@@ -201,25 +198,28 @@ fn extract_ft8_llr(wf: &Waterfall, cand: &Candidate) -> [f32; N] {
             // s2[j] = log-energy indexed by binary value (reordered via Gray decode).
             // s2[j] = energy of tone FT8_GRAY8[j].
             let s2 = [
-                s[FT8_GRAY8[0]], s[FT8_GRAY8[1]], s[FT8_GRAY8[2]], s[FT8_GRAY8[3]],
-                s[FT8_GRAY8[4]], s[FT8_GRAY8[5]], s[FT8_GRAY8[6]], s[FT8_GRAY8[7]],
+                s[FT8_GRAY8[0]],
+                s[FT8_GRAY8[1]],
+                s[FT8_GRAY8[2]],
+                s[FT8_GRAY8[3]],
+                s[FT8_GRAY8[4]],
+                s[FT8_GRAY8[5]],
+                s[FT8_GRAY8[6]],
+                s[FT8_GRAY8[7]],
             ];
 
             // Max-log LLR for each bit:
             // LLR > 0  → bit more likely 0  (positive = bit=0 in this convention).
             // bit 0 (MSB): binary value has bit 0 set ↔ binary 4..7 ↔ s2[4..7]
-            llr[llr_idx]     = max4(s2[4], s2[5], s2[6], s2[7])
-                              - max4(s2[0], s2[1], s2[2], s2[3]);
+            llr[llr_idx] = max4(s2[4], s2[5], s2[6], s2[7]) - max4(s2[0], s2[1], s2[2], s2[3]);
             // bit 1: binary value has bit 1 set ↔ binary {2,3,6,7}
-            llr[llr_idx + 1] = max4(s2[2], s2[3], s2[6], s2[7])
-                              - max4(s2[0], s2[1], s2[4], s2[5]);
+            llr[llr_idx + 1] = max4(s2[2], s2[3], s2[6], s2[7]) - max4(s2[0], s2[1], s2[4], s2[5]);
             // bit 2 (LSB): binary value has bit 2 set ↔ binary {1,3,5,7}
-            llr[llr_idx + 2] = max4(s2[1], s2[3], s2[5], s2[7])
-                              - max4(s2[0], s2[2], s2[4], s2[6]);
+            llr[llr_idx + 2] = max4(s2[1], s2[3], s2[5], s2[7]) - max4(s2[0], s2[2], s2[4], s2[6]);
 
             // Negate: ft8_lib convention is LLR > 0 = bit likely 1; our LDPC decoder
             // uses LLR > 0 = bit likely 0.  Flip to match our decoder.
-            llr[llr_idx]     = -llr[llr_idx];
+            llr[llr_idx] = -llr[llr_idx];
             llr[llr_idx + 1] = -llr[llr_idx + 1];
             llr[llr_idx + 2] = -llr[llr_idx + 2];
 
@@ -249,4 +249,3 @@ fn normalise_llr(mut llr: [f32; N]) -> [f32; N] {
 fn max4(a: f32, b: f32, c: f32, d: f32) -> f32 {
     a.max(b).max(c.max(d))
 }
-
