@@ -9,6 +9,37 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.36] - 2026-07-18
+
+### Added
+
+- `ConstellationOrder` (`src/modulate/ofdm.rs`): BPSK/QPSK/QAM-16/64/256
+  selector with `bits_per_symbol()`, used by the OFDM transmitter's data
+  carriers.
+- `OfdmConfig` finalized with `fs`, `rf_hz`, `gain`, and `constellation`
+  fields plus `bits_per_ofdm_symbol()`/`samples_per_ofdm_symbol()` helpers.
+- `OfdmMod` (`Block<In=u8,Out=C32>`): OFDM transmitter pipeline — symbol
+  mapper (reuses `BpskMapper`/`QpskMapper`/`QamMapper<BITS>` verbatim via a
+  `match`, no `dyn` dispatch) → `GridMap` → `IfftBlock` →
+  `CyclicPrefixInsert` → optional `Rotator` for RF upconversion (`rf_hz ==
+  0.0` gives baseband passthrough, matching `BpskMod`'s convention). Includes
+  a `modulate()` convenience wrapper that zero-pads a final partial symbol,
+  mirroring `Ft8Mod::modulate()`. This is Release C / Phase 3 of the OFDM
+  support roadmap.
+- `util::wb_spectrum_snr_db`: wideband-occupancy SNR estimate that compares
+  mean in-band power across an occupied-bandwidth window against the
+  out-of-band median, for signals (like OFDM) that spread energy across many
+  bins rather than concentrating it in one.
+- Unit tests for `OfdmMod` (symbol length, partial-chunk no-op, multi-symbol
+  batching, null-carrier silence via a test-local reference FFT, cyclic-prefix
+  content, RF-upconversion spectral shift) and for `wb_spectrum_snr_db`.
+  Throughput benchmarks for QPSK and QAM-64 OFDM modulation.
+
+### Changed
+
+- Renamed `util::spectrum_snr_db` to `util::nb_spectrum_snr_db` (narrowband
+  single-tone SNR) to distinguish it from the new wideband variant.
+
 ## [0.0.35] - 2026-07-18
 
 ### Added
