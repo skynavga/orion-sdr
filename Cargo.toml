@@ -29,8 +29,6 @@ extension-module = ["dep:pyo3", "pyo3/extension-module", "dep:numpy"]
 [dependencies]
 num-complex = "0.4"
 thiserror = "1"
-# FIR windowing helpers
-realfft = "3"
 rustfft = "6"
 
 [dependencies.pyo3]
