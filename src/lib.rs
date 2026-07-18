@@ -9,6 +9,7 @@ pub mod demodulate;
 pub mod dsp;
 pub mod message;
 pub mod modulate;
+pub mod multicarrier;
 #[cfg(feature = "extension-module")]
 pub mod python;
 pub mod sync;

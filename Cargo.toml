@@ -1,6 +1,6 @@
 [package]
 name = "orion-sdr"
-version = "0.0.33"
+version = "0.0.34"
 edition = "2024"
 description = "DSP/SDR block library targeting HF-to-UHF, satellites, and Python bindings. Roadmap inside."
 license = "MIT OR Apache-2.0"
@@ -29,8 +29,6 @@ extension-module = ["dep:pyo3", "pyo3/extension-module", "dep:numpy"]
 [dependencies]
 num-complex = "0.4"
 thiserror = "1"
-# FIR windowing helpers
-realfft = "3"
 rustfft = "6"
 
 [dependencies.pyo3]
