@@ -124,7 +124,7 @@ pub fn power_spectrum(samples: &[f32], fs: f32) -> (Vec<f32>, f32) {
 ///
 /// Peak bin power vs median of bins 10+ bins away from the peak.
 /// Uses `power_spectrum()` internally.
-pub fn spectrum_snr_db(samples: &[f32], fs: f32, carrier_hz: f32) -> f32 {
+pub fn nb_spectrum_snr_db(samples: &[f32], fs: f32, carrier_hz: f32) -> f32 {
     let (power_db, bin_hz) = power_spectrum(samples, fs);
     let n_bins = power_db.len();
     if n_bins < 3 {
@@ -164,6 +164,48 @@ pub fn spectrum_snr_db(samples: &[f32], fs: f32, carrier_hz: f32) -> f32 {
     let noise_db = noise_bins[noise_bins.len() / 2];
 
     sig_db - noise_db
+}
+
+/// Estimate SNR (dB) of a wideband (multi-bin occupied) signal centered at
+/// `carrier_hz`, spanning `occupied_hz`.
+///
+/// Unlike `nb_spectrum_snr_db` (single-tone: one peak bin vs. a wideband noise
+/// floor), this compares the *mean* power across all bins inside the
+/// occupied-bandwidth window against the median power of bins outside it —
+/// the right comparison for a signal (e.g. OFDM) that spreads its energy
+/// across many bins rather than concentrating it in one.
+pub fn wb_spectrum_snr_db(samples: &[f32], fs: f32, carrier_hz: f32, occupied_hz: f32) -> f32 {
+    let (power_db, bin_hz) = power_spectrum(samples, fs);
+    let n_bins = power_db.len();
+    if n_bins < 3 || bin_hz <= 0.0 {
+        return 0.0;
+    }
+
+    let carrier_bin = (carrier_hz / bin_hz).round() as isize;
+    let half_span = ((occupied_hz / 2.0) / bin_hz).round() as isize;
+    let lo = (carrier_bin - half_span).max(0) as usize;
+    let hi = ((carrier_bin + half_span) as usize).min(n_bins - 1);
+
+    if lo > hi {
+        return 0.0;
+    }
+
+    let occupied_mean_db = power_db[lo..=hi].iter().sum::<f32>() / ((hi - lo + 1) as f32);
+
+    let mut outside_bins: Vec<f32> = power_db
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| i > 0 && (i < lo || i > hi))
+        .map(|(_, &v)| v)
+        .collect();
+
+    if outside_bins.is_empty() {
+        return 0.0;
+    }
+    outside_bins.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let noise_db = outside_bins[outside_bins.len() / 2];
+
+    occupied_mean_db - noise_db
 }
 
 /// Estimate AM DSB occupied bandwidth (Hz).
