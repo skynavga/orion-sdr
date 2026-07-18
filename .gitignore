@@ -3,6 +3,7 @@
 .DS_Store
 *~
 *.bak
+*.log
 *.patch
 *.pyc
 
@@ -19,3 +20,6 @@ __pycache__/
 # maturin develop output
 /python/orion_sdr/*.so
 /python/orion_sdr/*.pyd
+
+# misc
+/.claude/plans/
