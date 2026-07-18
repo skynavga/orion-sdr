@@ -9,6 +9,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.35] - 2026-07-18
+
+### Added
+
+- `CarrierPlan` (`src/multicarrier/config.rs`): OFDM resource-grid
+  description with signed carrier indices, a builder API
+  (`with_data_carriers`, `with_pilot_carriers`), and `validate()` checking
+  for out-of-range indices, data/pilot overlap, and an empty data set. Bin 0
+  (DC) is implicitly null unless explicitly assigned a role.
+- `CarrierGrid` (`src/multicarrier/grid.rs`): resolves a `CarrierPlan`'s
+  signed carrier indices to natural rustfft bin order once at construction.
+- `GridMap`/`GridExtract` (`src/multicarrier/grid.rs`): TX/RX `Block` pair
+  that scatters dense data symbols into the full FFT-bin vector (nulls
+  zeroed, pilots inserted) and gathers data-carrier bins back into a dense
+  stream. This is Release B / Phase 2 of the OFDM support roadmap.
+- `OfdmConfig` (`src/modulate/ofdm.rs`, new file): initial OFDM waveform
+  configuration, currently holding just `carrier_plan`; further fields are
+  added in later releases as they're needed.
+- Unit tests for the new grid types: carrier-plan validation (overlap,
+  out-of-range, empty data set, well-formed), negative-index bin wrapping,
+  data-bin ordering, grid map/extract round trip, null-zeroing and
+  pilot-writing behavior, and partial-chunk no-op handling.
+
 ## [0.0.34] - 2026-07-18
 
 ### Added
