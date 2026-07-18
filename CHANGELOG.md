@@ -9,6 +9,32 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.34] - 2026-07-18
+
+### Added
+
+- `multicarrier` module (`src/multicarrier/`): waveform-agnostic FFT-domain
+  primitives shared by OFDM and future multicarrier waveforms (SC-FDMA,
+  OTFS). `FftBlock`/`IfftBlock` — allocation-free forward/inverse FFT
+  blocks with a cached `rustfft` plan and scratch buffer, unity-gain
+  forward transform and `1/N` scale folded into the inverse's output copy.
+  `CyclicPrefixInsert`/`CyclicPrefixRemove` — cyclic-prefix insertion and
+  removal for OFDM symbols. This is Release A / Phase 1 of the OFDM
+  support roadmap.
+- Unit tests for the new primitives (FFT/IFFT round trip, DC-bin impulse
+  response, partial-chunk no-op behavior, multi-symbol chunking, cyclic
+  prefix content/round-trip/zero-length) and throughput benchmarks at
+  representative FFT sizes (64/1024/4096).
+
+### Changed
+
+- Move `.claude/plans/` out of the repository (tracked externally instead).
+
+### Removed
+
+- Drop the unused `realfft` dependency; the FFT pipeline is complex-valued
+  end-to-end and has no use for a real-input-optimized transform.
+
 ## [0.0.33] - 2026-04-13
 
 ### Added
