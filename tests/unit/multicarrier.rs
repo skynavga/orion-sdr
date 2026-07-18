@@ -3,7 +3,10 @@
 
 use num_complex::Complex32 as C32;
 use orion_sdr::core::Block;
-use orion_sdr::multicarrier::{CyclicPrefixInsert, CyclicPrefixRemove, FftBlock, IfftBlock};
+use orion_sdr::multicarrier::{
+    CarrierGrid, CarrierPlan, CarrierPlanError, CyclicPrefixInsert, CyclicPrefixRemove, FftBlock,
+    GridExtract, GridMap, IfftBlock, SubcarrierRole,
+};
 
 fn tone(n: usize, cycles: f32) -> Vec<C32> {
     (0..n)
@@ -128,4 +131,131 @@ fn cyclic_prefix_zero_length_cp() {
     assert_eq!(wr.in_read, n_fft);
     assert_eq!(wr.out_written, n_fft);
     assert_eq!(output, input);
+}
+
+#[test]
+fn carrier_plan_validate_rejects_overlap() {
+    let plan = CarrierPlan::new(64, 8)
+        .with_data_carriers([1, 2, 3])
+        .with_pilot_carriers([(3, C32::new(1.0, 0.0))]);
+    assert_eq!(plan.validate(), Err(CarrierPlanError::Overlap(3)));
+}
+
+#[test]
+fn carrier_plan_validate_rejects_out_of_range() {
+    // n_fft=64 → valid signed range is -32..=31
+    let plan = CarrierPlan::new(64, 8).with_data_carriers([1, 2, 32]);
+    assert_eq!(plan.validate(), Err(CarrierPlanError::OutOfRange(32, 64)));
+}
+
+#[test]
+fn carrier_plan_validate_rejects_empty_data_set() {
+    let plan = CarrierPlan::new(64, 8);
+    assert_eq!(plan.validate(), Err(CarrierPlanError::EmptyDataSet));
+}
+
+#[test]
+fn carrier_plan_validate_accepts_well_formed_plan() {
+    let plan = CarrierPlan::new(64, 8)
+        .with_data_carriers([-26, -25, 1, 2, 25, 26])
+        .with_pilot_carriers([(-21, C32::new(1.0, 0.0)), (21, C32::new(-1.0, 0.0))]);
+    assert_eq!(plan.validate(), Ok(()));
+}
+
+#[test]
+fn carrier_grid_bin_mapping_negative_wraps() {
+    let n_fft = 16;
+    let plan = CarrierPlan::new(n_fft, 4).with_data_carriers([-1, -2, 1, 2]);
+    let grid = CarrierGrid::from_plan(&plan);
+
+    // Negative carrier indices wrap into the top half of the FFT (natural
+    // rustfft bin order): -1 -> n_fft-1, -2 -> n_fft-2.
+    assert_eq!(grid.role()[n_fft - 1], SubcarrierRole::Data);
+    assert_eq!(grid.role()[n_fft - 2], SubcarrierRole::Data);
+    assert_eq!(grid.role()[1], SubcarrierRole::Data);
+    assert_eq!(grid.role()[2], SubcarrierRole::Data);
+    // DC (bin 0) is implicitly null since it wasn't explicitly included.
+    assert_eq!(grid.role()[0], SubcarrierRole::Null);
+}
+
+#[test]
+fn carrier_grid_data_bins_order_matches_carrier_order() {
+    let n_fft = 16;
+    let plan = CarrierPlan::new(n_fft, 4).with_data_carriers([2, -1, 5]);
+    let grid = CarrierGrid::from_plan(&plan);
+
+    assert_eq!(grid.data_bins(), &[2, n_fft - 1, 5]);
+}
+
+fn small_grid() -> CarrierGrid {
+    let n_fft = 8;
+    let plan = CarrierPlan::new(n_fft, 2)
+        .with_data_carriers([1, 2, 3])
+        .with_pilot_carriers([(-1, C32::new(0.5, 0.5))]);
+    CarrierGrid::from_plan(&plan)
+}
+
+#[test]
+fn grid_map_extract_roundtrip() {
+    let grid = small_grid();
+    let n_fft = grid.n_fft();
+    let n_data = grid.num_data_carriers();
+
+    let mut map = GridMap::new(grid.clone());
+    let mut extract = GridExtract::new(grid);
+
+    let data_in: Vec<C32> = (0..n_data)
+        .map(|k| C32::new(k as f32 + 1.0, -(k as f32)))
+        .collect();
+    let mut freq = vec![C32::default(); n_fft];
+    let mut data_out = vec![C32::default(); n_data];
+
+    let wr_map = map.process(&data_in, &mut freq);
+    assert_eq!(wr_map.in_read, n_data);
+    assert_eq!(wr_map.out_written, n_fft);
+
+    let wr_extract = extract.process(&freq, &mut data_out);
+    assert_eq!(wr_extract.in_read, n_fft);
+    assert_eq!(wr_extract.out_written, n_data);
+
+    assert_eq!(data_out, data_in);
+}
+
+#[test]
+fn grid_map_zeros_null_and_writes_pilots() {
+    let grid = small_grid();
+    let n_fft = grid.n_fft();
+    let n_data = grid.num_data_carriers();
+
+    let mut map = GridMap::new(grid);
+    let data_in = vec![C32::new(1.0, 0.0); n_data];
+    let mut freq = vec![C32::new(99.0, 99.0); n_fft]; // pre-poison to catch missed nulls
+
+    map.process(&data_in, &mut freq);
+
+    // Pilot bin (-1 -> n_fft-1) carries its known value.
+    assert_eq!(freq[n_fft - 1], C32::new(0.5, 0.5));
+    // Data bins carry the mapped input.
+    assert_eq!(freq[1], C32::new(1.0, 0.0));
+    assert_eq!(freq[2], C32::new(1.0, 0.0));
+    assert_eq!(freq[3], C32::new(1.0, 0.0));
+    // All remaining bins are null (zeroed), including DC.
+    for &bin in &[0usize, 4, 5, 6] {
+        assert_eq!(freq[bin], C32::default(), "bin {} not zeroed", bin);
+    }
+}
+
+#[test]
+fn grid_map_partial_chunk_is_noop() {
+    let grid = small_grid();
+    let n_fft = grid.n_fft();
+    let n_data = grid.num_data_carriers();
+
+    let mut map = GridMap::new(grid);
+    let data_in = vec![C32::default(); n_data - 1]; // one symbol short
+    let mut freq = vec![C32::default(); n_fft];
+
+    let wr = map.process(&data_in, &mut freq);
+    assert_eq!(wr.in_read, 0);
+    assert_eq!(wr.out_written, 0);
 }
