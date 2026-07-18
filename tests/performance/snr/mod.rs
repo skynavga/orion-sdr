@@ -2,4 +2,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 pub mod ft8;
+pub mod ofdm;
 pub mod psk31;

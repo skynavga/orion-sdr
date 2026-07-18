@@ -72,7 +72,11 @@ impl OfdmConfig {
 
 /// Dispatches to the existing per-order symbol mappers (reused verbatim, not
 /// reimplemented) via a plain `match` — no `dyn` dispatch in the hot loop.
-enum MapperKind {
+///
+/// `pub(crate)` so `demodulate::ofdm` can reuse it to compute EVM (mapping
+/// hard-decided bits back to their ideal constellation points) without
+/// duplicating the per-order dispatch.
+pub(crate) enum MapperKind {
     Bpsk(BpskMapper),
     Qpsk(QpskMapper),
     Qam16(Qam16Mapper),
@@ -92,7 +96,7 @@ impl MapperKind {
     }
 
     #[inline(always)]
-    fn process(&mut self, input: &[u8], output: &mut [C32]) -> WorkReport {
+    pub(crate) fn process(&mut self, input: &[u8], output: &mut [C32]) -> WorkReport {
         match self {
             MapperKind::Bpsk(m) => m.process(input, output),
             MapperKind::Qpsk(m) => m.process(input, output),
@@ -101,6 +105,12 @@ impl MapperKind {
             MapperKind::Qam256(m) => m.process(input, output),
         }
     }
+}
+
+/// Constructs the ideal-symbol mapper for `order`, for crate-internal reuse
+/// (e.g. EVM computation in `demodulate::ofdm`).
+pub(crate) fn ideal_symbol_mapper(order: ConstellationOrder) -> MapperKind {
+    MapperKind::new(order)
 }
 
 /// OFDM transmitter: `u8` bits → `C32` IQ.

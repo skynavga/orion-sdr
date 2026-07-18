@@ -1,0 +1,128 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+use crate::common::add_awgn;
+use num_complex::Complex32 as C32;
+use orion_sdr::core::Block;
+use orion_sdr::demodulate::{OfdmDecider, OfdmDemod};
+use orion_sdr::modulate::{ConstellationOrder, OfdmConfig, OfdmMod};
+use orion_sdr::multicarrier::CarrierPlan;
+
+fn plan(n_fft: usize, cp_len: usize) -> CarrierPlan {
+    let half = (n_fft / 2) as i32;
+    let data: Vec<i32> = (1..half).chain(-(half - 1)..0).collect();
+    CarrierPlan::new(n_fft, cp_len).with_data_carriers(data)
+}
+
+fn config(n_fft: usize, cp_len: usize, constellation: ConstellationOrder) -> OfdmConfig {
+    OfdmConfig::new(plan(n_fft, cp_len), 48_000.0, 0.0, 1.0, constellation)
+}
+
+fn ofdm_roundtrip_noiseless(constellation: ConstellationOrder, n_symbols: usize) {
+    let n_fft = 64;
+    let cp_len = 8;
+    let cfg = config(n_fft, cp_len, constellation);
+    let bps = cfg.bits_per_ofdm_symbol();
+
+    let bits_in: Vec<u8> = (0..n_symbols * bps)
+        .map(|i| ((i / 5 + i % 3) & 1) as u8)
+        .collect();
+
+    let mut modstage = OfdmMod::new(&cfg);
+    let iq = modstage.modulate(&bits_in);
+
+    let mut demod = OfdmDemod::new(&cfg);
+    let mut decider = OfdmDecider::new(&cfg);
+    let mut bits_out = vec![0u8; bits_in.len()];
+
+    let mut in_off = 0usize;
+    let mut out_off = 0usize;
+    let samples_per_symbol = cfg.samples_per_ofdm_symbol();
+    let num_data = demod.num_data_carriers();
+    let mut soft = vec![C32::default(); num_data];
+
+    while in_off + samples_per_symbol <= iq.len() {
+        let wr_demod = demod.process(&iq[in_off..], &mut soft);
+        assert_eq!(wr_demod.in_read, samples_per_symbol);
+        let wr_decide = decider.process(&soft, &mut bits_out[out_off..]);
+        assert_eq!(wr_decide.out_written, bps);
+        in_off += samples_per_symbol;
+        out_off += bps;
+    }
+
+    assert_eq!(
+        bits_in, bits_out,
+        "OFDM {:?} noiseless roundtrip failed",
+        constellation
+    );
+}
+
+#[test]
+fn roundtrip_ofdm_qpsk_noiseless() {
+    ofdm_roundtrip_noiseless(ConstellationOrder::Qpsk, 8);
+}
+
+#[test]
+fn roundtrip_ofdm_qam16_noiseless() {
+    ofdm_roundtrip_noiseless(ConstellationOrder::Qam16, 8);
+}
+
+#[test]
+fn roundtrip_ofdm_qam64_noiseless() {
+    ofdm_roundtrip_noiseless(ConstellationOrder::Qam64, 8);
+}
+
+#[test]
+fn roundtrip_ofdm_awgn_flat_channel() {
+    let n_fft = 64;
+    let cp_len = 8;
+    let cfg = config(n_fft, cp_len, ConstellationOrder::Qpsk);
+    let bps = cfg.bits_per_ofdm_symbol();
+    let n_symbols = 20;
+
+    let bits_in: Vec<u8> = (0..n_symbols * bps)
+        .map(|i| ((i / 7 + i % 5) & 1) as u8)
+        .collect();
+
+    let mut modstage = OfdmMod::new(&cfg);
+    let mut iq = modstage.modulate(&bits_in);
+
+    // Mild AWGN over an otherwise flat (unity, unfiltered) channel — well
+    // within this release's stated scope. Noise power is scaled relative to
+    // the time-domain signal's own power, since IFFT output energy is spread
+    // across n_fft samples (much lower per-sample amplitude than the
+    // frequency-domain unit-energy QPSK symbols).
+    let sig_power: f32 = iq.iter().map(|s| s.norm_sqr()).sum::<f32>() / iq.len() as f32;
+    add_awgn(&mut iq, sig_power * 0.05, 0xA5A5_5A5A_1234_5678);
+
+    let mut demod = OfdmDemod::new(&cfg);
+    let mut decider = OfdmDecider::new(&cfg);
+    let mut bits_out = vec![0u8; bits_in.len()];
+
+    let samples_per_symbol = cfg.samples_per_ofdm_symbol();
+    let num_data = demod.num_data_carriers();
+    let mut soft = vec![C32::default(); num_data];
+
+    let mut in_off = 0usize;
+    let mut out_off = 0usize;
+    while in_off + samples_per_symbol <= iq.len() {
+        demod.process(&iq[in_off..], &mut soft);
+        decider.process(&soft, &mut bits_out[out_off..]);
+        in_off += samples_per_symbol;
+        out_off += bps;
+    }
+
+    let errors = bits_in
+        .iter()
+        .zip(bits_out.iter())
+        .filter(|(a, b)| a != b)
+        .count();
+    let ber = errors as f32 / bits_in.len() as f32;
+    assert!(
+        ber < 0.02,
+        "OFDM AWGN flat-channel roundtrip BER too high: {:.4} ({} / {})",
+        ber,
+        errors,
+        bits_in.len()
+    );
+}
