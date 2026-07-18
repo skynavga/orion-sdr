@@ -47,6 +47,7 @@ pub mod cw;
 pub mod fm;
 pub mod ft4;
 pub mod ft8;
+pub mod multicarrier;
 pub mod pm;
 pub mod psk31;
 pub mod qam;
