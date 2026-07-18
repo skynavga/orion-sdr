@@ -9,6 +9,36 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.37] - 2026-07-18
+
+### Added
+
+- `OfdmDemod` (`src/demodulate/ofdm.rs`, new file): OFDM receiver pipeline —
+  `CyclicPrefixRemove` → `FftBlock` → `GridExtract`, the exact inverse of
+  `OfdmMod`'s TX chain, plus a scalar gain correction mirroring
+  `BpskDemod`'s `gain`/`set_gain()`. Explicitly scoped to known packet
+  start, no CFO, AWGN/flat channel only — no acquisition or equalization
+  yet. This is Release D / Phase 4 of the OFDM support roadmap.
+- `OfdmDecider`: hard-decision `C32 → u8`, dispatching to the existing
+  `BpskDecider`/`QpskDecider`/`QamDecider<BITS>` by `ConstellationOrder`,
+  the receive-side mirror of `OfdmMod`'s internal mapper dispatch.
+- `OfdmRxFrame` and `build_ofdm_rx_frame`: per-packet RX diagnostics.
+  `evm_db` is populated now (hard-decided bits re-mapped to their ideal
+  constellation points and compared against the soft symbols); `cfo_hz`,
+  `timing_offset_samples`, and `channel_mse` stay `None` until acquisition
+  (Release E/F) and equalization (Release G) land.
+- Noiseless and AWGN-flat-channel OFDM roundtrip tests, 50-trial Monte
+  Carlo BER-vs-SNR regression thresholds (`tests/roundtrip/ofdm_snr.rs`),
+  a full BER-vs-SNR characterization sweep
+  (`tests/performance/snr/ofdm.rs`), and throughput coverage extended to
+  the full TX+RX+decide chain.
+
+### Changed
+
+- Loosened `modulate::ofdm::MapperKind` to `pub(crate)` so `OfdmRxFrame`'s
+  EVM computation can reuse the TX-side per-order mapper dispatch instead
+  of duplicating it.
+
 ## [0.0.36] - 2026-07-18
 
 ### Added
