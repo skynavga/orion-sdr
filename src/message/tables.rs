@@ -80,13 +80,7 @@ pub fn charn(n: u8, table: Table) -> char {
     }
     match table {
         Table::Full => "+-./?".chars().nth(n as usize).unwrap_or('_'),
-        Table::AlphanumSpaceSlash => {
-            if n == 0 {
-                '/'
-            } else {
-                '_'
-            }
-        }
+        Table::AlphanumSpaceSlash if n == 0 => '/',
         _ => '_',
     }
 }
