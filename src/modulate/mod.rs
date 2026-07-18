@@ -19,6 +19,9 @@ pub use ft4::{Ft4Frame, Ft4Mod};
 pub mod ft8;
 pub use ft8::{Ft8Frame, Ft8Mod};
 
+pub mod ofdm;
+pub use ofdm::OfdmConfig;
+
 pub mod pm;
 pub use pm::PmDirectPhaseMod;
 
