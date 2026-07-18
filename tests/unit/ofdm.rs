@@ -3,6 +3,7 @@
 
 use num_complex::Complex32 as C32;
 use orion_sdr::core::Block;
+use orion_sdr::demodulate::{OfdmDecider, OfdmDemod, build_ofdm_rx_frame};
 use orion_sdr::modulate::{ConstellationOrder, OfdmConfig, OfdmMod};
 use orion_sdr::multicarrier::CarrierPlan;
 use orion_sdr::util::wb_spectrum_snr_db;
@@ -189,5 +190,98 @@ fn ofdm_mod_rf_upconversion_shifts_spectrum() {
         "baseband signal should NOT show concentrated energy at the RF offset: {:.2} dB vs {:.2} dB",
         snr_bb_at_rf,
         snr
+    );
+}
+
+#[test]
+fn ofdm_demod_symbol_length() {
+    let n_fft = 16;
+    let cp_len = 4;
+    let cfg = qpsk_config(n_fft, cp_len, 48_000.0, 0.0);
+
+    let mut modstage = OfdmMod::new(&cfg);
+    let bits = vec![1u8; cfg.bits_per_ofdm_symbol()];
+    let iq = modstage.modulate(&bits);
+
+    let mut demod = OfdmDemod::new(&cfg);
+    let mut soft = vec![C32::default(); demod.num_data_carriers()];
+    let wr = demod.process(&iq, &mut soft);
+
+    assert_eq!(wr.in_read, cfg.samples_per_ofdm_symbol());
+    assert_eq!(wr.out_written, demod.num_data_carriers());
+    assert_eq!(
+        demod.num_data_carriers(),
+        qpsk_plan(n_fft, cp_len).data_carriers().len()
+    );
+}
+
+#[test]
+fn ofdm_demod_partial_chunk_is_noop() {
+    let cfg = qpsk_config(16, 4, 48_000.0, 0.0);
+    let mut demod = OfdmDemod::new(&cfg);
+
+    let iq = vec![C32::default(); cfg.samples_per_ofdm_symbol() - 1]; // one sample short
+    let mut soft = vec![C32::default(); demod.num_data_carriers()];
+
+    let wr = demod.process(&iq, &mut soft);
+    assert_eq!(wr.in_read, 0);
+    assert_eq!(wr.out_written, 0);
+}
+
+#[test]
+fn ofdm_rx_frame_evm_present_cfo_absent() {
+    let n_fft = 16;
+    let cp_len = 4;
+    let cfg = qpsk_config(n_fft, cp_len, 48_000.0, 0.0);
+    let bps = cfg.bits_per_ofdm_symbol();
+    let n_symbols = 4;
+
+    let bits_in: Vec<u8> = (0..n_symbols * bps).map(|i| (i & 1) as u8).collect();
+    let mut modstage = OfdmMod::new(&cfg);
+    let iq = modstage.modulate(&bits_in);
+
+    let mut demod = OfdmDemod::new(&cfg);
+    let mut decider = OfdmDecider::new(&cfg);
+    let num_data = demod.num_data_carriers();
+    let samples_per_symbol = cfg.samples_per_ofdm_symbol();
+
+    let mut soft_all = vec![C32::default(); n_symbols * num_data];
+    let mut bits_out = vec![0u8; bits_in.len()];
+    let mut in_off = 0usize;
+    let mut out_off = 0usize;
+    while in_off + samples_per_symbol <= iq.len() {
+        let mut soft_sym = vec![C32::default(); num_data];
+        demod.process(&iq[in_off..], &mut soft_sym);
+        soft_all[out_off / bps * num_data..out_off / bps * num_data + num_data]
+            .copy_from_slice(&soft_sym);
+        decider.process(&soft_sym, &mut bits_out[out_off..]);
+        in_off += samples_per_symbol;
+        out_off += bps;
+    }
+
+    let frame = build_ofdm_rx_frame(&cfg, &soft_all, bits_out.clone());
+
+    assert_eq!(frame.bits, bits_out);
+    assert_eq!(frame.num_symbols, n_symbols);
+    assert!(
+        frame.evm_db.is_some(),
+        "evm_db should be populated in this release"
+    );
+    assert!(
+        frame.evm_db.unwrap() < -20.0,
+        "expected low EVM for a noiseless roundtrip, got {:?} dB",
+        frame.evm_db
+    );
+    assert!(
+        frame.cfo_hz.is_none(),
+        "cfo_hz should be None until acquisition lands"
+    );
+    assert!(
+        frame.timing_offset_samples.is_none(),
+        "timing_offset_samples should be None until acquisition lands"
+    );
+    assert!(
+        frame.channel_mse.is_none(),
+        "channel_mse should be None until equalization lands"
     );
 }
