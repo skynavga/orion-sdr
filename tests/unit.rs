@@ -17,6 +17,7 @@ mod unit {
     pub mod message;
     pub mod morse;
     pub mod multicarrier;
+    pub mod ofdm;
     pub mod pm;
     pub mod psk31;
     pub mod qam;
