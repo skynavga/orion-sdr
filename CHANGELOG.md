@@ -9,6 +9,38 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.39] - 2026-07-18
+
+### Added
+
+- `TrainingSymbol` and `OfdmPreamble::with_training_symbol()`
+  (`src/sync/ofdm_sync.rs`): a dedicated known training symbol (full
+  `n_fft` + CP, known value on every subcarrier bin) for wide-range
+  integer-CFO recovery, reused by a later release's channel estimator.
+  `generate_ofdm_preamble()` emits it when present.
+- Integer-CFO estimation in `ofdm_sync()`: after the fractional CFO and
+  timing already found, the training symbol is FFT'd and correlated
+  against its known frequency-domain pattern across candidate circular
+  bin shifts, run only on the top few timing candidates to bound cost.
+  This is Release F / Phase 6 of the OFDM support roadmap.
+- `OfdmSyncResult::integer_cfo_bins: i32`: whole subcarrier-spacing
+  units, split from `cfo_hz` (which remains fractional-only). Total CFO
+  is `cfo_hz + integer_cfo_bins as f32 * subcarrier_spacing`.
+- Unit tests (multi-spacing integer-CFO recovery, combined
+  fractional+integer total-CFO accuracy), a roundtrip test recovering
+  exact bits through a CFO well beyond Release E's ±½-spacing capture
+  range, and a wide-CFO acquisition-vs-SNR characterization sweep.
+
+### Fixed
+
+- Clarified (via test correction, not an algorithm change) that the
+  Schmidl & Cox fractional estimator's ambiguity period is
+  `fs / repeat_len`, not `fs / n_fft` as initially assumed in a Release E
+  test — for a preamble with `repeat_len = n_fft / 2` that's two
+  subcarrier spacings, so `cfo_hz` alone can legitimately land outside
+  ±½ a spacing in some cases. `ofdm_sync`'s combined
+  fractional+integer total was already correct.
+
 ## [0.0.38] - 2026-07-18
 
 ### Added
