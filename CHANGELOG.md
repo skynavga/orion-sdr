@@ -9,6 +9,36 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.40] - 2026-07-18
+
+### Added
+
+- `OfdmEqualizer` and `EqualizerMethod` (`src/demodulate/ofdm.rs`):
+  frequency-domain channel equalization for OFDM, supporting
+  frequency-selective (multipath) channels. `TrainingSymbolHold` (the
+  default) estimates the channel once from the shared training symbol
+  and holds it for the packet — the correct choice, not just the
+  simplest, for this feature's predominantly line-of-sight VHF–EHF/L–Ka
+  target bands. `PerSymbolPilotInterp` is the opt-in for genuinely
+  time-varying channels, re-estimating every data symbol via
+  frequency-domain linear interpolation between `CarrierGrid`'s pilot
+  bins. `OfdmEqualizer` is a standalone `Block`, sitting between
+  `FftBlock` and `GridExtract`, not fused into `OfdmDemod`, so it can be
+  swapped or disabled independently. This is Release G / Phase 7 of the
+  OFDM support roadmap.
+- Unit tests (known static channel correction, pilot interpolation), a
+  roundtrip test recovering exact bits through a synthetic 2-tap FIR
+  multipath channel (delay spread within `cp_len`, this release's
+  explicit scope limit), and multipath BER-vs-SNR characterization
+  sweeps for QPSK and QAM-16.
+
+### Changed
+
+- Loosened `sync::ofdm_sync::training_symbol_freq_pattern` to
+  `pub(crate)` so `OfdmEqualizer` divides by the exact same known
+  frequency-domain pattern the integer-CFO estimator correlates
+  against, reusing Release F's shared training symbol directly.
+
 ## [0.0.39] - 2026-07-18
 
 ### Added
