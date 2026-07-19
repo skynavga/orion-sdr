@@ -32,9 +32,14 @@ impl ConstellationOrder {
     }
 }
 
-/// OFDM waveform configuration. Fields are added as later releases need
-/// them; this release adds `fs`/`rf_hz`/`gain`/`constellation` for the
-/// transmitter.
+/// OFDM waveform configuration: the resource grid ([`CarrierPlan`]) plus the
+/// sample rate, RF/IF carrier, output gain, and data-carrier constellation
+/// order shared by the transmitter ([`OfdmMod`]) and receiver.
+///
+/// Numerology (`n_fft`, `cp_len`, carrier layout) is caller-owned and lives
+/// in `carrier_plan`; the library bakes in no standard's spacing or CP length
+/// (see the numerology guidance in `docs/design.md`). `rf_hz == 0.0` selects
+/// baseband output; any nonzero value upconverts via a `Rotator`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OfdmConfig {
     pub carrier_plan: CarrierPlan,

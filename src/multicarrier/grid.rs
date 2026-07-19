@@ -22,7 +22,24 @@ pub struct CarrierGrid {
 }
 
 impl CarrierGrid {
+    /// Builds the grid from `plan`, resolving each signed carrier index to its
+    /// rustfft bin once.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `plan` fails [`CarrierPlan::validate`] (out-of-range index,
+    /// data/pilot overlap, or empty data set). An invalid plan is a caller
+    /// programming error: without this check an overlapping data/pilot carrier
+    /// would land in both `data_bins` and `pilot_bins`, and [`GridMap`] would
+    /// silently overwrite the data symbol with the pilot value — a wrong-result
+    /// bug with no other signal. Every OFDM construction path (`OfdmMod::new`,
+    /// `OfdmDemod::new`, `OfdmEqualizer::new`) routes through here, so this one
+    /// check guards the whole Rust pipeline; the Python bindings additionally
+    /// surface the same `validate()` error as a `ValueError` before reaching
+    /// this point.
     pub fn from_plan(plan: &CarrierPlan) -> Self {
+        plan.validate()
+            .expect("CarrierGrid::from_plan: invalid CarrierPlan");
         let n_fft = plan.n_fft();
         let mut role = vec![SubcarrierRole::Null; n_fft];
 
