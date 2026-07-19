@@ -11,7 +11,7 @@ FT8/FT4, PSK31, and OFDM.
 
 ## Status
 
-Pre-alpha (v0.0.41). See [CHANGELOG.md](CHANGELOG.md) for release history.
+Pre-alpha (v0.0.42). See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Next Milestones
 
@@ -20,7 +20,7 @@ Pre-alpha (v0.0.41). See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Documentation
 
-- [Features](docs/features.md) — what's implemented as of v0.0.41
+- [Features](docs/features.md) — what's implemented as of v0.0.42
 - [Build and test commands](docs/commands.md) — cargo aliases, maturin
 - [Source layout](docs/source.md) — module tree
 - [Design patterns](docs/design.md) — Block trait, inner-loop style, IIR structure, multicarrier/OFDM pipeline

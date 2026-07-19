@@ -8,7 +8,7 @@
 ## Project
 
 `orion-sdr` is a composable SDR/DSP library in Rust (crate name `orion-sdr`,
-lib name `orion_sdr`, v0.0.41), edition 2024, targeting HF-through-EHF signal
+lib name `orion_sdr`, v0.0.42), edition 2024, targeting HF-through-EHF signal
 processing with Python bindings via PyO3.
 
 ## Reference Docs
