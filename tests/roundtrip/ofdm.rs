@@ -198,3 +198,80 @@ fn roundtrip_ofdm_with_cfo_and_unknown_start() {
         "OFDM roundtrip with CFO + unknown start failed"
     );
 }
+
+#[test]
+fn roundtrip_ofdm_large_cfo_wide_band() {
+    // CFO well beyond ±½ subcarrier spacing — the case Release E's
+    // fractional-only ofdm_sync explicitly could not handle. Release F's
+    // integer stage (via the training symbol) resolves the multi-spacing
+    // component; the combined fractional+integer correction recovers exact
+    // bits through the same known-scope OfdmDemod pipeline.
+    let n_fft = 64;
+    let cp_len = 8;
+    let fs = 48_000.0f32;
+    let cfg = config(n_fft, cp_len, ConstellationOrder::Qpsk);
+    let bps = cfg.bits_per_ofdm_symbol();
+    let n_symbols = 8;
+
+    let preamble = OfdmPreamble::new(4, 32).with_training_symbol(n_fft, cp_len);
+    let subcarrier_spacing_hz = fs / n_fft as f32;
+    // Several whole subcarrier spacings plus a fractional remainder: far
+    // beyond Release E's ±½-spacing capture range.
+    let applied_cfo = 5.0 * subcarrier_spacing_hz + 0.3 * subcarrier_spacing_hz;
+
+    let bits_in: Vec<u8> = (0..n_symbols * bps)
+        .map(|i| ((i / 5 + i % 3) & 1) as u8)
+        .collect();
+
+    let mut modstage = OfdmMod::new(&cfg);
+    let data_iq = modstage.modulate(&bits_in);
+    let preamble_iq = generate_ofdm_preamble(&preamble, &cfg);
+
+    let unknown_start = 137usize;
+    let mut buf = vec![C32::default(); unknown_start];
+    buf.extend_from_slice(&preamble_iq);
+    buf.extend_from_slice(&data_iq);
+    buf.extend(vec![C32::default(); 32]);
+
+    let mut rot = Rotator::new(applied_cfo, fs);
+    let mut with_cfo = vec![C32::default(); buf.len()];
+    rot.rotate_block(&buf, &mut with_cfo);
+
+    let sync_results = ofdm_sync(&with_cfo, fs, &preamble, 0, with_cfo.len());
+    assert!(!sync_results.is_empty(), "sync failed to find the preamble");
+    let best = sync_results[0];
+    assert_eq!(best.start_sample, unknown_start);
+    assert_ne!(
+        best.integer_cfo_bins, 0,
+        "expected the integer stage to recover a nonzero multi-spacing shift"
+    );
+
+    let total_cfo_hz = best.cfo_hz + best.integer_cfo_bins as f32 * subcarrier_spacing_hz;
+    let mut correction = Rotator::new(-total_cfo_hz, fs);
+    let mut corrected = vec![C32::default(); with_cfo.len()];
+    correction.rotate_block(&with_cfo, &mut corrected);
+
+    let data_start = best.start_sample + preamble.total_len();
+    let iq = &corrected[data_start..data_start + data_iq.len()];
+
+    let mut demod = OfdmDemod::new(&cfg);
+    let mut decider = OfdmDecider::new(&cfg);
+    let samples_per_symbol = cfg.samples_per_ofdm_symbol();
+    let num_data = demod.num_data_carriers();
+    let mut soft = vec![C32::default(); num_data];
+    let mut bits_out = vec![0u8; bits_in.len()];
+
+    let mut in_off = 0usize;
+    let mut out_off = 0usize;
+    while in_off + samples_per_symbol <= iq.len() {
+        demod.process(&iq[in_off..], &mut soft);
+        decider.process(&soft, &mut bits_out[out_off..]);
+        in_off += samples_per_symbol;
+        out_off += bps;
+    }
+
+    assert_eq!(
+        bits_in, bits_out,
+        "OFDM roundtrip with large multi-spacing CFO failed"
+    );
+}

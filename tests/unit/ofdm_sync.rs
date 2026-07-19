@@ -8,14 +8,24 @@ use orion_sdr::multicarrier::CarrierPlan;
 use orion_sdr::sync::{OfdmPreamble, generate_ofdm_preamble, ofdm_sync};
 
 const FS: f32 = 48_000.0;
+const N_FFT: usize = 64;
+const CP_LEN: usize = 8;
 
 fn config() -> OfdmConfig {
-    let plan = CarrierPlan::new(64, 8).with_data_carriers(1..32);
+    let plan = CarrierPlan::new(N_FFT, CP_LEN).with_data_carriers(1..32);
     OfdmConfig::new(plan, FS, 0.0, 1.0, ConstellationOrder::Qpsk)
 }
 
 fn preamble() -> OfdmPreamble {
     OfdmPreamble::new(4, 32)
+}
+
+fn preamble_with_training() -> OfdmPreamble {
+    preamble().with_training_symbol(N_FFT, CP_LEN)
+}
+
+fn subcarrier_spacing_hz() -> f32 {
+    FS / N_FFT as f32
 }
 
 fn apply_cfo(iq: &[C32], cfo_hz: f32, fs: f32) -> Vec<C32> {
@@ -145,4 +155,93 @@ fn ofdm_sync_no_false_positive_on_noise() {
             best.score
         );
     }
+}
+
+#[test]
+fn ofdm_sync_integer_cfo_recovers_multi_spacing_offset() {
+    let cfg = config();
+    let pre = preamble_with_training();
+    let spacing = subcarrier_spacing_hz();
+
+    // A CFO several whole subcarrier spacings wide, well beyond the
+    // fractional-only ±½-spacing capture range from Release E.
+    //
+    // Note: the fractional S&C estimator's own ambiguity period is
+    // `fs / repeat_len`, not `fs / n_fft` — for this preamble
+    // (`repeat_len = n_fft / 2`) that's *two* subcarrier spacings, so
+    // `cfo_hz` alone can legitimately land anywhere in `(-spacing, +spacing]`
+    // rather than only `(-spacing/2, +spacing/2]`. The integer search
+    // resolves whatever residual the fractional stage actually reports, so
+    // the invariant this test checks is the reconstructed total
+    // (`cfo_hz + integer_cfo_bins * spacing`), not a specific hardcoded
+    // `integer_cfo_bins` value tied to a naive spacing-only decomposition.
+    let applied_integer_bins = 3i32;
+    let applied_cfo = applied_integer_bins as f32 * spacing + 0.3 * spacing;
+
+    let time_offset = 50;
+    let clean_preamble = generate_ofdm_preamble(&pre, &cfg);
+    let mut buf = vec![C32::default(); time_offset];
+    buf.extend_from_slice(&clean_preamble);
+    buf.extend(vec![C32::default(); 64]);
+
+    let mut rot = Rotator::new(applied_cfo, FS);
+    let mut with_cfo = vec![C32::default(); buf.len()];
+    rot.rotate_block(&buf, &mut with_cfo);
+
+    let results = ofdm_sync(&with_cfo, FS, &pre, 0, with_cfo.len());
+    assert!(!results.is_empty());
+    let best = results[0];
+
+    assert_eq!(best.start_sample, time_offset);
+    assert_ne!(
+        best.integer_cfo_bins, 0,
+        "expected the integer stage to recover a nonzero multi-spacing shift"
+    );
+    let total_cfo = best.cfo_hz + best.integer_cfo_bins as f32 * spacing;
+    let tol_hz = spacing * 0.1;
+    assert!(
+        (total_cfo - applied_cfo).abs() < tol_hz,
+        "reconstructed total CFO {} Hz too far from applied {} Hz (tol {} Hz)",
+        total_cfo,
+        applied_cfo,
+        tol_hz
+    );
+}
+
+#[test]
+fn ofdm_sync_total_cfo_matches_applied_offset() {
+    let cfg = config();
+    let pre = preamble_with_training();
+    let spacing = subcarrier_spacing_hz();
+
+    // A combined fractional + integer offset: 3 whole spacings plus 30% of
+    // one more, well beyond Release E's fractional-only ±½-spacing capture.
+    let applied_integer_bins = 3i32;
+    let applied_fraction = 0.3 * spacing;
+    let applied_cfo = applied_integer_bins as f32 * spacing + applied_fraction;
+
+    let time_offset = 50;
+    let clean_preamble = generate_ofdm_preamble(&pre, &cfg);
+    let mut buf = vec![C32::default(); time_offset];
+    buf.extend_from_slice(&clean_preamble);
+    buf.extend(vec![C32::default(); 64]);
+
+    let mut rot = Rotator::new(applied_cfo, FS);
+    let mut with_cfo = vec![C32::default(); buf.len()];
+    rot.rotate_block(&buf, &mut with_cfo);
+
+    let results = ofdm_sync(&with_cfo, FS, &pre, 0, with_cfo.len());
+    assert!(!results.is_empty());
+    let best = results[0];
+
+    assert_eq!(best.start_sample, time_offset);
+    let total_cfo = best.cfo_hz + best.integer_cfo_bins as f32 * spacing;
+    let tol_hz = spacing * 0.1;
+    assert!(
+        (total_cfo - applied_cfo).abs() < tol_hz,
+        "combined CFO estimate {} Hz too far from applied {} Hz (tol {} Hz)",
+        total_cfo,
+        applied_cfo,
+        tol_hz
+    );
 }
