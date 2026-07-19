@@ -259,7 +259,11 @@ pub enum EqualizerMethod {
     #[default]
     TrainingSymbolHold,
     /// Re-estimate every data symbol via frequency-domain linear
-    /// interpolation between [`CarrierGrid`]'s in-band pilot bins.
+    /// interpolation between [`CarrierGrid`]'s in-band pilot bins. Data bins
+    /// beyond the outermost pilots (the band edges) hold the nearest pilot's
+    /// estimate rather than wrapping; with zero pilots this method is a
+    /// no-op and the held (identity) estimate passes the symbol through
+    /// unchanged.
     ///
     /// The explicit opt-in for genuinely time-varying channels — fast-moving
     /// aeronautical or LEO geometries with meaningful intra-packet Doppler
@@ -340,7 +344,7 @@ impl OfdmEqualizer {
         pilots.sort_by_key(|&(bin, _)| bin);
 
         for &bin in &self.data_bins {
-            self.estimate[bin] = interpolate_at(&pilots, bin, self.n_fft);
+            self.estimate[bin] = interpolate_at(&pilots, bin);
         }
         for &(bin, ratio) in &pilots {
             self.estimate[bin] = ratio;
@@ -348,16 +352,18 @@ impl OfdmEqualizer {
     }
 }
 
-/// Linearly interpolates the channel ratio at `bin` between the nearest
-/// pilot bins on either side (circularly, wrapping across bin 0). Falls
-/// back to the nearest single pilot if `bin` is outside the pilot span on
-/// one side.
-fn interpolate_at(pilots: &[(usize, C32)], bin: usize, n_fft: usize) -> C32 {
+/// Estimates the channel ratio at `bin` from the (bin-sorted) `pilots`:
+/// linear interpolation between the two pilots bracketing `bin`, or a hold of
+/// the nearest pilot when `bin` lies outside the pilot span on one side (no
+/// circular wrap across bin 0 — the band edges hold their nearest pilot).
+/// `pilots` must be non-empty.
+fn interpolate_at(pilots: &[(usize, C32)], bin: usize) -> C32 {
     if pilots.len() == 1 {
         return pilots[0].1;
     }
 
-    // Find surrounding pilots in linear (non-circular) bin order first.
+    // Find the pilots bracketing `bin` in linear bin order: `lower` is the
+    // greatest pilot bin <= `bin`, `upper` the least pilot bin >= `bin`.
     let mut lower: Option<(usize, C32)> = None;
     let mut upper: Option<(usize, C32)> = None;
     for &(pbin, ratio) in pilots {
@@ -369,22 +375,21 @@ fn interpolate_at(pilots: &[(usize, C32)], bin: usize, n_fft: usize) -> C32 {
         }
     }
 
+    // `pilots` is non-empty, so at least one of `lower`/`upper` is always
+    // `Some`: if every pilot is above `bin`, `upper` is set; if every pilot is
+    // below, `lower` is set; otherwise both bracket it. (No `(None, None)`
+    // case can occur.)
     match (lower, upper) {
         (Some((lb, lr)), Some((ub, ur))) if lb != ub => {
             let t = (bin - lb) as f32 / (ub - lb) as f32;
             lr + (ur - lr) * t
         }
-        (Some((_, r)), _) => r,
-        (None, Some((_, r))) => r,
-        (None, None) => {
-            // No pilot below `bin`: wrap circularly to the last pilot,
-            // treating it as if it were `n_fft` bins before `bin`.
-            let (first_bin, first_ratio) = pilots[0];
-            let (last_bin, last_ratio) = pilots[pilots.len() - 1];
-            let span = (first_bin + n_fft) - last_bin;
-            let t = (bin + n_fft - last_bin) as f32 / span as f32;
-            last_ratio + (first_ratio - last_ratio) * t
-        }
+        // Bin sits on a pilot (lb == ub), or lies outside the span on one
+        // side — hold the nearest pilot's ratio.
+        (Some((_, r)), _) | (None, Some((_, r))) => r,
+        // Unreachable for non-empty `pilots` (see above); present only to
+        // satisfy match exhaustiveness.
+        (None, None) => unreachable!("interpolate_at requires non-empty pilots"),
     }
 }
 
