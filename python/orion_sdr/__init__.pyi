@@ -623,3 +623,166 @@ def best_psk31_sync(
     candidate dict, or ``None`` if no candidate is within 2×baud.
     """
     ...
+
+# ---------------------------------------------------------------------------
+# OFDM
+# ---------------------------------------------------------------------------
+
+class OfdmConfig:
+    """OFDM waveform configuration: carrier plan + RF/constellation parameters.
+
+    *data_carriers* and *pilot_carrier_indices* use the signed carrier-index
+    convention (bin 0 = DC; e.g. ``-26..=26``). *pilot_carrier_indices* and
+    *pilot_carrier_values* are parallel arrays of the same length — pass
+    empty arrays for no pilots. *constellation* is one of ``"bpsk"``,
+    ``"qpsk"``, ``"qam16"``, ``"qam64"``, ``"qam256"``.
+
+    Raises ``ValueError`` for an unknown constellation or an invalid carrier
+    plan (overlapping data/pilot carriers, out-of-range indices, or an empty
+    data set).
+    """
+
+    def __init__(
+        self,
+        n_fft: int,
+        cp_len: int,
+        data_carriers: NDArray[np.int32],
+        pilot_carrier_indices: NDArray[np.int32],
+        pilot_carrier_values: NDArray[np.complex64],
+        fs: float,
+        rf_hz: float,
+        gain: float,
+        constellation: str,
+    ) -> None: ...
+    @property
+    def bits_per_ofdm_symbol(self) -> int: ...
+    @property
+    def samples_per_ofdm_symbol(self) -> int: ...
+
+class OfdmMod:
+    """OFDM transmitter: fused mapper + resource-grid mapping + IFFT + cyclic
+    prefix + optional RF upconversion.
+
+    Input: uint8 array of bits (LSB of each byte); consumed
+    ``bits_per_ofdm_symbol`` at a time, zero-padding a final partial symbol.
+    Output: complex64 IQ array, ``samples_per_ofdm_symbol`` samples/symbol.
+    """
+
+    def __init__(self, cfg: OfdmConfig) -> None: ...
+    def modulate(self, bits: NDArray[np.uint8]) -> NDArray[np.complex64]: ...
+
+class OfdmDemod:
+    """OFDM receiver: fused cyclic-prefix removal + FFT + channel
+    equalization + resource-grid extraction + hard-decision decoding.
+
+    *equalizer* selects the channel-estimation method:
+
+    * ``"training_symbol"`` (the default) — one estimate per packet, held
+      constant. Call ``estimate_channel()`` once with a demodulated training
+      symbol before the first ``demodulate()``/``demodulate_soft()`` call.
+    * ``"pilot_interp"`` — re-estimated every symbol from in-band pilots
+      (frequency-domain linear interpolation); no separate estimation call
+      needed.
+
+    Input: complex64 IQ array, ``samples_per_ofdm_symbol`` samples/symbol.
+    Output: uint8 array of bits, ``bits_per_ofdm_symbol`` per symbol.
+    Raises ``ValueError`` if input is shorter than one OFDM symbol.
+    """
+
+    def __init__(self, cfg: OfdmConfig, equalizer: str = "training_symbol") -> None: ...
+    def estimate_channel(self, training_iq: NDArray[np.complex64]) -> None:
+        """Estimate and hold the channel from a demodulated training symbol.
+
+        Only meaningful for the ``"training_symbol"`` equalizer; a no-op
+        under ``"pilot_interp"``.
+        """
+        ...
+    def demodulate(self, iq: NDArray[np.complex64]) -> NDArray[np.uint8]: ...
+    def demodulate_soft(
+        self, iq: NDArray[np.complex64]
+    ) -> tuple[NDArray[np.complex64], NDArray[np.uint8]]:
+        """Like ``demodulate()``, but also returns the pre-decision soft
+        symbols (post-equalization, post-grid-extract) as
+        ``(soft_symbols, bits)``, for building an ``OfdmRxFrame`` via
+        ``build_ofdm_rx_frame``.
+        """
+        ...
+
+class OfdmRxFrame:
+    """Per-packet OFDM RX diagnostics.
+
+    Fields that require acquisition or equalization stay ``None`` until the
+    caller has actually run those stages.
+    """
+
+    @property
+    def bits(self) -> NDArray[np.uint8]: ...
+    @property
+    def num_symbols(self) -> int: ...
+    @property
+    def evm_db(self) -> float | None: ...
+    @property
+    def cfo_hz(self) -> float | None: ...
+    @property
+    def timing_offset_samples(self) -> int | None: ...
+    @property
+    def channel_mse(self) -> float | None: ...
+
+def build_ofdm_rx_frame(
+    cfg: OfdmConfig,
+    soft_symbols: NDArray[np.complex64],
+    bits: NDArray[np.uint8],
+) -> OfdmRxFrame:
+    """Build an ``OfdmRxFrame`` from demodulated soft symbols and their
+    corresponding hard-decided bits (as returned by
+    ``OfdmDemod.demodulate_soft``, concatenated across all symbols in the
+    packet). ``evm_db`` is always populated; ``cfo_hz``,
+    ``timing_offset_samples``, and ``channel_mse`` require acquisition/
+    equalization info not carried by this function alone and are ``None``.
+    """
+    ...
+
+def ofdm_sync(
+    iq: NDArray[np.complex64],
+    fs: float,
+    num_repeats: int,
+    repeat_len: int,
+    search_start: int,
+    search_end: int,
+    training_n_fft: int | None = None,
+    training_cp_len: int | None = None,
+) -> list[dict]:
+    """Search an OFDM IQ buffer for a repeated-segment (Schmidl & Cox-style)
+    preamble match.
+
+    Pass *training_n_fft*/*training_cp_len* to enable wide-range integer-CFO
+    recovery via a dedicated training symbol (must match the values used
+    with ``generate_ofdm_preamble``); omit both for fractional-CFO-only
+    acquisition (capture range ±½ the subcarrier spacing).
+
+    Returns a list of dicts, sorted by descending score::
+
+        {
+            "start_sample":     int,    # sample offset of the preamble start
+            "cfo_hz":           float,  # fractional CFO estimate (Hz)
+            "integer_cfo_bins": int,    # whole subcarrier-spacing units
+            "score":            float,  # normalized timing-metric score
+        }
+
+    Total CFO is ``cfo_hz + integer_cfo_bins * (fs / n_fft)``.
+    ``integer_cfo_bins`` is always 0 unless a training symbol was supplied.
+    """
+    ...
+
+def generate_ofdm_preamble(
+    cfg: OfdmConfig,
+    num_repeats: int,
+    repeat_len: int,
+    training_n_fft: int | None = None,
+    training_cp_len: int | None = None,
+) -> NDArray[np.complex64]:
+    """Generate a repeated-segment preamble (plus training symbol, if
+    *training_n_fft*/*training_cp_len* are given) for prepending before OFDM
+    data symbols. See ``ofdm_sync`` for the matching acquisition function.
+    """
+    ...

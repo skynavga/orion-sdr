@@ -37,6 +37,13 @@ from orion_sdr.orion_sdr import (
     Psk31Stream,
     psk31_sync,
     best_psk31_sync,
+    OfdmConfig,
+    OfdmMod,
+    OfdmDemod,
+    OfdmRxFrame,
+    build_ofdm_rx_frame,
+    ofdm_sync,
+    generate_ofdm_preamble,
 )
 
 __all__ = [
@@ -78,4 +85,11 @@ __all__ = [
     "Psk31Stream",
     "psk31_sync",
     "best_psk31_sync",
+    "OfdmConfig",
+    "OfdmMod",
+    "OfdmDemod",
+    "OfdmRxFrame",
+    "build_ofdm_rx_frame",
+    "ofdm_sync",
+    "generate_ofdm_preamble",
 ]
