@@ -4,10 +4,12 @@
 use crate::common::add_awgn;
 use num_complex::Complex32 as C32;
 use orion_sdr::core::Block;
-use orion_sdr::demodulate::{OfdmDecider, OfdmDemod};
+use orion_sdr::demodulate::{EqualizerMethod, OfdmDecider, OfdmDemod, OfdmEqualizer};
 use orion_sdr::dsp::Rotator;
 use orion_sdr::modulate::{ConstellationOrder, OfdmConfig, OfdmMod};
-use orion_sdr::multicarrier::CarrierPlan;
+use orion_sdr::multicarrier::{
+    CarrierGrid, CarrierPlan, CyclicPrefixRemove, FftBlock, GridExtract,
+};
 use orion_sdr::sync::{OfdmPreamble, generate_ofdm_preamble, ofdm_sync};
 
 fn plan(n_fft: usize, cp_len: usize) -> CarrierPlan {
@@ -273,5 +275,114 @@ fn roundtrip_ofdm_large_cfo_wide_band() {
     assert_eq!(
         bits_in, bits_out,
         "OFDM roundtrip with large multi-spacing CFO failed"
+    );
+}
+
+/// Convolves `iq` with a short FIR channel (causal, `taps[0]` is the direct
+/// path). Delay spread of `taps.len() - 1` samples must stay within the
+/// symbol's cyclic prefix for the OFDM per-bin equalization model to hold —
+/// the explicit scope limit of this release.
+fn apply_fir_channel(iq: &[C32], taps: &[C32]) -> Vec<C32> {
+    let mut out = vec![C32::default(); iq.len()];
+    for (n, &x) in iq.iter().enumerate() {
+        for (k, &h) in taps.iter().enumerate() {
+            if n + k < out.len() {
+                out[n + k] += x * h;
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn roundtrip_ofdm_multipath_channel() {
+    // Synthetic 2-tap frequency-selective channel with delay spread <=
+    // cp_len (this release's explicit scope limit -- longer delay spreads
+    // cause inter-symbol interference this per-bin equalizer does not
+    // model). TrainingSymbolHold: one channel estimate per packet, held
+    // constant, driven manually through CyclicPrefixRemove -> FftBlock ->
+    // OfdmEqualizer -> GridExtract -> OfdmDecider since OfdmEqualizer is a
+    // standalone composable stage, not fused into OfdmDemod.
+    let n_fft = 64;
+    let cp_len = 8;
+    let fs = 48_000.0f32;
+    let cfg = config(n_fft, cp_len, ConstellationOrder::Qpsk);
+    let bps = cfg.bits_per_ofdm_symbol();
+    let n_symbols = 8;
+
+    let preamble = OfdmPreamble::new(4, 32).with_training_symbol(n_fft, cp_len);
+    let channel_taps = [
+        C32::new(0.8, 0.1),
+        C32::new(0.0, 0.0),
+        C32::new(0.25, -0.15),
+    ];
+    assert!(channel_taps.len() - 1 <= cp_len);
+
+    let bits_in: Vec<u8> = (0..n_symbols * bps)
+        .map(|i| ((i / 5 + i % 3) & 1) as u8)
+        .collect();
+
+    let mut modstage = OfdmMod::new(&cfg);
+    let data_iq = modstage.modulate(&bits_in);
+    let preamble_iq = generate_ofdm_preamble(&preamble, &cfg);
+
+    let time_offset = 40usize;
+    let mut buf = vec![C32::default(); time_offset];
+    buf.extend_from_slice(&preamble_iq);
+    buf.extend_from_slice(&data_iq);
+    buf.extend(vec![C32::default(); 32]);
+
+    let channeled = apply_fir_channel(&buf, &channel_taps);
+
+    let sync_results = ofdm_sync(&channeled, fs, &preamble, 0, channeled.len());
+    assert!(!sync_results.is_empty(), "sync failed to find the preamble");
+    let best = sync_results[0];
+    assert_eq!(best.start_sample, time_offset);
+
+    // Estimate the channel from the training symbol.
+    let grid = CarrierGrid::from_plan(&cfg.carrier_plan);
+    let mut cp_remove = CyclicPrefixRemove::new(n_fft, cp_len);
+    let mut fft = FftBlock::new(n_fft);
+    let mut eq = OfdmEqualizer::new(&cfg, EqualizerMethod::TrainingSymbolHold);
+
+    let training_start = best.start_sample + preamble.num_repeats * preamble.repeat_len;
+    let training_symbol = &channeled[training_start..training_start + n_fft + cp_len];
+    let mut training_time = vec![C32::default(); n_fft];
+    cp_remove.process(training_symbol, &mut training_time);
+    let mut training_freq = vec![C32::default(); n_fft];
+    fft.process(&training_time, &mut training_freq);
+    eq.estimate_from_training_symbol(&training_freq);
+
+    // Demod the data symbols through CP-remove -> FFT -> equalizer ->
+    // grid-extract -> decider.
+    let data_start = best.start_sample + preamble.total_len();
+    let iq = &channeled[data_start..data_start + data_iq.len()];
+    let samples_per_symbol = cfg.samples_per_ofdm_symbol();
+    let num_data = grid.num_data_carriers();
+
+    let mut grid_extract = GridExtract::new(grid);
+    let mut decider = OfdmDecider::new(&cfg);
+    let mut bits_out = vec![0u8; bits_in.len()];
+
+    let mut in_off = 0usize;
+    let mut out_off = 0usize;
+    while in_off + samples_per_symbol <= iq.len() {
+        let mut time = vec![C32::default(); n_fft];
+        cp_remove.process(&iq[in_off..], &mut time);
+        let mut freq = vec![C32::default(); n_fft];
+        fft.process(&time, &mut freq);
+        let mut equalized = vec![C32::default(); n_fft];
+        eq.process(&freq, &mut equalized);
+        let mut soft = vec![C32::default(); num_data];
+        grid_extract.process(&equalized, &mut soft);
+        decider.process(&soft, &mut bits_out[out_off..]);
+
+        in_off += samples_per_symbol;
+        out_off += bps;
+    }
+
+    assert_eq!(
+        bits_in, bits_out,
+        "OFDM roundtrip through a static multipath channel failed"
     );
 }

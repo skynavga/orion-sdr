@@ -3,9 +3,12 @@
 
 use num_complex::Complex32 as C32;
 use orion_sdr::core::Block;
-use orion_sdr::demodulate::{OfdmDecider, OfdmDemod, build_ofdm_rx_frame};
+use orion_sdr::demodulate::{
+    EqualizerMethod, OfdmDecider, OfdmDemod, OfdmEqualizer, build_ofdm_rx_frame,
+};
 use orion_sdr::modulate::{ConstellationOrder, OfdmConfig, OfdmMod};
-use orion_sdr::multicarrier::CarrierPlan;
+use orion_sdr::multicarrier::{CarrierPlan, FftBlock};
+use orion_sdr::sync::{OfdmPreamble, generate_ofdm_preamble};
 use orion_sdr::util::wb_spectrum_snr_db;
 use rustfft::FftPlanner;
 
@@ -284,4 +287,126 @@ fn ofdm_rx_frame_evm_present_cfo_absent() {
         frame.channel_mse.is_none(),
         "channel_mse should be None until equalization lands"
     );
+}
+
+#[test]
+fn ofdm_equalizer_corrects_known_static_channel() {
+    let n_fft = 16;
+    let cp_len = 4;
+    let cfg = qpsk_config(n_fft, cp_len, 48_000.0, 0.0);
+    let preamble = OfdmPreamble::new(4, 4).with_training_symbol(n_fft, cp_len);
+
+    // A synthetic per-bin static channel: distinct gain/phase per bin so a
+    // no-op (identity) equalizer would clearly fail this test.
+    let channel: Vec<C32> = (0..n_fft)
+        .map(|k| {
+            let mag = 0.3 + 0.05 * k as f32;
+            let phase = 0.2 * k as f32;
+            C32::from_polar(mag, phase)
+        })
+        .collect();
+
+    // Run the training symbol through the synthetic channel, FFT it, and
+    // estimate.
+    let training_iq = generate_ofdm_preamble(&preamble, &cfg);
+    let training_start = preamble.num_repeats * preamble.repeat_len;
+    let training_symbol = &training_iq[training_start..training_start + n_fft + cp_len];
+    let training_time = &training_symbol[cp_len..];
+    let channeled_training: Vec<C32> = apply_bin_channel(training_time, &channel, n_fft);
+
+    let mut fft = FftBlock::new(n_fft);
+    let mut training_freq = vec![C32::default(); n_fft];
+    fft.process(&channeled_training, &mut training_freq);
+
+    let mut eq = OfdmEqualizer::new(&cfg, EqualizerMethod::TrainingSymbolHold);
+    assert_eq!(eq.method(), EqualizerMethod::TrainingSymbolHold);
+    eq.estimate_from_training_symbol(&training_freq);
+
+    // Now run a data symbol through the SAME channel and confirm the
+    // equalizer recovers (approximately) the original spectrum.
+    let bits = vec![1u8; cfg.bits_per_ofdm_symbol()];
+    let mut modstage = OfdmMod::new(&cfg);
+    let mut data_iq = vec![C32::default(); cfg.samples_per_ofdm_symbol()];
+    modstage.process(&bits, &mut data_iq);
+    let data_time: Vec<C32> = data_iq[cp_len..].to_vec();
+    let channeled_data = apply_bin_channel(&data_time, &channel, n_fft);
+
+    let mut clean_freq = vec![C32::default(); n_fft];
+    fft.process(&data_time, &mut clean_freq);
+    let mut channeled_freq = vec![C32::default(); n_fft];
+    fft.process(&channeled_data, &mut channeled_freq);
+
+    let mut equalized = vec![C32::default(); n_fft];
+    eq.process(&channeled_freq, &mut equalized);
+
+    let eps = 0.05f32;
+    for bin in 0..n_fft {
+        assert!(
+            (equalized[bin] - clean_freq[bin]).norm() < eps,
+            "bin {} not corrected: got {:?}, expected {:?}",
+            bin,
+            equalized[bin],
+            clean_freq[bin]
+        );
+    }
+}
+
+#[test]
+fn ofdm_equalizer_interp_between_pilots() {
+    let n_fft = 16;
+    let cp_len = 4;
+    // A handful of data carriers with pilots spread across the band, so
+    // interpolation between them is exercised for the data bins in between.
+    let plan = CarrierPlan::new(n_fft, cp_len)
+        .with_data_carriers([1, 2, 3, 5, 6, 7])
+        .with_pilot_carriers([(4i32, C32::new(1.0, 0.0)), (8i32, C32::new(1.0, 0.0))]);
+    let cfg = OfdmConfig::new(plan, 48_000.0, 0.0, 1.0, ConstellationOrder::Qpsk);
+
+    // Linear-in-bin-index channel gain between the two pilots (bins 4 and 8)
+    // so exact linear interpolation should recover it closely at bins 5..7.
+    let channel: Vec<C32> = (0..n_fft)
+        .map(|k| C32::new(1.0 + 0.1 * k as f32, 0.0))
+        .collect();
+
+    let mut eq = OfdmEqualizer::new(&cfg, EqualizerMethod::PerSymbolPilotInterp);
+    assert_eq!(eq.method(), EqualizerMethod::PerSymbolPilotInterp);
+
+    // A frequency-domain vector where every bin already carries the known
+    // pilot/data value pre-channel, then apply the synthetic channel
+    // directly in the frequency domain (equivalent to a static per-bin
+    // channel for this test's purposes).
+    let mut freq = vec![C32::new(1.0, 0.0); n_fft];
+    for bin in 0..n_fft {
+        freq[bin] *= channel[bin];
+    }
+
+    let mut equalized = vec![C32::default(); n_fft];
+    eq.process(&freq, &mut equalized);
+
+    let eps = 0.15f32;
+    for &bin in &[5usize, 6, 7] {
+        assert!(
+            (equalized[bin] - C32::new(1.0, 0.0)).norm() < eps,
+            "bin {} not corrected via pilot interpolation: got {:?}",
+            bin,
+            equalized[bin]
+        );
+    }
+}
+
+/// Applies a per-bin frequency-domain channel to a time-domain symbol:
+/// FFT, multiply by `channel[bin]`, IFFT back to time domain.
+fn apply_bin_channel(time: &[C32], channel: &[C32], n_fft: usize) -> Vec<C32> {
+    use orion_sdr::multicarrier::IfftBlock;
+
+    let mut fft = FftBlock::new(n_fft);
+    let mut freq = vec![C32::default(); n_fft];
+    fft.process(time, &mut freq);
+    for bin in 0..n_fft {
+        freq[bin] *= channel[bin];
+    }
+    let mut ifft = IfftBlock::new(n_fft);
+    let mut out = vec![C32::default(); n_fft];
+    ifft.process(&freq, &mut out);
+    out
 }
