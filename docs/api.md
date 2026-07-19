@@ -84,6 +84,38 @@ Pass `llr` to `Ft8Codec.decode_soft` / `Ft4Codec.decode_soft` to recover the pay
 `ft8_unpack` returns a dict whose `"type"` key is one of
 `"standard"`, `"free_text"`, `"telemetry"`, `"nonstd"`, or `"unknown"`.
 
+#### OFDM
+
+| Class / function | Description |
+| --- | --- |
+| `OfdmConfig(n_fft, cp_len, data_carriers, pilot_idx, pilot_val, fs, rf_hz, gain, mode)` | Carrier plan + RF/constellation config |
+| `OfdmMod(cfg)` | `modulate(bits) → complex64[]`; fused mapper+grid+IFFT+CP+upconversion |
+| `OfdmDemod(cfg, equalizer="training_symbol")` | Fused CP-remove+FFT+equalize+grid-extract+decide |
+| `OfdmRxFrame` | Getters: `bits`, `num_symbols`, `evm_db`, `cfo_hz`, `timing_offset_samples`, `channel_mse` |
+| `build_ofdm_rx_frame(cfg, soft_symbols, bits)` | Builds an `OfdmRxFrame`; `evm_db` always populated |
+| `ofdm_sync(iq, fs, num_repeats, repeat_len, search_start, search_end, ...)` | Schmidl & Cox preamble search → `list[dict]` |
+| `generate_ofdm_preamble(cfg, num_repeats, repeat_len, ...)` | Generates the matching preamble IQ |
+
+`OfdmConfig`'s `constellation` ∈ `"bpsk"|"qpsk"|"qam16"|"qam64"|"qam256"`;
+raises `ValueError` on an unknown constellation or invalid carrier plan.
+`OfdmDemod`'s `equalizer` ∈ `"training_symbol"|"pilot_interp"`; methods
+`estimate_channel(training_iq)`, `demodulate(iq) → uint8[]`,
+`demodulate_soft(iq) → (complex64[], uint8[])`. `OfdmRxFrame`'s
+`cfo_hz`/`timing_offset_samples`/`channel_mse` are `None` until
+acquisition/equalization has run. `ofdm_sync`/`generate_ofdm_preamble` take
+optional `training_n_fft`/`training_cp_len` for wide-range integer-CFO recovery.
+
+`ofdm_sync` candidate dicts contain:
+`{"start_sample": int, "cfo_hz": float, "integer_cfo_bins": int, "score": float}`.
+Total CFO is `cfo_hz + integer_cfo_bins * (fs / n_fft)`. `integer_cfo_bins` is
+`0` unless `training_n_fft`/`training_cp_len` were supplied. Pass matching
+`training_n_fft`/`training_cp_len` to both `generate_ofdm_preamble` and
+`ofdm_sync` to enable wide-range integer-CFO recovery.
+
+`CarrierGrid`/`FftBlock`/`GridMap` are not exposed to Python individually,
+matching how the per-order symbol mappers aren't exposed today — `OfdmMod`
+and `OfdmDemod` are the two main entry points.
+
 ### Array Types
 
 | Domain | dtype | Notes |
@@ -108,7 +140,10 @@ for the full module layout.
 | `IqToAudioChain` | `Complex32` | `f32` |
 | `IqToIqChain` | `Complex32` | `Complex32` |
 | `AudioToIqChain` | `f32` | `Complex32` |
-| `BasicChain` | generic | generic |
+
+OFDM's multi-stage, rate-changing pipeline (mapper → grid → IFFT/CP) is
+deliberately **not** routed through these generic chains — see
+[Multicarrier / OFDM Primitives](#multicarrier--ofdm-primitives) below.
 
 ### DSP Primitives
 
@@ -133,7 +168,8 @@ for the full module layout.
 | `gen_complex_tone(fs, f_hz, n)` | Generate a complex baseband tone |
 | `snr_db_at(fs, f_hz, x)` | Single-bin SNR using Hann window + DFT |
 | `power_spectrum(samples, fs)` | Hann-windowed FFT power spectrum (dB); returns `(bins, bin_hz)` |
-| `spectrum_snr_db(samples, fs, carrier_hz)` | Peak-vs-median SNR from power spectrum |
+| `nb_spectrum_snr_db(samples, fs, carrier_hz)` | Narrowband: single peak bin vs. wideband noise-floor median |
+| `wb_spectrum_snr_db(samples, fs, carrier_hz, occupied_hz)` | Wideband: mean in-band power vs. out-of-band median (for OFDM-like signals) |
 | `spectrum_bw_hz(samples, fs, carrier_hz, threshold_db)` | Occupied bandwidth from power spectrum |
 | `best_sync(results, carrier_hz, baud)` | Pick the best PSK31 sync result nearest to carrier |
 | `atan2_approx(y, x)` | Fast 5th-order minimax atan2 approximation |
@@ -244,3 +280,79 @@ for the full module layout.
 | `pack77(msg, ht)` | `Ft8Message → Option<Payload77>` |
 | `unpack77(payload, ht)` | `Payload77 → Ft8Message` |
 | `CallsignHashTable` | In-memory hash table for nonstandard callsign resolution |
+
+### Multicarrier / OFDM Primitives
+
+Waveform-agnostic FFT-domain building blocks in `multicarrier/`, shared by
+OFDM today and by planned future waveforms (DFT-s-OFDM/SC-FDMA, OTFS). See
+[design.md](design.md#multicarrier--ofdm-pipeline) for the FFT-normalization,
+carrier-indexing, and numerology conventions these types follow.
+
+| Type | Description |
+| --- | --- |
+| `SubcarrierRole` | Enum: `Data`, `Pilot`, `Null` |
+| `CarrierPlan` | Caller-owned resource-grid description: `n_fft`, `cp_len`, signed data/pilot carrier indices |
+| `CarrierPlanError` | `OutOfRange(i32, usize)`, `Overlap(i32)`, `EmptyDataSet` |
+| `CarrierGrid` | Resolved signed-index → rustfft-bin mapping for a `CarrierPlan`, built once via `from_plan` |
+| `FftBlock` | Forward FFT (`C32 → C32`), unity gain, allocation-free (cached `rustfft` plan + scratch) |
+| `IfftBlock` | Inverse FFT, `1/N` scale folded into the output copy |
+| `CyclicPrefixInsert` | Prepends CP: `n_fft` in → `n_fft + cp_len` out |
+| `CyclicPrefixRemove` | Removes CP: `n_fft + cp_len` in → `n_fft` out |
+| `GridMap` | TX: dense data symbols → sparse `n_fft`-bin frequency vector (nulls zeroed, pilots inserted) |
+| `GridExtract` | RX: `n_fft`-bin frequency vector → dense data-carrier stream (ignores pilots/channel) |
+
+`CarrierPlan` builds via `with_data_carriers`/`with_pilot_carriers`, and
+validates via `validate() -> Result<(), CarrierPlanError>`. `GridExtract`
+deliberately ignores pilots/channel estimation — that's `OfdmEqualizer`'s
+job, running upstream of it in the RX chain. Every type above is a
+whole-symbol-per-call `Block`: a partial trailing chunk is a no-op
+(`WorkReport::default()`), with no cross-call buffering.
+
+### OFDM Waveform
+
+| Type | Description |
+| --- | --- |
+| `ConstellationOrder` | Enum: `Bpsk\|Qpsk\|Qam16\|Qam64\|Qam256`; `bits_per_symbol()` |
+| `OfdmConfig` | `carrier_plan`, `fs`, `rf_hz`, `gain`, `constellation`; `bits_per_ofdm_symbol()`, `samples_per_ofdm_symbol()` |
+| `OfdmMod` | `Block<u8, C32>`: bits → mapper → `GridMap` → `IfftBlock` → `CyclicPrefixInsert` → optional `Rotator` |
+| `OfdmDemod` | `Block<C32, C32>`: `CyclicPrefixRemove` → `FftBlock` → `GridExtract`, plus scalar gain correction |
+| `OfdmDecider` | `Block<C32, u8>`: hard decision, dispatches by `ConstellationOrder` |
+| `OfdmEqualizer` | `Block<C32, C32>`: channel equalizer, its own composable stage between `FftBlock` and `GridExtract` |
+| `EqualizerMethod` | `TrainingSymbolHold` (default) \| `PerSymbolPilotInterp` (opt-in) |
+| `OfdmSoftDemod` | `Block<C32, f32>`: soft (max-log LLR) demapper, dispatches by `ConstellationOrder` |
+| `bpsk_soft_llr`/`qpsk_soft_llr`/`qam_soft_llr::<BITS>` | Per-order soft-LLR extraction; positive LLR ⇒ bit more likely 0 |
+| `OfdmRxFrame` | Per-packet RX diagnostics: `bits`, `num_symbols`, `evm_db`, `cfo_hz`, `timing_offset_samples`, `channel_mse` |
+| `build_ofdm_rx_frame(cfg, soft_symbols, bits)` | Builds an `OfdmRxFrame`; `evm_db` always populated |
+
+`OfdmMod`'s mapper reuses `BpskMapper`/`QpskMapper`/`QamMapper<BITS>`
+verbatim; its `modulate(bits) -> Vec<C32>` convenience wrapper zero-pads a
+final partial symbol. `OfdmDemod` is the exact inverse of `OfdmMod`'s TX
+chain. `OfdmEqualizer` is not fused into `OfdmDemod`, so it can be swapped or
+disabled independently; `TrainingSymbolHold` estimates once per packet from
+the training symbol and holds it, `PerSymbolPilotInterp` re-estimates every
+symbol via pilot interpolation for time-varying/Doppler channels.
+`OfdmSoftDemod` is a separate type from `OfdmDecider` — no mandatory FEC
+ships with this crate, so LLRs are the deliverable. `OfdmRxFrame`'s
+`Option`-typed fields (`cfo_hz`, `timing_offset_samples`, `channel_mse`) are
+`None` until acquisition/equalization has actually run; `build_ofdm_rx_frame`
+computes `evm_db` by re-mapping hard-decided bits to their ideal
+constellation points and comparing to the soft symbols.
+
+### OFDM Sync
+
+| Type / Function | Description |
+| --- | --- |
+| `OfdmPreamble` | `num_repeats`, `repeat_len`, optional `training_symbol`; `with_training_symbol(n_fft, cp_len)` |
+| `TrainingSymbol` | `n_fft`, `cp_len` — known symbol for integer-CFO recovery and channel estimation |
+| `OfdmSyncResult` | `{start_sample, cfo_hz, integer_cfo_bins, score}` |
+| `generate_ofdm_preamble(preamble, cfg) -> Vec<C32>` | Deterministic, reproducible preamble + training symbol |
+| `ofdm_sync(iq, fs, preamble, search_start, search_end) -> Vec<OfdmSyncResult>` | Schmidl & Cox timing/CFO search |
+
+`with_training_symbol` opts into wide-range integer-CFO recovery.
+`OfdmSyncResult::cfo_hz` is fractional-only, unambiguous within
+±`fs / (2·repeat_len)`; total CFO is
+`cfo_hz + integer_cfo_bins as f32 * (fs / n_fft)`. `generate_ofdm_preamble`
+uses a fixed-seed pseudo-random pattern, reproducible on both TX and RX
+without shared state. `ofdm_sync` runs the integer-CFO search (when a
+training symbol is present) on the top-5 timing candidates by score; results
+are sorted by descending score.

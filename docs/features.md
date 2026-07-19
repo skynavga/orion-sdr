@@ -5,8 +5,8 @@
 
 # Features (as of v0.0.41)
 
-- Core traits and runner
-- Basic, IQ→IQ, IQ→Audio, Audio→IQ graph schedulers
+- Core `Block` trait and runner
+- IQ→IQ, Audio→IQ, IQ→Audio graph schedulers (`IqToIqChain`, `AudioToIqChain`, `IqToAudioChain`)
 - NCO, Phase Rotator, IIR/FIR low-pass, DC blocker, FIR decimator, AGC, IIR cascade
 - CW, AM, SSB, FM, PM modulators and demodulators
 - BPSK, QPSK, QAM-16/64/256 modulators and demodulators
@@ -21,5 +21,25 @@
   - Waveform mod/demod: Hann-windowed DBPSK/DQPSK at 31.25 baud with decision-feedback
     matched filtering and AFC (`Bpsk31Mod`, `Bpsk31Demod`, `Qpsk31Mod`, `Qpsk31Demod`)
   - Carrier sync: waterfall energy-persistence search (`psk31_sync`)
-- Unit, roundtrip, and throughput tests
-- Python bindings (35 classes/functions total, including full PSK31 stack)
+- OFDM full stack, targeting VHF through EHF (predominantly line-of-sight
+  terrestrial-microwave and satellite links); first of a planned multicarrier
+  family sharing the `multicarrier/` module (DFT-s-OFDM/SC-FDMA and OTFS to follow):
+  - Waveform-agnostic FFT-domain primitives: allocation-free `FftBlock`/`IfftBlock`,
+    `CyclicPrefixInsert`/`CyclicPrefixRemove`
+  - Resource-grid mapping: `CarrierPlan` (caller-owned numerology), `CarrierGrid`
+    (signed carrier-index → FFT-bin resolution), `GridMap`/`GridExtract`
+  - Waveform mod/demod: `OfdmMod` (mapper → grid → IFFT → CP → optional RF
+    upconversion), `OfdmDemod`/`OfdmDecider` (inverse chain + hard decision)
+  - Packet sync + CFO acquisition: Schmidl & Cox repeated-segment preamble
+    (`ofdm_sync`, `generate_ofdm_preamble`), fractional CFO (±½ subcarrier
+    spacing) plus wide-range integer-CFO recovery via a shared training symbol
+  - Channel estimation + equalization: `OfdmEqualizer` with `TrainingSymbolHold`
+    (default, one estimate/packet) and `PerSymbolPilotInterp` (opt-in, for
+    time-varying/Doppler channels) methods
+  - Soft (LLR) demapping per constellation order (`OfdmSoftDemod`,
+    `bpsk_soft_llr`/`qpsk_soft_llr`/`qam_soft_llr`); no mandatory FEC — soft
+    LLRs are the deliverable for an external/user-supplied FEC layer
+  - Per-packet RX diagnostics (`OfdmRxFrame`: EVM, CFO, timing offset, channel MSE)
+- Unit, roundtrip, throughput, and SNR-sensitivity tests (212 default `cargo
+  test --release`, 254 total including `--features throughput`)
+- Python bindings (45 classes/functions total, including full PSK31 and OFDM stacks)
