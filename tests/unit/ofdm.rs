@@ -105,20 +105,16 @@ fn ofdm_mod_null_carriers_are_silent() {
         .collect();
 
     let eps = 1e-3f32;
-    for bin in 0..n_fft {
+    for (bin, value) in freq.iter().enumerate() {
         if !data_bins.contains(&bin) {
             assert!(
-                freq[bin].norm() < eps,
+                value.norm() < eps,
                 "null bin {} not silent: {:?}",
                 bin,
-                freq[bin]
+                value
             );
         } else {
-            assert!(
-                freq[bin].norm() > eps,
-                "data bin {} unexpectedly silent",
-                bin
-            );
+            assert!(value.norm() > eps, "data bin {} unexpectedly silent", bin);
         }
     }
 }
@@ -340,13 +336,13 @@ fn ofdm_equalizer_corrects_known_static_channel() {
     eq.process(&channeled_freq, &mut equalized);
 
     let eps = 0.05f32;
-    for bin in 0..n_fft {
+    for (bin, (&got, &want)) in equalized.iter().zip(clean_freq.iter()).enumerate() {
         assert!(
-            (equalized[bin] - clean_freq[bin]).norm() < eps,
+            (got - want).norm() < eps,
             "bin {} not corrected: got {:?}, expected {:?}",
             bin,
-            equalized[bin],
-            clean_freq[bin]
+            got,
+            want
         );
     }
 }
@@ -355,17 +351,22 @@ fn ofdm_equalizer_corrects_known_static_channel() {
 fn ofdm_equalizer_interp_between_pilots() {
     let n_fft = 16;
     let cp_len = 4;
-    // A handful of data carriers with pilots spread across the band, so
-    // interpolation between them is exercised for the data bins in between.
+    // Pilots at bins 2 and 6 (both in-range: valid signed indices for
+    // n_fft=16 are -8..=7), with data carriers 3,4,5 strictly between them so
+    // the linear `(Some, Some)` interpolation branch is exercised for those
+    // bins.
     let plan = CarrierPlan::new(n_fft, cp_len)
-        .with_data_carriers([1, 2, 3, 5, 6, 7])
-        .with_pilot_carriers([(4i32, C32::new(1.0, 0.0)), (8i32, C32::new(1.0, 0.0))]);
+        .with_data_carriers([1, 3, 4, 5, 7])
+        .with_pilot_carriers([(2i32, C32::new(1.0, 0.0)), (6i32, C32::new(1.0, 0.0))]);
     let cfg = OfdmConfig::new(plan, 48_000.0, 0.0, 1.0, ConstellationOrder::Qpsk);
 
-    // Linear-in-bin-index channel gain between the two pilots (bins 4 and 8)
-    // so exact linear interpolation should recover it closely at bins 5..7.
+    // A channel that is linear *in bin index* across the pilot span in both
+    // magnitude and phase, so exact linear interpolation of the complex
+    // channel ratio should recover it closely at the in-between bins. Using a
+    // complex (phase-rotating) channel — not a purely real gain — exercises
+    // interpolation of the imaginary part too.
     let channel: Vec<C32> = (0..n_fft)
-        .map(|k| C32::new(1.0 + 0.1 * k as f32, 0.0))
+        .map(|k| C32::from_polar(1.0 + 0.05 * k as f32, 0.03 * k as f32))
         .collect();
 
     let mut eq = OfdmEqualizer::new(&cfg, EqualizerMethod::PerSymbolPilotInterp);
@@ -376,15 +377,17 @@ fn ofdm_equalizer_interp_between_pilots() {
     // directly in the frequency domain (equivalent to a static per-bin
     // channel for this test's purposes).
     let mut freq = vec![C32::new(1.0, 0.0); n_fft];
-    for bin in 0..n_fft {
-        freq[bin] *= channel[bin];
+    for (f, &h) in freq.iter_mut().zip(channel.iter()) {
+        *f *= h;
     }
 
     let mut equalized = vec![C32::default(); n_fft];
     eq.process(&freq, &mut equalized);
 
-    let eps = 0.15f32;
-    for &bin in &[5usize, 6, 7] {
+    // Between the pilots (bins 3,4,5), linear interpolation of the complex
+    // channel ratio is exact, so equalization recovers the pre-channel value.
+    let eps = 0.05f32;
+    for &bin in &[3usize, 4, 5] {
         assert!(
             (equalized[bin] - C32::new(1.0, 0.0)).norm() < eps,
             "bin {} not corrected via pilot interpolation: got {:?}",
@@ -402,8 +405,8 @@ fn apply_bin_channel(time: &[C32], channel: &[C32], n_fft: usize) -> Vec<C32> {
     let mut fft = FftBlock::new(n_fft);
     let mut freq = vec![C32::default(); n_fft];
     fft.process(time, &mut freq);
-    for bin in 0..n_fft {
-        freq[bin] *= channel[bin];
+    for (f, &h) in freq.iter_mut().zip(channel.iter()) {
+        *f *= h;
     }
     let mut ifft = IfftBlock::new(n_fft);
     let mut out = vec![C32::default(); n_fft];
