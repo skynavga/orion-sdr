@@ -170,6 +170,20 @@ fn roundtrip_ofdm_with_cfo_and_unknown_start() {
     let best = sync_results[0];
     assert_eq!(best.start_sample, unknown_start);
 
+    // Make the CFO *estimate* itself load-bearing, not just the final bits:
+    // QPSK at effectively no noise tolerates a large residual rotation before
+    // bit errors appear, so a systematically biased estimator could round-trip
+    // correctly while being wrong. Pin the estimate to the applied CFO within
+    // a tight fraction of the capture range.
+    let tol_hz = capture_hz * 0.1;
+    assert!(
+        (best.cfo_hz - applied_cfo).abs() < tol_hz,
+        "fractional CFO estimate {} Hz too far from applied {} Hz (tol {} Hz)",
+        best.cfo_hz,
+        applied_cfo,
+        tol_hz
+    );
+
     // Correct the estimated CFO, then demod starting right after the
     // preamble (a fixed, protocol-known offset from the sync point).
     let mut correction = Rotator::new(-best.cfo_hz, fs);
