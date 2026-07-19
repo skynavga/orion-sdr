@@ -133,7 +133,11 @@ pub fn generate_ofdm_preamble(preamble: &OfdmPreamble, _cfg: &OfdmConfig) -> Vec
 /// The training symbol's known frequency-domain pattern: one unit-magnitude
 /// pseudo-random value per FFT bin (natural rustfft bin order), from a fixed
 /// seed distinct from the S&C repeat base sequence's.
-fn training_symbol_freq_pattern(n_fft: usize) -> Vec<C32> {
+///
+/// `pub(crate)` so `demodulate::ofdm::OfdmEqualizer` can reuse the exact same
+/// known pattern for `TrainingSymbolHold` channel estimation without
+/// duplicating (and risking a mismatched) generator.
+pub(crate) fn training_symbol_freq_pattern(n_fft: usize) -> Vec<C32> {
     pseudo_random_unit_sequence(n_fft, 0x4F46_444D_5452_4E31)
 }
 
