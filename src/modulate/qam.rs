@@ -20,7 +20,11 @@ const fn check_bits(bits: usize) {
 
 /// Normalization scale for a square QAM constellation with `bits` bits/symbol.
 /// Average symbol energy = 2*(M²-1)/3 where M = 2^(bits/2).
-fn axis_scale(bits: usize) -> f32 {
+///
+/// `pub(crate)` so `demodulate::ofdm`'s soft-LLR extraction can reuse the
+/// exact same table `QamMapper`/`QamDecider` use, instead of duplicating
+/// (and risking drift from) the Gray-coding/normalization math.
+pub(crate) fn axis_scale(bits: usize) -> f32 {
     let m = 1usize << (bits / 2);
     let avg_e_total = 2.0 * ((m * m - 1) as f64) / 3.0;
     (1.0 / avg_e_total.sqrt()) as f32
@@ -36,7 +40,9 @@ fn axis_scale(bits: usize) -> f32 {
 ///
 /// The table has 16 entries (enough for M up to 16, i.e. QAM-256).
 /// Only the first M entries are meaningful; the rest are 0.
-const fn build_axis_table(bits: usize, scale: f32) -> [f32; 16] {
+///
+/// `pub(crate)` — see `axis_scale`.
+pub(crate) const fn build_axis_table(bits: usize, scale: f32) -> [f32; 16] {
     let k = bits / 2;
     let m = 1usize << k;
     let mut table = [0.0f32; 16];

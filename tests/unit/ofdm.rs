@@ -4,7 +4,7 @@
 use num_complex::Complex32 as C32;
 use orion_sdr::core::Block;
 use orion_sdr::demodulate::{
-    EqualizerMethod, OfdmDecider, OfdmDemod, OfdmEqualizer, build_ofdm_rx_frame,
+    EqualizerMethod, OfdmDecider, OfdmDemod, OfdmEqualizer, OfdmSoftDemod, build_ofdm_rx_frame,
 };
 use orion_sdr::modulate::{ConstellationOrder, OfdmConfig, OfdmMod};
 use orion_sdr::multicarrier::{CarrierPlan, FftBlock};
@@ -409,4 +409,57 @@ fn apply_bin_channel(time: &[C32], channel: &[C32], n_fft: usize) -> Vec<C32> {
     let mut out = vec![C32::default(); n_fft];
     ifft.process(&freq, &mut out);
     out
+}
+
+fn ofdm_soft_llr_sign_matches_hard_decision_for(constellation: ConstellationOrder) {
+    let n_fft = 64;
+    let cp_len = 8;
+    let plan = CarrierPlan::new(n_fft, cp_len).with_data_carriers(1..32);
+    let cfg = OfdmConfig::new(plan, 48_000.0, 0.0, 1.0, constellation);
+    let bps = cfg.bits_per_ofdm_symbol();
+
+    // A mixed bit pattern (not all-0/all-1) so every axis exercises a
+    // variety of constellation points, not just the outermost ones.
+    let bits_in: Vec<u8> = (0..bps).map(|i| ((i * 5 + i / 3) & 1) as u8).collect();
+
+    let mut modstage = OfdmMod::new(&cfg);
+    let iq = modstage.modulate(&bits_in);
+
+    let mut demod = OfdmDemod::new(&cfg);
+    let num_data = demod.num_data_carriers();
+    let mut soft = vec![C32::default(); num_data];
+    demod.process(&iq, &mut soft);
+
+    let mut decider = OfdmDecider::new(&cfg);
+    let mut bits_hard = vec![0u8; bps];
+    decider.process(&soft, &mut bits_hard);
+
+    let mut soft_demod = OfdmSoftDemod::new(&cfg);
+    let mut llrs = vec![0.0f32; bps];
+    let wr = soft_demod.process(&soft, &mut llrs);
+    assert_eq!(wr.in_read, num_data);
+    assert_eq!(wr.out_written, bps);
+
+    for i in 0..bps {
+        let expected_bit = bits_hard[i];
+        let llr_sign_bit = u8::from(llrs[i] < 0.0);
+        assert_eq!(
+            llr_sign_bit, expected_bit,
+            "{:?} bit {}: LLR {} sign disagrees with hard decision {}",
+            constellation, i, llrs[i], expected_bit
+        );
+    }
+}
+
+#[test]
+fn ofdm_soft_llr_sign_matches_hard_decision() {
+    for &order in &[
+        ConstellationOrder::Bpsk,
+        ConstellationOrder::Qpsk,
+        ConstellationOrder::Qam16,
+        ConstellationOrder::Qam64,
+        ConstellationOrder::Qam256,
+    ] {
+        ofdm_soft_llr_sign_matches_hard_decision_for(order);
+    }
 }
