@@ -101,8 +101,14 @@ fn ofdm_sync_cfo_estimate_accuracy() {
 fn ofdm_sync_cfo_beyond_half_spacing_aliases() {
     let pre = preamble();
     let capture_hz = FS / (2.0 * pre.repeat_len as f32);
-    // Well beyond the documented ±capture_hz bound.
-    let applied_cfo = capture_hz * 3.0;
+    // Well beyond the documented ±capture_hz bound, and deliberately NOT an
+    // integer multiple of the aliasing period (2·capture_hz), so the aliased
+    // estimate lands at a specific, predictable value rather than on the
+    // ±capture_hz boundary. applied = 2.3·capture_hz aliases to
+    // 2.3·capture_hz − 2·capture_hz = 0.3·capture_hz.
+    let applied_cfo = capture_hz * 2.3;
+    let period = 2.0 * capture_hz;
+    let expected_alias = applied_cfo - period; // = 0.3 * capture_hz
 
     let time_offset = 50;
     let buf = build_test_buffer(time_offset, 64, applied_cfo);
@@ -111,47 +117,64 @@ fn ofdm_sync_cfo_beyond_half_spacing_aliases() {
     assert!(!results.is_empty());
     let best = results[0];
 
-    // A large residual CFO distorts the S&C timing-metric plateau (not just
-    // the correlation phase), so exact-sample timing lock is not guaranteed
-    // here the way it is within the documented capture range — that's
-    // covered by `ofdm_sync_cfo_estimate_accuracy`. What this test locks in
-    // is the ±capture_hz aliasing bound itself: the reported CFO must never
-    // exceed the documented range, and must diverge from the true
-    // out-of-range applied CFO.
+    // The estimator recovers the phase modulo 2π, i.e. the CFO modulo the
+    // aliasing period. Assert the estimate matches the *predicted* aliased
+    // value (0.3·capture_hz), not merely that it stays inside the range — a
+    // structural bound the atan2-based formula satisfies for any input. This
+    // is what actually demonstrates aliasing and gives Release F's
+    // integer-CFO extension a concrete baseline. (A large residual CFO can
+    // still perturb the S&C timing-metric plateau, so exact-sample timing
+    // lock is not asserted here — that is covered by
+    // `ofdm_sync_cfo_estimate_accuracy` within the capture range.)
+    let tol_hz = capture_hz * 0.1;
     assert!(
-        best.cfo_hz.abs() <= capture_hz + 1e-3,
-        "aliased CFO estimate {} Hz should stay within the ±{} Hz capture range",
+        (best.cfo_hz - expected_alias).abs() < tol_hz,
+        "aliased CFO {} Hz should fold to {} Hz (applied {} Hz mod {} Hz), tol {} Hz",
         best.cfo_hz,
-        capture_hz
-    );
-    assert!(
-        (best.cfo_hz - applied_cfo).abs() > capture_hz,
-        "expected the reported CFO to diverge from the out-of-range applied CFO due to aliasing"
+        expected_alias,
+        applied_cfo,
+        period,
+        tol_hz
     );
 }
 
 #[test]
 fn ofdm_sync_no_false_positive_on_noise() {
-    let mut rng: u64 = 0xC0FF_EE00_1234_5678;
-    let mut next_f32 = || -> f32 {
-        rng ^= rng << 13;
-        rng ^= rng >> 7;
-        rng ^= rng << 17;
-        (rng as f32) / (u64::MAX as f32) - 0.5
-    };
-    let noise: Vec<C32> = (0..2000)
-        .map(|_| C32::new(next_f32(), next_f32()))
-        .collect();
-
+    // "No false positive" is a statistical claim; sweep several independent
+    // noise realizations rather than trusting one lucky/unlucky seed. Every
+    // realization must produce a candidate (the search always scores every
+    // offset, so an empty result here would itself be a regression — the old
+    // `if let Some(..)` form would have passed vacuously on that) and none may
+    // reach a convincing score.
     let pre = preamble();
-    let results = ofdm_sync(&noise, FS, &pre, 0, noise.len());
+    let seeds: [u64; 5] = [
+        0xC0FF_EE00_1234_5678,
+        0x1357_9BDF_2468_ACE0,
+        0xDEAD_BEEF_CAFE_F00D,
+        0x0BAD_F00D_1122_3344,
+        0xA5A5_5A5A_9999_6666,
+    ];
 
-    // Noise can produce weak spurious peaks, but none should reach a
-    // convincing normalized-metric score.
-    if let Some(best) = results.first() {
+    for &seed in &seeds {
+        let mut rng = seed;
+        let mut next_f32 = || -> f32 {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            (rng as f32) / (u64::MAX as f32) - 0.5
+        };
+        let noise: Vec<C32> = (0..2000)
+            .map(|_| C32::new(next_f32(), next_f32()))
+            .collect();
+
+        let results = ofdm_sync(&noise, FS, &pre, 0, noise.len());
+        let best = results
+            .first()
+            .unwrap_or_else(|| panic!("seed {:#x}: expected a candidate on noise", seed));
         assert!(
             best.score < 0.5,
-            "unexpected high-confidence sync on pure noise: score {}",
+            "seed {:#x}: unexpected high-confidence sync on pure noise: score {}",
+            seed,
             best.score
         );
     }

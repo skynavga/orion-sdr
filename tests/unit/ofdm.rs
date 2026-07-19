@@ -258,6 +258,16 @@ fn ofdm_rx_frame_evm_present_cfo_absent() {
         out_off += bps;
     }
 
+    // Anchor: the noiseless roundtrip must recover the transmitted bits
+    // exactly. Without this, EVM is only self-consistent (soft symbols vs.
+    // ideal points re-mapped from the *decided* bits) and a demod that was
+    // wrong-but-self-consistent could still show low EVM. Pinning bits_out to
+    // bits_in makes the ideal reference the true transmitted constellation.
+    assert_eq!(
+        bits_out, bits_in,
+        "noiseless roundtrip must recover input bits"
+    );
+
     let frame = build_ofdm_rx_frame(&cfg, &soft_all, bits_out.clone());
 
     assert_eq!(frame.bits, bits_out);
@@ -282,6 +292,47 @@ fn ofdm_rx_frame_evm_present_cfo_absent() {
     assert!(
         frame.channel_mse.is_none(),
         "channel_mse should be None until equalization lands"
+    );
+}
+
+#[test]
+fn ofdm_rx_frame_evm_matches_known_error_magnitude() {
+    // Pin the EVM dB *formula*, not just "very negative". Feed soft symbols
+    // that are the ideal constellation points scaled by (1 + e) for a known
+    // e, so the per-symbol error vector is exactly e·ideal and
+    //   err_energy / ref_energy = e²  =>  evm_db = 10·log10(e²) = 20·log10(e).
+    // With e = 0.1 the expected EVM is exactly −20.0 dB. A wrong formula
+    // (e.g. 20·log10 of the ratio, or a missing normalization) would miss
+    // this, whereas the noiseless-roundtrip test's −20 dB *threshold* would
+    // not.
+    let n_fft = 16;
+    let cp_len = 4;
+    let cfg = qpsk_config(n_fft, cp_len, 48_000.0, 0.0);
+    let bps = cfg.bits_per_ofdm_symbol();
+
+    let bits: Vec<u8> = (0..bps).map(|i| ((i / 2 + i % 3) & 1) as u8).collect();
+
+    // Recover the ideal soft symbols via a noiseless demod (they sit exactly
+    // on the constellation for a flat, noiseless channel).
+    let mut modstage = OfdmMod::new(&cfg);
+    let iq = modstage.modulate(&bits);
+    let mut demod = OfdmDemod::new(&cfg);
+    let num_data = demod.num_data_carriers();
+    let mut ideal = vec![C32::default(); num_data];
+    demod.process(&iq, &mut ideal);
+
+    let e = 0.1f32;
+    let scaled: Vec<C32> = ideal.iter().map(|&s| s * (1.0 + e)).collect();
+
+    let frame = build_ofdm_rx_frame(&cfg, &scaled, bits.clone());
+    let evm = frame.evm_db.expect("evm_db populated");
+    let expected = 20.0 * e.log10(); // = -20.0 dB for e = 0.1
+    assert!(
+        (evm - expected).abs() < 0.2,
+        "EVM {} dB should match 20·log10(e) = {} dB for a known {}× error",
+        evm,
+        expected,
+        e
     );
 }
 
@@ -443,13 +494,36 @@ fn ofdm_soft_llr_sign_matches_hard_decision_for(constellation: ConstellationOrde
     assert_eq!(wr.in_read, num_data);
     assert_eq!(wr.out_written, bps);
 
-    for i in 0..bps {
-        let expected_bit = bits_hard[i];
-        let llr_sign_bit = u8::from(llrs[i] < 0.0);
+    // Anchor against ground truth: for a noiseless flat channel the soft
+    // symbols sit exactly on the transmitted constellation point, so the hard
+    // decision MUST equal the transmitted bits. Checking this first turns the
+    // LLR test from a mere soft-vs-hard *consistency* check (which a bug
+    // shared by both — e.g. in the common Gray axis table — could pass) into a
+    // check against the true bits.
+    assert_eq!(
+        bits_hard, bits_in,
+        "{:?}: noiseless hard decision must recover the transmitted bits",
+        constellation
+    );
+
+    for (i, (&llr, &bit_in)) in llrs.iter().zip(bits_in.iter()).enumerate() {
+        // Positive LLR ⇒ bit more likely 0; so sign bit (llr < 0) is the
+        // decided bit and must match the transmitted bit exactly.
+        let llr_sign_bit = u8::from(llr < 0.0);
         assert_eq!(
-            llr_sign_bit, expected_bit,
-            "{:?} bit {}: LLR {} sign disagrees with hard decision {}",
-            constellation, i, llrs[i], expected_bit
+            llr_sign_bit, bit_in,
+            "{:?} bit {}: LLR {} sign disagrees with transmitted bit {}",
+            constellation, i, llr, bit_in
+        );
+        // The LLR must also be confidently signed (not a near-zero tie) on a
+        // noiseless channel — a magnitude sanity check the pure sign test
+        // omitted.
+        assert!(
+            llr.abs() > 1e-3,
+            "{:?} bit {}: LLR {} implausibly close to zero on a noiseless channel",
+            constellation,
+            i,
+            llr
         );
     }
 }
