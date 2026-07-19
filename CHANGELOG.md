@@ -9,6 +9,50 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.43] - 2026-07-19
+
+Post-review hardening of the OFDM stack: one correctness fix plus test and
+documentation improvements. No public API changes.
+
+### Fixed
+
+- `CarrierGrid::from_plan` now validates the `CarrierPlan` and panics on an
+  invalid one (out-of-range carrier index, data/pilot overlap, or empty data
+  set). Previously `validate()` was only enforced in the Python bindings, so
+  the Rust pipeline silently accepted an overlapping data/pilot carrier —
+  `GridMap` then overwrote the data symbol with the pilot value, a
+  wrong-result bug with no other signal. This single check guards every OFDM
+  construction path (`OfdmMod`/`OfdmDemod`/`OfdmEqualizer`).
+
+### Changed
+
+- Removed a dead, unreachable circular-wrap branch from the pilot-interpolation
+  equalizer (`interpolate_at`) and corrected its documentation to describe the
+  actual behavior: linear interpolation between bracketing pilots, with a
+  nearest-pilot hold at the band edges (no wrap across bin 0). Refreshed
+  `OfdmConfig` and `EqualizerMethod` docs that still carried mid-development
+  "this release adds…" language.
+
+### Tests
+
+- Added Rust coverage for previously untested paths: TX/RX gain application
+  (baseband and RF-upconversion), the IFFT `1/N` scale in isolation,
+  `OfdmMod::modulate` partial-symbol zero-padding, and the
+  `PerSymbolPilotInterp` empty-pilots no-op and out-of-span nearest-pilot
+  fallback. Added `carrier_grid_from_plan_panics_on_{overlap,out_of_range}`.
+- Added Python `TestOfdmEqualizer` covering the fused-equalizer path reachable
+  only from `PyOfdmDemod`: the unknown-equalizer error, `pilot_interp`
+  selection, `estimate_channel()` + multipath demodulation, and a
+  with/without check proving `estimate_channel` is load-bearing.
+- Tightened tests that passed structurally rather than by verifying: the CFO
+  aliasing test now asserts the predicted aliased value (not an
+  `atan2`-guaranteed bound); the no-false-positive-on-noise test sweeps
+  multiple seeds; EVM and soft-LLR tests are anchored against the transmitted
+  bits; a new test pins the EVM dB formula exactly; and the CFO round-trip
+  asserts estimate accuracy.
+- Fixed pre-existing `needless_range_loop` clippy lints in the OFDM unit tests
+  surfaced under `cargo clippy --all-targets`.
+
 ## [0.0.42] - 2026-07-18
 
 ### Added
