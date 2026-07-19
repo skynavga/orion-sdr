@@ -112,10 +112,29 @@ full FFT buffer. DC (bin 0) is implicitly null unless explicitly included in
 a carrier plan's data or pilot carriers.
 
 **Numerology is caller-owned.** `CarrierPlan` bakes in no standard's
-subcarrier spacing, CP length, or carrier count. OFDM's target bands (VHF
-through EHF, including the L/S/X/Ku/Ka microwave bands) span orders of
-magnitude in delay spread and Doppler spread, so the library supplies the
-mechanism; numerology selection is the caller's responsibility.
+subcarrier spacing, CP length, or carrier count, and the crate ships no
+numerology calculator — OFDM's target bands (VHF through EHF, including the
+L/S/X/Ku/Ka microwave bands) span orders of magnitude in delay spread and
+Doppler spread, so no single default would fit. Derive the three caller-owned
+parameters from the link budget directly:
+
+- **`cp_len`** (in samples) must exceed the channel's delay spread
+  `τ_max · fs`, with margin — e.g. `cp_len ≈ 1.25 · τ_max · fs` — since a
+  shorter CP causes inter-symbol interference `OfdmEqualizer` cannot correct
+  (see the multipath scope note below).
+- **Subcarrier spacing** `Δf = fs / n_fft` should stay well under the
+  channel's coherence bandwidth `1 / τ_max` (so each subcarrier sees flat
+  fading) and comfortably above the link's Doppler spread `f_D` (so a
+  symbol's phase stays coherent across one OFDM symbol period); as a rule of
+  thumb, keep `Δf` at least an order of magnitude above `f_D`.
+- **`n_fft`** follows from the target `Δf` and `fs`: `n_fft = fs / Δf`,
+  rounded to a size `rustfft` handles efficiently (a power of two, or at
+  least highly composite).
+
+Once `n_fft`/`cp_len`/carrier layout are chosen, they flow straight into
+`CarrierPlan::new(n_fft, cp_len).with_data_carriers(...)`
+(`multicarrier/config.rs`) and `OfdmConfig` (`modulate/ofdm.rs`); nothing
+downstream re-derives or second-guesses them.
 
 **CFO acquisition capture range.** `ofdm_sync`'s Schmidl & Cox fractional
 estimator is unambiguous only within `±fs / (2 · repeat_len)` — note this is
@@ -156,19 +175,25 @@ See [performance.md](performance.md) for benchmark results and how to run them.
 
 | Acronym | Expansion | Notes |
 | ------- | --------- | ----- |
+| AFC | Automatic Frequency Control | PSK31's symbol-rate decision-directed PLL, tracks residual carrier drift |
 | AGC | Automatic Gain Control | `AgcRms`, `AgcRmsIq` in `dsp/agc.rs` |
 | AM | Amplitude Modulation | DSB (double-sideband) variant implemented |
 | AWGN | Additive White Gaussian Noise | Standard noise model used in tests |
+| BFO | Beat Frequency Oscillator | `bfo_hz` parameter in `SsbProductDemod` |
 | BP | Belief Propagation | Iterative sum-product algorithm used in LDPC decoder |
 | BPSK | Binary Phase-Shift Keying | 1 bit/symbol |
-| CLT | Central Limit Theorem | Used in AWGN generation (sum-of-uniforms approximation) |
 | CFO | Carrier Frequency Offset | TX/RX oscillator mismatch; corrected by `Rotator` before OFDM demod |
+| CLT | Central Limit Theorem | Used in AWGN generation (sum-of-uniforms approximation) |
+| CP | Cyclic Prefix | `CyclicPrefixInsert`/`CyclicPrefixRemove`; absorbs multipath delay spread up to `cp_len` |
 | CPFSK | Continuous-Phase Frequency-Shift Keying | Phase continuity across symbol boundaries; used by FT8/FT4 |
 | CRC | Cyclic Redundancy Check | CRC-14 (poly 0x2757) used by FT8/FT4 |
 | CW | Continuous Wave | Morse-code keyed carrier |
+| DBPSK | Differential Binary Phase-Shift Keying | PSK31's BPSK31 modulation (differential detection, no absolute-phase reference) |
 | DC | Direct Current | Zero-frequency component; blocked by `DcBlocker`; implicitly null in OFDM carrier plans |
+| DQPSK | Differential Quadrature Phase-Shift Keying | PSK31's QPSK31 modulation, decoded via soft Viterbi |
 | DSB | Double-Sideband | Both sidebands transmitted; see AM |
 | DSP | Digital Signal Processing | — |
+| EHF | Extremely High Frequency | 30–300 GHz; upper end of the OFDM target-band range |
 | EVM | Error Vector Magnitude | Soft-vs-ideal constellation distance, in dB; `OfdmRxFrame::evm_db` |
 | FEC | Forward Error Correction | LDPC is the FEC scheme in FT8/FT4; OFDM ships soft LLRs, no mandatory FEC |
 | FIR | Finite Impulse Response | `FirLowpass`, `FirDecimator` in `dsp/` |
@@ -182,21 +207,29 @@ See [performance.md](performance.md) for benchmark results and how to run them.
 | IIR | Infinite Impulse Response | `Biquad`, `LpCascade` in `dsp/` |
 | IQ | In-phase / Quadrature | Complex baseband representation; `Complex32` throughout |
 | LDPC | Low-Density Parity-Check | LDPC(174,91) code shared by FT8 and FT4 |
+| LEO | Low Earth Orbit | High-Doppler satellite case motivating OFDM's opt-in `PerSymbolPilotInterp` equalizer |
 | LLR | Log-Likelihood Ratio | `log(P(bit=0)/P(bit=1))`; positive ↔ bit more likely 0 |
 | LO | Local Oscillator | Receiver frequency reference; source of frequency offset |
 | LP | Low-Pass | `FirLowpass`, `LpCascade` filter types |
+| MLSE | Maximum-Likelihood Sequence Estimation | `viterbi_decode_coherent` in `codec/psk31.rs` |
+| NBFM | Narrowband FM | Voice FM with a small deviation-to-audio-bandwidth ratio |
 | NCO | Numerically Controlled Oscillator | `Nco` in `dsp/nco.rs`; phasor recurrence |
 | OFDM | Orthogonal Frequency-Division Multiplexing | `multicarrier/` + `modulate`/`demodulate`/`sync::ofdm*`; VHF–EHF target bands |
 | OTFS | Orthogonal Time Frequency Space | Planned future `multicarrier/`-based waveform |
+| PLL | Phase-Locked Loop | PSK31's AFC loop is a first-order decision-directed PLL |
 | PM | Phase Modulation | Quadrature (dφ) demod |
 | QAM | Quadrature Amplitude Modulation | 16/64/256-QAM implemented |
 | QPSK | Quadrature Phase-Shift Keying | 2 bits/symbol |
 | RF | Radio Frequency | Upconverted (non-baseband) signal |
 | RMS | Root Mean Square | Used by AGC and test SNR helpers |
+| RX | Receive / Receiver | — |
 | S&C | Schmidl & Cox | Repeated-segment preamble algorithm used by `ofdm_sync` for timing/CFO |
 | SC-FDMA | Single-Carrier Frequency-Division Multiple Access | DFT-s-OFDM; planned future `multicarrier/`-based waveform |
 | SDR | Software-Defined Radio | — |
 | SNR | Signal-to-Noise Ratio | Expressed in dB throughout |
 | SSB | Single-Sideband | Phasing (Weaver) modulator; product demodulator |
 | TDF-II | Transposed Direct Form II | Biquad filter state-variable structure |
+| TX | Transmit / Transmitter | — |
 | UHF | Ultra High Frequency | 300 MHz–3 GHz; secondary target band |
+| VHF | Very High Frequency | 30–300 MHz; lower end of the OFDM target-band range |
+| WBFM | Wideband FM | Broadcast FM with a large deviation-to-audio-bandwidth ratio |
