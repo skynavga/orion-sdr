@@ -105,20 +105,16 @@ fn ofdm_mod_null_carriers_are_silent() {
         .collect();
 
     let eps = 1e-3f32;
-    for bin in 0..n_fft {
+    for (bin, value) in freq.iter().enumerate() {
         if !data_bins.contains(&bin) {
             assert!(
-                freq[bin].norm() < eps,
+                value.norm() < eps,
                 "null bin {} not silent: {:?}",
                 bin,
-                freq[bin]
+                value
             );
         } else {
-            assert!(
-                freq[bin].norm() > eps,
-                "data bin {} unexpectedly silent",
-                bin
-            );
+            assert!(value.norm() > eps, "data bin {} unexpectedly silent", bin);
         }
     }
 }
@@ -262,6 +258,16 @@ fn ofdm_rx_frame_evm_present_cfo_absent() {
         out_off += bps;
     }
 
+    // Anchor: the noiseless roundtrip must recover the transmitted bits
+    // exactly. Without this, EVM is only self-consistent (soft symbols vs.
+    // ideal points re-mapped from the *decided* bits) and a demod that was
+    // wrong-but-self-consistent could still show low EVM. Pinning bits_out to
+    // bits_in makes the ideal reference the true transmitted constellation.
+    assert_eq!(
+        bits_out, bits_in,
+        "noiseless roundtrip must recover input bits"
+    );
+
     let frame = build_ofdm_rx_frame(&cfg, &soft_all, bits_out.clone());
 
     assert_eq!(frame.bits, bits_out);
@@ -286,6 +292,47 @@ fn ofdm_rx_frame_evm_present_cfo_absent() {
     assert!(
         frame.channel_mse.is_none(),
         "channel_mse should be None until equalization lands"
+    );
+}
+
+#[test]
+fn ofdm_rx_frame_evm_matches_known_error_magnitude() {
+    // Pin the EVM dB *formula*, not just "very negative". Feed soft symbols
+    // that are the ideal constellation points scaled by (1 + e) for a known
+    // e, so the per-symbol error vector is exactly e·ideal and
+    //   err_energy / ref_energy = e²  =>  evm_db = 10·log10(e²) = 20·log10(e).
+    // With e = 0.1 the expected EVM is exactly −20.0 dB. A wrong formula
+    // (e.g. 20·log10 of the ratio, or a missing normalization) would miss
+    // this, whereas the noiseless-roundtrip test's −20 dB *threshold* would
+    // not.
+    let n_fft = 16;
+    let cp_len = 4;
+    let cfg = qpsk_config(n_fft, cp_len, 48_000.0, 0.0);
+    let bps = cfg.bits_per_ofdm_symbol();
+
+    let bits: Vec<u8> = (0..bps).map(|i| ((i / 2 + i % 3) & 1) as u8).collect();
+
+    // Recover the ideal soft symbols via a noiseless demod (they sit exactly
+    // on the constellation for a flat, noiseless channel).
+    let mut modstage = OfdmMod::new(&cfg);
+    let iq = modstage.modulate(&bits);
+    let mut demod = OfdmDemod::new(&cfg);
+    let num_data = demod.num_data_carriers();
+    let mut ideal = vec![C32::default(); num_data];
+    demod.process(&iq, &mut ideal);
+
+    let e = 0.1f32;
+    let scaled: Vec<C32> = ideal.iter().map(|&s| s * (1.0 + e)).collect();
+
+    let frame = build_ofdm_rx_frame(&cfg, &scaled, bits.clone());
+    let evm = frame.evm_db.expect("evm_db populated");
+    let expected = 20.0 * e.log10(); // = -20.0 dB for e = 0.1
+    assert!(
+        (evm - expected).abs() < 0.2,
+        "EVM {} dB should match 20·log10(e) = {} dB for a known {}× error",
+        evm,
+        expected,
+        e
     );
 }
 
@@ -340,13 +387,13 @@ fn ofdm_equalizer_corrects_known_static_channel() {
     eq.process(&channeled_freq, &mut equalized);
 
     let eps = 0.05f32;
-    for bin in 0..n_fft {
+    for (bin, (&got, &want)) in equalized.iter().zip(clean_freq.iter()).enumerate() {
         assert!(
-            (equalized[bin] - clean_freq[bin]).norm() < eps,
+            (got - want).norm() < eps,
             "bin {} not corrected: got {:?}, expected {:?}",
             bin,
-            equalized[bin],
-            clean_freq[bin]
+            got,
+            want
         );
     }
 }
@@ -355,17 +402,22 @@ fn ofdm_equalizer_corrects_known_static_channel() {
 fn ofdm_equalizer_interp_between_pilots() {
     let n_fft = 16;
     let cp_len = 4;
-    // A handful of data carriers with pilots spread across the band, so
-    // interpolation between them is exercised for the data bins in between.
+    // Pilots at bins 2 and 6 (both in-range: valid signed indices for
+    // n_fft=16 are -8..=7), with data carriers 3,4,5 strictly between them so
+    // the linear `(Some, Some)` interpolation branch is exercised for those
+    // bins.
     let plan = CarrierPlan::new(n_fft, cp_len)
-        .with_data_carriers([1, 2, 3, 5, 6, 7])
-        .with_pilot_carriers([(4i32, C32::new(1.0, 0.0)), (8i32, C32::new(1.0, 0.0))]);
+        .with_data_carriers([1, 3, 4, 5, 7])
+        .with_pilot_carriers([(2i32, C32::new(1.0, 0.0)), (6i32, C32::new(1.0, 0.0))]);
     let cfg = OfdmConfig::new(plan, 48_000.0, 0.0, 1.0, ConstellationOrder::Qpsk);
 
-    // Linear-in-bin-index channel gain between the two pilots (bins 4 and 8)
-    // so exact linear interpolation should recover it closely at bins 5..7.
+    // A channel that is linear *in bin index* across the pilot span in both
+    // magnitude and phase, so exact linear interpolation of the complex
+    // channel ratio should recover it closely at the in-between bins. Using a
+    // complex (phase-rotating) channel — not a purely real gain — exercises
+    // interpolation of the imaginary part too.
     let channel: Vec<C32> = (0..n_fft)
-        .map(|k| C32::new(1.0 + 0.1 * k as f32, 0.0))
+        .map(|k| C32::from_polar(1.0 + 0.05 * k as f32, 0.03 * k as f32))
         .collect();
 
     let mut eq = OfdmEqualizer::new(&cfg, EqualizerMethod::PerSymbolPilotInterp);
@@ -376,15 +428,17 @@ fn ofdm_equalizer_interp_between_pilots() {
     // directly in the frequency domain (equivalent to a static per-bin
     // channel for this test's purposes).
     let mut freq = vec![C32::new(1.0, 0.0); n_fft];
-    for bin in 0..n_fft {
-        freq[bin] *= channel[bin];
+    for (f, &h) in freq.iter_mut().zip(channel.iter()) {
+        *f *= h;
     }
 
     let mut equalized = vec![C32::default(); n_fft];
     eq.process(&freq, &mut equalized);
 
-    let eps = 0.15f32;
-    for &bin in &[5usize, 6, 7] {
+    // Between the pilots (bins 3,4,5), linear interpolation of the complex
+    // channel ratio is exact, so equalization recovers the pre-channel value.
+    let eps = 0.05f32;
+    for &bin in &[3usize, 4, 5] {
         assert!(
             (equalized[bin] - C32::new(1.0, 0.0)).norm() < eps,
             "bin {} not corrected via pilot interpolation: got {:?}",
@@ -402,8 +456,8 @@ fn apply_bin_channel(time: &[C32], channel: &[C32], n_fft: usize) -> Vec<C32> {
     let mut fft = FftBlock::new(n_fft);
     let mut freq = vec![C32::default(); n_fft];
     fft.process(time, &mut freq);
-    for bin in 0..n_fft {
-        freq[bin] *= channel[bin];
+    for (f, &h) in freq.iter_mut().zip(channel.iter()) {
+        *f *= h;
     }
     let mut ifft = IfftBlock::new(n_fft);
     let mut out = vec![C32::default(); n_fft];
@@ -440,13 +494,36 @@ fn ofdm_soft_llr_sign_matches_hard_decision_for(constellation: ConstellationOrde
     assert_eq!(wr.in_read, num_data);
     assert_eq!(wr.out_written, bps);
 
-    for i in 0..bps {
-        let expected_bit = bits_hard[i];
-        let llr_sign_bit = u8::from(llrs[i] < 0.0);
+    // Anchor against ground truth: for a noiseless flat channel the soft
+    // symbols sit exactly on the transmitted constellation point, so the hard
+    // decision MUST equal the transmitted bits. Checking this first turns the
+    // LLR test from a mere soft-vs-hard *consistency* check (which a bug
+    // shared by both — e.g. in the common Gray axis table — could pass) into a
+    // check against the true bits.
+    assert_eq!(
+        bits_hard, bits_in,
+        "{:?}: noiseless hard decision must recover the transmitted bits",
+        constellation
+    );
+
+    for (i, (&llr, &bit_in)) in llrs.iter().zip(bits_in.iter()).enumerate() {
+        // Positive LLR ⇒ bit more likely 0; so sign bit (llr < 0) is the
+        // decided bit and must match the transmitted bit exactly.
+        let llr_sign_bit = u8::from(llr < 0.0);
         assert_eq!(
-            llr_sign_bit, expected_bit,
-            "{:?} bit {}: LLR {} sign disagrees with hard decision {}",
-            constellation, i, llrs[i], expected_bit
+            llr_sign_bit, bit_in,
+            "{:?} bit {}: LLR {} sign disagrees with transmitted bit {}",
+            constellation, i, llr, bit_in
+        );
+        // The LLR must also be confidently signed (not a near-zero tie) on a
+        // noiseless channel — a magnitude sanity check the pure sign test
+        // omitted.
+        assert!(
+            llr.abs() > 1e-3,
+            "{:?} bit {}: LLR {} implausibly close to zero on a noiseless channel",
+            constellation,
+            i,
+            llr
         );
     }
 }
@@ -461,5 +538,221 @@ fn ofdm_soft_llr_sign_matches_hard_decision() {
         ConstellationOrder::Qam256,
     ] {
         ofdm_soft_llr_sign_matches_hard_decision_for(order);
+    }
+}
+
+#[test]
+fn ofdm_mod_applies_tx_gain_and_demod_inverts_it() {
+    // TX gain scales the output IQ; RX gain scales the soft symbols. A round
+    // trip with TX gain g and RX gain 1/g must recover the same soft symbols
+    // as the unity-gain path, and gain=1.0 on both must be identical. This is
+    // the only test that drives the non-unity gain branches on either side
+    // (OfdmMod::process's rf/gain loop and OfdmDemod's `(g-1).abs()>EPSILON`
+    // correction).
+    let n_fft = 16;
+    let cp_len = 4;
+    let cfg = qpsk_config(n_fft, cp_len, 48_000.0, 0.0);
+    let bps = cfg.bits_per_ofdm_symbol();
+    let bits: Vec<u8> = (0..bps).map(|i| (i & 1) as u8).collect();
+
+    // Reference: unity gain end to end.
+    let mut mod_unity = OfdmMod::new(&cfg);
+    let iq_unity = mod_unity.modulate(&bits);
+    let mut demod_unity = OfdmDemod::new(&cfg);
+    let num_data = demod_unity.num_data_carriers();
+    let mut soft_ref = vec![C32::default(); num_data];
+    demod_unity.process(&iq_unity, &mut soft_ref);
+
+    // TX gain g: the emitted IQ must be exactly g times the unity IQ.
+    let g = 3.0f32;
+    let mut mod_gain = OfdmMod::new(&cfg);
+    mod_gain.set_gain(g);
+    let iq_gain = mod_gain.modulate(&bits);
+    for (a, b) in iq_gain.iter().zip(iq_unity.iter()) {
+        assert!(
+            (*a - *b * g).norm() < 1e-4,
+            "TX gain not applied: {:?} vs {:?}*{}",
+            a,
+            b,
+            g
+        );
+    }
+
+    // RX gain 1/g undoes it: soft symbols match the unity-gain reference.
+    let mut demod_gain = OfdmDemod::new(&cfg);
+    demod_gain.set_gain(1.0 / g);
+    let mut soft_corrected = vec![C32::default(); num_data];
+    demod_gain.process(&iq_gain, &mut soft_corrected);
+    for (a, b) in soft_corrected.iter().zip(soft_ref.iter()) {
+        assert!(
+            (*a - *b).norm() < 1e-4,
+            "RX gain did not invert TX gain: {:?} vs {:?}",
+            a,
+            b
+        );
+    }
+}
+
+#[test]
+fn ofdm_mod_rf_upconversion_applies_gain() {
+    // The rf_hz != 0.0 branch of OfdmMod::process has its own gain multiply
+    // (separate from the baseband branch); confirm gain scales the
+    // upconverted output too.
+    let n_fft = 16;
+    let cp_len = 4;
+    let cfg_g1 = qpsk_config(n_fft, cp_len, 48_000.0, 6_000.0);
+    let bps = cfg_g1.bits_per_ofdm_symbol();
+    let bits: Vec<u8> = (0..bps).map(|i| ((i / 2) & 1) as u8).collect();
+
+    let mut mod_g1 = OfdmMod::new(&cfg_g1);
+    let iq_g1 = mod_g1.modulate(&bits);
+
+    let g = 2.5f32;
+    let mut mod_g = OfdmMod::new(&cfg_g1);
+    mod_g.set_gain(g);
+    let iq_g = mod_g.modulate(&bits);
+
+    for (a, b) in iq_g.iter().zip(iq_g1.iter()) {
+        assert!(
+            (*a - *b * g).norm() < 1e-4,
+            "gain not applied on the RF-upconversion path: {:?} vs {:?}*{}",
+            a,
+            b,
+            g
+        );
+    }
+}
+
+#[test]
+fn ifft_dc_bin_scale_is_one_over_n() {
+    // Isolated pin on the IFFT's 1/N scale (fft.rs folds `scale = 1/n_fft`
+    // into the output copy). Only ever tested via the cancelling FFT->IFFT
+    // roundtrip elsewhere, where a compensating error in both would hide.
+    // IFFT of a single DC bin [c, 0, 0, ...] must be the constant c/N in
+    // every time sample.
+    use orion_sdr::multicarrier::IfftBlock;
+
+    let n_fft = 32;
+    let c = C32::new(4.0, -2.0);
+    let mut freq = vec![C32::default(); n_fft];
+    freq[0] = c;
+
+    let mut ifft = IfftBlock::new(n_fft);
+    let mut time = vec![C32::default(); n_fft];
+    ifft.process(&freq, &mut time);
+
+    let expected = c / n_fft as f32;
+    let eps = 1e-5f32;
+    for (k, s) in time.iter().enumerate() {
+        assert!(
+            (*s - expected).norm() < eps,
+            "IFFT DC scale wrong at sample {}: got {:?}, expected {:?} (=c/N)",
+            k,
+            s,
+            expected
+        );
+    }
+}
+
+#[test]
+fn ofdm_mod_zero_pads_final_partial_symbol() {
+    // `modulate` zero-pads a final partial symbol up to a whole
+    // bits_per_ofdm_symbol boundary. Feed 1.5 symbols' worth of bits and
+    // confirm (a) the output is exactly 2 whole symbols long, and (b) the
+    // second symbol equals what modulating the same partial bits explicitly
+    // zero-padded produces.
+    let cfg = qpsk_config(16, 4, 48_000.0, 0.0);
+    let bps = cfg.bits_per_ofdm_symbol();
+    let sps = cfg.samples_per_ofdm_symbol();
+
+    let partial = bps + bps / 2; // 1.5 symbols
+    let bits: Vec<u8> = (0..partial).map(|i| (i & 1) as u8).collect();
+
+    let mut modstage = OfdmMod::new(&cfg);
+    let iq = modstage.modulate(&bits);
+    assert_eq!(
+        iq.len(),
+        2 * sps,
+        "partial final symbol should be padded to a whole symbol"
+    );
+
+    // Reference: same bits, explicitly zero-padded to 2 whole symbols.
+    let mut padded = bits.clone();
+    padded.resize(2 * bps, 0);
+    let mut mod_ref = OfdmMod::new(&cfg);
+    let iq_ref = mod_ref.modulate(&padded);
+    assert_eq!(
+        iq, iq_ref,
+        "zero-padding of the partial symbol is inconsistent"
+    );
+}
+
+#[test]
+fn ofdm_equalizer_pilot_interp_empty_pilots_is_noop() {
+    // PerSymbolPilotInterp with zero in-band pilots must leave the held
+    // estimate (identity, 1.0+0j) unchanged, per the documented fallback --
+    // a valid config for the default-equalizer use case that specifies no
+    // pilots. Equalization then passes the input through unchanged.
+    let n_fft = 16;
+    let cp_len = 4;
+    let plan = CarrierPlan::new(n_fft, cp_len).with_data_carriers(1..8);
+    let cfg = OfdmConfig::new(plan, 48_000.0, 0.0, 1.0, ConstellationOrder::Qpsk);
+
+    let mut eq = OfdmEqualizer::new(&cfg, EqualizerMethod::PerSymbolPilotInterp);
+
+    // An arbitrary (non-unit) frequency-domain vector. With no pilots the
+    // equalizer divides by the identity estimate, so output == input.
+    let freq: Vec<C32> = (0..n_fft)
+        .map(|k| C32::new(0.5 + k as f32, -(k as f32)))
+        .collect();
+    let mut equalized = vec![C32::default(); n_fft];
+    eq.process(&freq, &mut equalized);
+
+    for (bin, (&got, &want)) in equalized.iter().zip(freq.iter()).enumerate() {
+        assert!(
+            (got - want).norm() < 1e-5,
+            "empty-pilot interp should be a pass-through at bin {}: {:?} vs {:?}",
+            bin,
+            got,
+            want
+        );
+    }
+}
+
+#[test]
+fn ofdm_equalizer_pilot_interp_extrapolates_outside_pilot_span() {
+    // Data bins that fall outside the [min pilot, max pilot] span exercise
+    // the nearest-pilot fallback (a data bin below the lowest pilot or above
+    // the highest), which the between-pilots test never reaches. With a
+    // single distinct value per pilot, a bin outside the span takes the
+    // nearest pilot's channel ratio.
+    let n_fft = 16;
+    let cp_len = 4;
+    // Pilots at bins 3 and 6; data at 1 (below the span) and 7 (above it),
+    // plus 4,5 inside. All in-range for n_fft=16 (-8..=7).
+    let plan = CarrierPlan::new(n_fft, cp_len)
+        .with_data_carriers([1, 4, 5, 7])
+        .with_pilot_carriers([(3i32, C32::new(1.0, 0.0)), (6i32, C32::new(1.0, 0.0))]);
+    let cfg = OfdmConfig::new(plan, 48_000.0, 0.0, 1.0, ConstellationOrder::Qpsk);
+
+    // A per-bin channel that is constant across the whole band, so both the
+    // interpolated and the nearest-pilot-extrapolated estimates equal that
+    // constant and equalization recovers the pre-channel value everywhere,
+    // including the out-of-span bins 1 and 7.
+    let h = C32::from_polar(0.7, 0.4);
+    let freq: Vec<C32> = (0..n_fft).map(|_| h).collect();
+
+    let mut eq = OfdmEqualizer::new(&cfg, EqualizerMethod::PerSymbolPilotInterp);
+    let mut equalized = vec![C32::default(); n_fft];
+    eq.process(&freq, &mut equalized);
+
+    let eps = 1e-4f32;
+    for &bin in &[1usize, 4, 5, 7] {
+        assert!(
+            (equalized[bin] - C32::new(1.0, 0.0)).norm() < eps,
+            "data bin {} not equalized (out-of-span fallback): {:?}",
+            bin,
+            equalized[bin]
+        );
     }
 }
