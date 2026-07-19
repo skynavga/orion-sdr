@@ -6,7 +6,7 @@
 # Modulator Usage
 
 Usage patterns and examples for all modulators in **orion-sdr**: CW, AM, SSB, FM, PM,
-BPSK, QPSK, QAM-16/64/256.
+BPSK, QPSK, QAM-16/64/256, FT8/FT4, and OFDM.
 
 ## CW Keyed Modulator
 
@@ -244,3 +244,61 @@ let mut iq   = vec![C32::default(); 256];
 BpskMapper::new().process(&bits, &mut syms);
 BpskMod::new(fs, rf_hz, 1.0).process(&syms, &mut iq);
 ```
+
+---
+
+## OFDM Modulator
+
+`OfdmMod` fuses the whole TX chain — symbol mapper (BPSK/QPSK/QAM, reused
+verbatim) → resource-grid mapping → IFFT → cyclic prefix → optional RF
+upconversion — into a single `Block<In = u8, Out = C32>`. Numerology
+(`n_fft`, `cp_len`, carrier layout) is entirely caller-owned via `CarrierPlan`;
+see [design.md](design.md#multicarrier--ofdm-pipeline) for the FFT
+normalization and carrier-indexing conventions.
+
+```rust
+use orion_sdr::{
+    core::Block,
+    modulate::{ConstellationOrder, OfdmConfig, OfdmMod},
+    multicarrier::CarrierPlan,
+};
+
+let n_fft = 64;
+let cp_len = 8;
+
+// Signed carrier indices (bin 0 = DC); a contiguous band on both sides of
+// DC, leaving DC itself null (opt in explicitly to use bin 0).
+let half = (n_fft / 2) as i32;
+let data_carriers: Vec<i32> = (1..half).chain(-(half - 1)..0).collect();
+let plan = CarrierPlan::new(n_fft, cp_len).with_data_carriers(data_carriers);
+
+let cfg = OfdmConfig::new(
+    plan,
+    48_000.0,               // fs
+    0.0,                    // rf_hz (0 = baseband)
+    1.0,                    // gain
+    ConstellationOrder::Qpsk,
+);
+
+let mut modstage = OfdmMod::new(&cfg);
+let bits = vec![0u8; cfg.bits_per_ofdm_symbol()];
+let mut iq = vec![num_complex::Complex32::default(); cfg.samples_per_ofdm_symbol()];
+modstage.process(&bits, &mut iq);
+
+// Or use the convenience wrapper, which zero-pads a final partial symbol
+// and handles multi-symbol batches:
+let bits_batch = vec![0u8; 5 * cfg.bits_per_ofdm_symbol()];
+let iq_batch = modstage.modulate(&bits_batch);
+```
+
+`OfdmMod` consumes whole `bits_per_ofdm_symbol()`-sized bit chunks and
+produces whole `samples_per_ofdm_symbol()`-sized IQ chunks per `process()`
+call; a partial trailing chunk is a no-op (`WorkReport::default()`), with no
+cross-call buffering — the same contract every `multicarrier::` primitive
+follows. `OfdmMod` deliberately does **not** route its sub-blocks through
+`IqToIqChain`/`AudioToIqChain`, since those chains assume near-1:1 sample
+flow and would silently truncate the IFFT+CP's rate expansion.
+
+Prepend a packet-sync preamble with `generate_ofdm_preamble` (see
+[demodulate.md](demodulate.md#ofdm-packet-sync--cfo-acquisition)) when the
+receiver doesn't already know the packet start time and carrier offset.

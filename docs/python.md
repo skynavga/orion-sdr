@@ -7,8 +7,9 @@
 
 The complete orion-sdr stack is available as a native Python extension via PyO3: analog
 modes (CW, AM, SSB, FM, PM), digital modes (BPSK, QPSK, QAM-16/64/256), PSK31
-(BPSK31/QPSK31 with streaming decode), and the full FT8/FT4 pipeline (waveform, codec,
-sync, message packing) — 31 classes and functions in total.
+(BPSK31/QPSK31 with streaming decode), the full FT8/FT4 pipeline (waveform, codec,
+sync, message packing), and OFDM (config, waveform mod/demod, channel equalization,
+soft demapping, packet sync/CFO acquisition) — 45 classes and functions in total.
 
 ## Installation
 
@@ -92,6 +93,7 @@ If you have the `.venv` activated (`source .venv/bin/activate`) you can drop the
 | `test_roundtrip.py` | Mod→demod SNR for CW, AM, SSB, FM, PM; noiseless bit-exact roundtrips for BPSK, QPSK, QAM-16/64/256 |
 | `test_psk31.py` | Varicode, BPSK31/QPSK31 mod/demod, Psk31Stream, Bpsk31Decider, psk31\_sync, best\_psk31\_sync |
 | `test_ft8.py` | FT8/FT4 waveform shape/roundtrip, codec encode/decode, sync detection, message roundtrips, full-stack test |
+| `test_ofdm.py` | Config validation, TX/RX roundtrip (QPSK, QAM-16), packet sync, `OfdmRxFrame` construction |
 
 ## Python Source Layout
 
@@ -99,7 +101,7 @@ If you have the `.venv` activated (`source .venv/bin/activate`) you can drop the
 python/
   orion_sdr/
     __init__.py       ← re-exports everything from the native extension
-    __init__.pyi      ← hand-authored PEP 561 type stub (all 31 classes/functions)
+    __init__.pyi      ← hand-authored PEP 561 type stub (all 45 classes/functions)
     py.typed          ← PEP 561 marker; tells type checkers this package is typed
     orion_sdr.so      ← compiled native extension (built by maturin, not in repo)
   tests/
@@ -541,6 +543,93 @@ if payload_out:
     msg = sdr.ft8_unpack(payload_out)
     print(msg["call_to"], msg["call_de"], msg["extra"])
     # → KD9ABC W9XYZ FN31
+```
+
+## OFDM
+
+OFDM targets VHF through EHF (predominantly line-of-sight terrestrial-microwave
+and satellite links). The Python surface exposes two fused entry points —
+`OfdmMod` and `OfdmDemod` — plus free functions for packet sync/CFO
+acquisition, matching how the Rust API keeps `CarrierGrid`/`FftBlock`/`GridMap`
+internal. See [design.md](design.md#multicarrier--ofdm-pipeline) for the
+underlying FFT-normalization, carrier-indexing, and channel-estimation
+conventions.
+
+### Config and waveform round trip
+
+```python
+import orion_sdr as sdr
+import numpy as np
+
+FS = 48_000.0
+N_FFT = 64
+CP_LEN = 8
+
+# Signed carrier indices (bin 0 = DC); a contiguous band on both sides of DC,
+# leaving DC itself null.
+half = N_FFT // 2
+data_carriers = np.array(
+    list(range(1, half)) + list(range(-(half - 1), 0)), dtype=np.int32
+)
+# No pilots for this example — TrainingSymbolHold doesn't need them.
+pilot_idx = np.zeros(0, dtype=np.int32)
+pilot_val = np.zeros(0, dtype=np.complex64)
+
+cfg = sdr.OfdmConfig(
+    N_FFT, CP_LEN, data_carriers, pilot_idx, pilot_val,
+    FS, 0.0, 1.0, "qpsk",
+)
+
+mod = sdr.OfdmMod(cfg)
+bits = np.zeros(cfg.bits_per_ofdm_symbol, dtype=np.uint8)
+iq = mod.modulate(bits)   # → complex64, shape (samples_per_ofdm_symbol,)
+
+demod = sdr.OfdmDemod(cfg)   # equalizer="training_symbol" by default
+bits_out = demod.demodulate(iq)   # → uint8, shape (bits_per_ofdm_symbol,)
+```
+
+`rf_hz` in `OfdmConfig` only controls TX-side upconversion in `OfdmMod`;
+`OfdmDemod` operates on baseband IQ (matching the Rust API's scope), so
+downconvert with a `Rotator`-equivalent phasor before calling `demodulate()`
+if `rf_hz != 0.0`.
+
+### Packet sync and CFO acquisition
+
+```python
+import orion_sdr as sdr
+import numpy as np
+
+FS = 48_000.0
+NUM_REPEATS, REPEAT_LEN = 4, 32
+
+# Prepend a Schmidl & Cox-style preamble ahead of the data symbols.
+preamble_iq = sdr.generate_ofdm_preamble(cfg, NUM_REPEATS, REPEAT_LEN)
+buf = np.concatenate([preamble_iq, iq])
+
+results = sdr.ofdm_sync(buf, FS, NUM_REPEATS, REPEAT_LEN, 0, len(buf))
+best = results[0]
+print(best["start_sample"], best["cfo_hz"], best["score"])
+```
+
+Pass `training_n_fft`/`training_cp_len` to both `generate_ofdm_preamble` and
+`ofdm_sync` to add a dedicated training symbol for wide-range integer-CFO
+recovery (fractional-only capture is limited to ±½ the subcarrier spacing).
+The same training symbol also drives `OfdmDemod`'s default channel estimator
+— call `estimate_channel(training_iq)` once per packet before `demodulate()`
+when using the `"training_symbol"` equalizer with a real (non-flat) channel.
+
+### Soft symbols and RX diagnostics
+
+```python
+import orion_sdr as sdr
+import numpy as np
+
+soft, bits_out = demod.demodulate_soft(iq)   # (complex64[], uint8[])
+frame = sdr.build_ofdm_rx_frame(cfg, soft, bits_out)
+
+print(frame.evm_db)     # populated immediately (soft vs. ideal constellation)
+print(frame.cfo_hz)     # None until you've run ofdm_sync yourself
+print(frame.channel_mse)  # None — not computed by this release's equalizer
 ```
 
 ## Notes

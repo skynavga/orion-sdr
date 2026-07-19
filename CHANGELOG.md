@@ -9,6 +9,39 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.42] - 2026-07-18
+
+### Added
+
+- Python bindings for the full OFDM stack (`src/python/ofdm.rs`):
+  `OfdmConfig`, `OfdmMod`, `OfdmDemod` (with `demodulate`,
+  `demodulate_soft`, `estimate_channel`), `OfdmRxFrame`,
+  `build_ofdm_rx_frame`, `ofdm_sync`, and `generate_ofdm_preamble`,
+  re-exported from `orion_sdr` alongside the rest of the public API.
+  This is Release I / Phase 9 of the OFDM support roadmap, and stabilizes
+  the OFDM public API surface across Rust and Python.
+- `python/tests/test_ofdm.py`: 11 tests covering config/waveform
+  round trip, packet sync + CFO acquisition, and soft-symbol/RX
+  frame diagnostics through the Python bindings.
+- OFDM/multicarrier coverage across `docs/*.md` and `README.md`:
+  Rust and Python API references, usage examples (all verified against
+  the built extension), freshly measured throughput/BER/packet-sync
+  performance data, an expanded acronym glossary, and concrete
+  numerology guidance (CP length, subcarrier spacing, `n_fft`) for
+  choosing `CarrierPlan`/`OfdmConfig` parameters.
+
+### Changed
+
+- Crate framing updated to "HF-through-EHF" across `Cargo.toml`,
+  `pyproject.toml`, `CLAUDE.md`, and `README.md`, replacing the
+  narrower "HF-to-UHF" description.
+
+### Fixed
+
+- Stale documentation: incorrect Python binding/test counts, a
+  reference to a nonexistent `BasicChain` scheduler, and an outdated
+  test-gating file path in `docs/conventions.md`.
+
 ## [0.0.41] - 2026-07-18
 
 ### Added
