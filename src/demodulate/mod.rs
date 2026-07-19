@@ -20,7 +20,9 @@ pub mod ft8;
 pub use ft8::Ft8Demod;
 
 pub mod ofdm;
-pub use ofdm::{OfdmDecider, OfdmDemod, OfdmRxFrame, build_ofdm_rx_frame};
+pub use ofdm::{
+    EqualizerMethod, OfdmDecider, OfdmDemod, OfdmEqualizer, OfdmRxFrame, build_ofdm_rx_frame,
+};
 
 pub mod pm;
 pub use pm::PmQuadratureDemod;
