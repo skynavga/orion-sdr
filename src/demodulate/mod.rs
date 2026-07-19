@@ -21,7 +21,8 @@ pub use ft8::Ft8Demod;
 
 pub mod ofdm;
 pub use ofdm::{
-    EqualizerMethod, OfdmDecider, OfdmDemod, OfdmEqualizer, OfdmRxFrame, build_ofdm_rx_frame,
+    EqualizerMethod, OfdmDecider, OfdmDemod, OfdmEqualizer, OfdmRxFrame, OfdmSoftDemod,
+    bpsk_soft_llr, build_ofdm_rx_frame, qam_soft_llr, qpsk_soft_llr,
 };
 
 pub mod pm;
