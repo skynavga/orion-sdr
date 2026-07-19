@@ -9,6 +9,37 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.41] - 2026-07-18
+
+### Added
+
+- `bpsk_soft_llr`, `qpsk_soft_llr`, `qam_soft_llr<BITS>`, and
+  `OfdmSoftDemod` (`src/demodulate/ofdm.rs`): max-log soft (LLR) demapping
+  per constellation order, dispatched by `ConstellationOrder`. Positive
+  LLR indicates the bit is more likely 0, matching the crate-wide LLR
+  convention. `OfdmSoftDemod` is a separate type from `OfdmDecider` (not
+  a mode flag), mirroring the existing `Ft8Demod`/`Ft8Codec::decode_soft`
+  split. No mandatory FEC ships in this release — soft LLRs are the
+  deliverable, directly usable by an external/user-supplied FEC layer.
+  This is Release H / Phase 8 of the OFDM support roadmap.
+- Unit test `ofdm_soft_llr_sign_matches_hard_decision`, checking LLR sign
+  against `OfdmDecider`'s hard output across all five constellation
+  orders (BPSK, QPSK, QAM-16/64/256).
+
+### Changed
+
+- Loosened `axis_scale`/`build_axis_table` in `src/modulate/qam.rs` to
+  `pub(crate)` so the soft-LLR path reuses `QamMapper`/`QamDecider`'s
+  exact Gray-coded amplitude table instead of duplicating it.
+
+### Fixed
+
+- The QAM max-log LLR formula initially computed `d0_sq - d1_sq`
+  (distance-to-nearest-bit=0-point minus distance-to-nearest-bit=1-point)
+  where it needed `d1_sq - d0_sq` — the sign was inverted relative to the
+  "positive LLR ⇒ bit more likely 0" convention. Caught immediately by
+  `ofdm_soft_llr_sign_matches_hard_decision` before merge.
+
 ## [0.0.40] - 2026-07-18
 
 ### Added
