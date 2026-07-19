@@ -88,6 +88,64 @@ across all orders.
 carrier phasor from an internal `Rotator` (phasor recurrence, no per-sample trig).
 Setting `rf_hz = 0.0` gives baseband passthrough.
 
+## Multicarrier / OFDM Pipeline
+
+OFDM is the first of a planned family of multicarrier waveforms sharing the
+`multicarrier/` module (waveform-agnostic FFT-domain primitives); DFT-s-OFDM
+(SC-FDMA) and OTFS are expected to follow and reuse `CarrierPlan`/`CarrierGrid`
+verbatim. The conventions below were decided during OFDM's implementation and
+apply to those future waveforms too.
+
+**FFT normalization.** Unity-gain forward FFT (`FftBlock`); `1/N` scale
+folded into the inverse FFT's output copy (`IfftBlock`), not a separate
+normalization pass. The forward direction matches `util::power_spectrum()`.
+The inverse convention is the standard OFDM choice: it keeps a transmitted
+symbol's amplitude independent of `n_fft` and makes `IFFT(1/N)` then
+`FFT(unity)` round-trip exactly.
+
+**Carrier indexing.** Natural rustfft bin order internally (bin 0 = DC,
+negative frequencies wrap into `n_fft/2..n_fft`); a **signed** carrier-index
+convention (e.g. `-26..=26`) at the `CarrierGrid` public API boundary, with
+`bin = carrier_idx.rem_euclid(n_fft)` computed once per carrier at grid
+construction — never per-sample, and no `fftshift` pass is ever run over a
+full FFT buffer. DC (bin 0) is implicitly null unless explicitly included in
+a carrier plan's data or pilot carriers.
+
+**Numerology is caller-owned.** `CarrierPlan` bakes in no standard's
+subcarrier spacing, CP length, or carrier count. OFDM's target bands (VHF
+through EHF, including the L/S/X/Ku/Ka microwave bands) span orders of
+magnitude in delay spread and Doppler spread, so the library supplies the
+mechanism; numerology selection is the caller's responsibility.
+
+**CFO acquisition capture range.** `ofdm_sync`'s Schmidl & Cox fractional
+estimator is unambiguous only within `±fs / (2 · repeat_len)` — note this is
+**not** always `±½` the subcarrier spacing; it equals that only when
+`repeat_len = n_fft / 2`. Wider offsets alias and require the integer-CFO
+stage (a dedicated training symbol, FFT'd and correlated against its known
+frequency-domain pattern across candidate bin shifts) to resolve. Because a
+purely periodic S&C preamble correlates against itself at any offset fully
+inside its repeated structure — not only the true start — `ofdm_sync` breaks
+timing ties using the correlated window's own energy, which peaks only where
+every correlated sample is real preamble signal.
+
+**Channel estimation default.** For OFDM's predominantly line-of-sight,
+terrestrial-microwave/satellite target bands, a channel estimate taken once
+per packet from the training symbol and held constant
+(`EqualizerMethod::TrainingSymbolHold`) is the default — not merely the
+simplest option, but the physically correct one given static/slowly-varying
+multipath is the dominant impairment. Per-symbol pilot-interpolated
+re-estimation (`PerSymbolPilotInterp`) is the explicit opt-in for genuinely
+time-varying channels (fast-moving aeronautical or LEO geometries).
+
+**Block-boundary contract.** Every FFT-domain `Block` (`FftBlock`,
+`IfftBlock`, `CyclicPrefixInsert`/`Remove`, `GridMap`/`GridExtract`,
+`OfdmEqualizer`) operates on exactly one symbol's worth of input per
+`process()` call and is a no-op on partial input, with no cross-call
+buffering. `OfdmMod`/`OfdmDemod` drive their sub-blocks directly through
+owned scratch buffers rather than the generic chain schedulers
+(`IqToIqChain`/etc.), since those schedulers assume near-1:1 sample flow and
+would silently truncate a rate-expanding stage like the IFFT+CP.
+
 ## Throughput
 
 See [performance.md](performance.md) for benchmark results and how to run them.
@@ -104,13 +162,15 @@ See [performance.md](performance.md) for benchmark results and how to run them.
 | BP | Belief Propagation | Iterative sum-product algorithm used in LDPC decoder |
 | BPSK | Binary Phase-Shift Keying | 1 bit/symbol |
 | CLT | Central Limit Theorem | Used in AWGN generation (sum-of-uniforms approximation) |
+| CFO | Carrier Frequency Offset | TX/RX oscillator mismatch; corrected by `Rotator` before OFDM demod |
 | CPFSK | Continuous-Phase Frequency-Shift Keying | Phase continuity across symbol boundaries; used by FT8/FT4 |
 | CRC | Cyclic Redundancy Check | CRC-14 (poly 0x2757) used by FT8/FT4 |
 | CW | Continuous Wave | Morse-code keyed carrier |
-| DC | Direct Current | Zero-frequency component; blocked by `DcBlocker` |
+| DC | Direct Current | Zero-frequency component; blocked by `DcBlocker`; implicitly null in OFDM carrier plans |
 | DSB | Double-Sideband | Both sidebands transmitted; see AM |
 | DSP | Digital Signal Processing | — |
-| FEC | Forward Error Correction | LDPC is the FEC scheme in FT8/FT4 |
+| EVM | Error Vector Magnitude | Soft-vs-ideal constellation distance, in dB; `OfdmRxFrame::evm_db` |
+| FEC | Forward Error Correction | LDPC is the FEC scheme in FT8/FT4; OFDM ships soft LLRs, no mandatory FEC |
 | FIR | Finite Impulse Response | `FirLowpass`, `FirDecimator` in `dsp/` |
 | FM | Frequency Modulation | Quadrature (discriminator) demod |
 | FMA | Fused Multiply-Add | `f32::mul_add`; used throughout inner loops |
@@ -126,11 +186,15 @@ See [performance.md](performance.md) for benchmark results and how to run them.
 | LO | Local Oscillator | Receiver frequency reference; source of frequency offset |
 | LP | Low-Pass | `FirLowpass`, `LpCascade` filter types |
 | NCO | Numerically Controlled Oscillator | `Nco` in `dsp/nco.rs`; phasor recurrence |
+| OFDM | Orthogonal Frequency-Division Multiplexing | `multicarrier/` + `modulate`/`demodulate`/`sync::ofdm*`; VHF–EHF target bands |
+| OTFS | Orthogonal Time Frequency Space | Planned future `multicarrier/`-based waveform |
 | PM | Phase Modulation | Quadrature (dφ) demod |
 | QAM | Quadrature Amplitude Modulation | 16/64/256-QAM implemented |
 | QPSK | Quadrature Phase-Shift Keying | 2 bits/symbol |
 | RF | Radio Frequency | Upconverted (non-baseband) signal |
 | RMS | Root Mean Square | Used by AGC and test SNR helpers |
+| S&C | Schmidl & Cox | Repeated-segment preamble algorithm used by `ofdm_sync` for timing/CFO |
+| SC-FDMA | Single-Carrier Frequency-Division Multiple Access | DFT-s-OFDM; planned future `multicarrier/`-based waveform |
 | SDR | Software-Defined Radio | — |
 | SNR | Signal-to-Noise Ratio | Expressed in dB throughout |
 | SSB | Single-Sideband | Phasing (Weaver) modulator; product demodulator |
