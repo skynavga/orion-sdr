@@ -8,6 +8,7 @@ use super::qpsk::QpskDecider;
 use crate::core::{Block, WorkReport};
 use crate::modulate::{ConstellationOrder, OfdmConfig};
 use crate::multicarrier::{CarrierGrid, CyclicPrefixRemove, FftBlock, GridExtract};
+use crate::sync::ofdm_sync::training_symbol_freq_pattern;
 use num_complex::Complex32 as C32;
 
 /// OFDM receiver: `C32` IQ → `C32` soft symbols.
@@ -239,4 +240,176 @@ fn evm_db(cfg: &OfdmConfig, soft_symbols: &[C32], bits: &[u8], num_symbols: usiz
     }
 
     Some((10.0 * (err_energy / ref_energy).log10()) as f32)
+}
+
+/// Selects how [`OfdmEqualizer`] derives its per-carrier channel estimate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EqualizerMethod {
+    /// Estimate once from a training symbol (via
+    /// [`OfdmEqualizer::estimate_from_training_symbol`]) and hold it
+    /// constant for the rest of the packet.
+    ///
+    /// The **default**, and for this feature's target bands (VHF–EHF,
+    /// L–Ka — predominantly line-of-sight terrestrial-microwave or
+    /// satellite links) not merely the simplest choice but the correct one:
+    /// the channel is dominated by static or slowly-varying
+    /// frequency-selective multipath, so an estimate taken once per packet
+    /// stays valid for the packet.
+    #[default]
+    TrainingSymbolHold,
+    /// Re-estimate every data symbol via frequency-domain linear
+    /// interpolation between [`CarrierGrid`]'s in-band pilot bins.
+    ///
+    /// The explicit opt-in for genuinely time-varying channels — fast-moving
+    /// aeronautical or LEO geometries with meaningful intra-packet Doppler
+    /// spread — where a held estimate would go stale.
+    PerSymbolPilotInterp,
+}
+
+/// Frequency-domain channel equalizer: `C32` → `C32`, operating on full
+/// `n_fft`-bin vectors. Sits between [`FftBlock`] and [`GridExtract`] as its
+/// own composable stage (not fused into [`OfdmDemod`]), so it can be
+/// swapped or disabled independently. Divides each bin by its channel
+/// estimate, with a small floor guard against near-zero estimates.
+///
+/// Scoped to this release: delay spread up to `cp_len` (the cyclic prefix
+/// absorbs the channel's impulse response — a longer delay spread causes
+/// inter-symbol interference this simple per-bin division does not model).
+pub struct OfdmEqualizer {
+    method: EqualizerMethod,
+    n_fft: usize,
+    /// Per-bin channel estimate; `1.0 + 0j` (no correction) until an
+    /// estimate is available.
+    estimate: Vec<C32>,
+    pilot_bins: Vec<(usize, C32)>,
+    data_bins: Vec<usize>,
+}
+
+/// Floor on `|estimate|²` before division, guarding against near-zero
+/// channel nulls blowing up the corrected magnitude.
+const EQUALIZER_FLOOR: f32 = 1e-6;
+
+impl OfdmEqualizer {
+    pub fn new(cfg: &OfdmConfig, method: EqualizerMethod) -> Self {
+        let grid = CarrierGrid::from_plan(&cfg.carrier_plan);
+        let n_fft = cfg.carrier_plan.n_fft();
+        Self {
+            method,
+            n_fft,
+            estimate: vec![C32::new(1.0, 0.0); n_fft],
+            pilot_bins: grid.pilot_bins().to_vec(),
+            data_bins: grid.data_bins().to_vec(),
+        }
+    }
+
+    pub fn method(&self) -> EqualizerMethod {
+        self.method
+    }
+
+    /// Computes and holds the channel estimate from a received training
+    /// symbol's FFT output (`n_fft` bins), dividing by the training
+    /// symbol's known frequency-domain pattern per bin. Only meaningful for
+    /// [`EqualizerMethod::TrainingSymbolHold`]; a no-op under
+    /// [`EqualizerMethod::PerSymbolPilotInterp`], which re-estimates from
+    /// pilots on every `process()` call instead.
+    pub fn estimate_from_training_symbol(&mut self, received_freq: &[C32]) {
+        if self.method != EqualizerMethod::TrainingSymbolHold || received_freq.len() < self.n_fft {
+            return;
+        }
+        let known = training_symbol_freq_pattern(self.n_fft);
+        for bin in 0..self.n_fft {
+            self.estimate[bin] = received_freq[bin] / known[bin];
+        }
+    }
+
+    /// Re-estimates every carrier's channel by linearly interpolating (in
+    /// the complex frequency domain) between the pilot bins' known-vs-
+    /// received ratios. Requires at least one pilot; with zero pilots the
+    /// held estimate (`1.0 + 0j` if never set) is left unchanged.
+    fn interpolate_from_pilots(&mut self, received_freq: &[C32]) {
+        if self.pilot_bins.is_empty() {
+            return;
+        }
+
+        let mut pilots: Vec<(usize, C32)> = self
+            .pilot_bins
+            .iter()
+            .map(|&(bin, known)| (bin, received_freq[bin] / known))
+            .collect();
+        pilots.sort_by_key(|&(bin, _)| bin);
+
+        for &bin in &self.data_bins {
+            self.estimate[bin] = interpolate_at(&pilots, bin, self.n_fft);
+        }
+        for &(bin, ratio) in &pilots {
+            self.estimate[bin] = ratio;
+        }
+    }
+}
+
+/// Linearly interpolates the channel ratio at `bin` between the nearest
+/// pilot bins on either side (circularly, wrapping across bin 0). Falls
+/// back to the nearest single pilot if `bin` is outside the pilot span on
+/// one side.
+fn interpolate_at(pilots: &[(usize, C32)], bin: usize, n_fft: usize) -> C32 {
+    if pilots.len() == 1 {
+        return pilots[0].1;
+    }
+
+    // Find surrounding pilots in linear (non-circular) bin order first.
+    let mut lower: Option<(usize, C32)> = None;
+    let mut upper: Option<(usize, C32)> = None;
+    for &(pbin, ratio) in pilots {
+        if pbin <= bin {
+            lower = Some((pbin, ratio));
+        }
+        if pbin >= bin && upper.is_none() {
+            upper = Some((pbin, ratio));
+        }
+    }
+
+    match (lower, upper) {
+        (Some((lb, lr)), Some((ub, ur))) if lb != ub => {
+            let t = (bin - lb) as f32 / (ub - lb) as f32;
+            lr + (ur - lr) * t
+        }
+        (Some((_, r)), _) => r,
+        (None, Some((_, r))) => r,
+        (None, None) => {
+            // No pilot below `bin`: wrap circularly to the last pilot,
+            // treating it as if it were `n_fft` bins before `bin`.
+            let (first_bin, first_ratio) = pilots[0];
+            let (last_bin, last_ratio) = pilots[pilots.len() - 1];
+            let span = (first_bin + n_fft) - last_bin;
+            let t = (bin + n_fft - last_bin) as f32 / span as f32;
+            last_ratio + (first_ratio - last_ratio) * t
+        }
+    }
+}
+
+impl Block for OfdmEqualizer {
+    type In = C32;
+    type Out = C32;
+
+    fn process(&mut self, input: &[C32], output: &mut [C32]) -> WorkReport {
+        if input.len() < self.n_fft || output.len() < self.n_fft {
+            return WorkReport::default();
+        }
+
+        if self.method == EqualizerMethod::PerSymbolPilotInterp {
+            self.interpolate_from_pilots(&input[..self.n_fft]);
+        }
+
+        for bin in 0..self.n_fft {
+            let h = self.estimate[bin];
+            let mag_sq = h.norm_sqr().max(EQUALIZER_FLOOR);
+            // Divide by h: multiply by conj(h) / |h|^2.
+            output[bin] = input[bin] * h.conj() / mag_sq;
+        }
+
+        WorkReport {
+            in_read: self.n_fft,
+            out_written: self.n_fft,
+        }
+    }
 }
