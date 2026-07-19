@@ -6,6 +6,7 @@ use super::bpsk::BpskDecider;
 use super::qam::{Qam16Decider, Qam64Decider, Qam256Decider, QamDecider};
 use super::qpsk::QpskDecider;
 use crate::core::{Block, WorkReport};
+use crate::modulate::qam::{axis_scale, build_axis_table};
 use crate::modulate::{ConstellationOrder, OfdmConfig};
 use crate::multicarrier::{CarrierGrid, CyclicPrefixRemove, FftBlock, GridExtract};
 use crate::sync::ofdm_sync::training_symbol_freq_pattern;
@@ -410,6 +411,168 @@ impl Block for OfdmEqualizer {
         WorkReport {
             in_read: self.n_fft,
             out_written: self.n_fft,
+        }
+    }
+}
+
+// ── Soft (LLR) demapping ─────────────────────────────────────────────────────
+//
+// Max-log LLR extraction per constellation order: `LLR(bit) = d0² - d1²`
+// where `d0`/`d1` are the distances from the received soft value to the
+// nearest constellation point with that bit equal to 0/1 respectively.
+// Positive LLR ⇒ bit more likely 0, matching the crate-wide LLR convention
+// (see the Acronym Glossary in docs/design.md). No mandatory FEC ships in
+// this release — soft LLRs are the deliverable, directly usable by an
+// external/user-supplied FEC layer.
+
+/// BPSK soft LLR for one axis value.
+///
+/// `BpskMapper` convention: bit 0 → (+1, 0), bit 1 → (−1, 0), so the raw
+/// in-phase value directly is the max-log LLR up to a constant scale (both
+/// candidate points are equidistant from any `v.re` in one dimension, so
+/// `d0² - d1² = 4·v.re`).
+#[inline]
+pub fn bpsk_soft_llr(v: C32) -> f32 {
+    4.0 * v.re
+}
+
+/// QPSK soft LLR for one symbol → `[b0_llr, b1_llr]`.
+///
+/// `QpskMapper` convention: b0 from the in-phase axis, b1 from quadrature,
+/// each an independent BPSK-style axis scaled by `1/√2`.
+#[inline]
+pub fn qpsk_soft_llr(v: C32) -> [f32; 2] {
+    let scale = 4.0 * std::f32::consts::SQRT_2;
+    [scale * v.re, scale * v.im]
+}
+
+/// Square-QAM soft LLR for one axis value, `K = BITS/2` bits (MSB-first),
+/// matching `QamMapper<BITS>`/`QamDecider<BITS>`'s Gray coding and bit
+/// order. Reuses the exact same Gray-coded amplitude table those types
+/// build internally (`build_axis_table`/`axis_scale` in `modulate::qam`).
+pub fn qam_axis_soft_llr<const BITS: usize>(v: f32, out: &mut [f32]) {
+    let k = BITS / 2;
+    let m = 1usize << k;
+    let table = build_axis_table(BITS, axis_scale(BITS));
+
+    for (b, slot) in out.iter_mut().enumerate().take(k) {
+        let bit_shift = k - 1 - b;
+        let mut d0_sq = f32::INFINITY;
+        let mut d1_sq = f32::INFINITY;
+        for (gray, &level) in table.iter().enumerate().take(m) {
+            let d_sq = (v - level) * (v - level);
+            if (gray >> bit_shift) & 1 == 0 {
+                d0_sq = d0_sq.min(d_sq);
+            } else {
+                d1_sq = d1_sq.min(d_sq);
+            }
+        }
+        // Positive LLR <=> bit more likely 0 <=> closer to a bit=0 point
+        // (smaller d0_sq) than any bit=1 point.
+        *slot = d1_sq - d0_sq;
+    }
+}
+
+/// One QAM symbol's soft LLRs: `BITS` values, `K = BITS/2` from the
+/// in-phase axis then `K` from quadrature, matching `QamMapper<BITS>`'s
+/// input layout.
+pub fn qam_soft_llr<const BITS: usize>(v: C32) -> [f32; 8] {
+    let k = BITS / 2;
+    let mut out = [0.0f32; 8];
+    qam_axis_soft_llr::<BITS>(v.re, &mut out[..k]);
+    qam_axis_soft_llr::<BITS>(v.im, &mut out[k..2 * k]);
+    out
+}
+
+/// Dispatches soft-LLR extraction by `ConstellationOrder` — the soft-output
+/// mirror of `DeciderKind`'s hard-decision dispatch.
+enum SoftKind {
+    Bpsk,
+    Qpsk,
+    Qam16,
+    Qam64,
+    Qam256,
+}
+
+impl SoftKind {
+    fn new(order: ConstellationOrder) -> Self {
+        match order {
+            ConstellationOrder::Bpsk => SoftKind::Bpsk,
+            ConstellationOrder::Qpsk => SoftKind::Qpsk,
+            ConstellationOrder::Qam16 => SoftKind::Qam16,
+            ConstellationOrder::Qam64 => SoftKind::Qam64,
+            ConstellationOrder::Qam256 => SoftKind::Qam256,
+        }
+    }
+
+    #[inline]
+    fn llrs_per_symbol(&self) -> usize {
+        match self {
+            SoftKind::Bpsk => 1,
+            SoftKind::Qpsk => 2,
+            SoftKind::Qam16 => 4,
+            SoftKind::Qam64 => 6,
+            SoftKind::Qam256 => 8,
+        }
+    }
+
+    #[inline]
+    fn extract(&self, v: C32, out: &mut [f32]) {
+        match self {
+            SoftKind::Bpsk => out[0] = bpsk_soft_llr(v),
+            SoftKind::Qpsk => out[..2].copy_from_slice(&qpsk_soft_llr(v)),
+            SoftKind::Qam16 => out[..4].copy_from_slice(&qam_soft_llr::<4>(v)[..4]),
+            SoftKind::Qam64 => out[..6].copy_from_slice(&qam_soft_llr::<6>(v)[..6]),
+            SoftKind::Qam256 => out[..8].copy_from_slice(&qam_soft_llr::<8>(v)[..8]),
+        }
+    }
+}
+
+/// OFDM soft demapper: `C32` soft symbol → `f32` LLRs, dispatching by
+/// `ConstellationOrder`. A separate type from [`OfdmDecider`] (not a mode
+/// flag), mirroring the crate's existing preference for distinct types per
+/// distinct output contract (e.g. `Ft8Demod` vs `Ft8Codec::decode_soft`).
+///
+/// Same whole-symbol-chunk-per-call contract as the other stages: consumes
+/// whole `num_data_carriers()`-sized soft-symbol chunks, produces whole
+/// `bits_per_ofdm_symbol()`-sized LLR chunks (one `f32` per bit, matching
+/// [`OfdmDecider`]'s bit-for-bit layout).
+pub struct OfdmSoftDemod {
+    num_data_carriers: usize,
+    bits_per_ofdm_symbol: usize,
+    kind: SoftKind,
+}
+
+impl OfdmSoftDemod {
+    pub fn new(cfg: &OfdmConfig) -> Self {
+        Self {
+            num_data_carriers: cfg.carrier_plan.data_carriers().len(),
+            bits_per_ofdm_symbol: cfg.bits_per_ofdm_symbol(),
+            kind: SoftKind::new(cfg.constellation),
+        }
+    }
+}
+
+impl Block for OfdmSoftDemod {
+    type In = C32;
+    type Out = f32;
+
+    fn process(&mut self, input: &[C32], output: &mut [f32]) -> WorkReport {
+        if input.len() < self.num_data_carriers || output.len() < self.bits_per_ofdm_symbol {
+            return WorkReport::default();
+        }
+
+        let llrs_per_symbol = self.kind.llrs_per_symbol();
+        for (k, &v) in input[..self.num_data_carriers].iter().enumerate() {
+            self.kind.extract(
+                v,
+                &mut output[k * llrs_per_symbol..(k + 1) * llrs_per_symbol],
+            );
+        }
+
+        WorkReport {
+            in_read: self.num_data_carriers,
+            out_written: self.bits_per_ofdm_symbol,
         }
     }
 }
