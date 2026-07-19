@@ -3,7 +3,7 @@
   SPDX-License-Identifier: MIT OR Apache-2.0
 -->
 
-# Features (as of v0.0.42)
+# Features (as of v0.0.43)
 
 - Core `Block` trait and runner
 - IQ→IQ, Audio→IQ, IQ→Audio graph schedulers (`IqToIqChain`, `AudioToIqChain`, `IqToAudioChain`)

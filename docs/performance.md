@@ -9,7 +9,7 @@ Measurements taken on Apple M2 Pro, release build (`opt-level=3`, `lto=fat`,
 `codegen-units=1`), no SIMD.  Results are ordered by throughput (descending)
 within each table.
 
-## v0.0.42 Results
+## v0.0.43 Results
 
 ### Analog modes (65536 samples × 30 passes)
 
