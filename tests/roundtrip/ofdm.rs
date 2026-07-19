@@ -5,8 +5,10 @@ use crate::common::add_awgn;
 use num_complex::Complex32 as C32;
 use orion_sdr::core::Block;
 use orion_sdr::demodulate::{OfdmDecider, OfdmDemod};
+use orion_sdr::dsp::Rotator;
 use orion_sdr::modulate::{ConstellationOrder, OfdmConfig, OfdmMod};
 use orion_sdr::multicarrier::CarrierPlan;
+use orion_sdr::sync::{OfdmPreamble, generate_ofdm_preamble, ofdm_sync};
 
 fn plan(n_fft: usize, cp_len: usize) -> CarrierPlan {
     let half = (n_fft / 2) as i32;
@@ -124,5 +126,75 @@ fn roundtrip_ofdm_awgn_flat_channel() {
         ber,
         errors,
         bits_in.len()
+    );
+}
+
+#[test]
+fn roundtrip_ofdm_with_cfo_and_unknown_start() {
+    // First release without the "known start" shortcut: sync locates the
+    // preamble and estimates fractional CFO, which is corrected via
+    // Rotator before the known-scope OfdmDemod pipeline takes over.
+    let n_fft = 64;
+    let cp_len = 8;
+    let fs = 48_000.0f32;
+    let cfg = config(n_fft, cp_len, ConstellationOrder::Qpsk);
+    let bps = cfg.bits_per_ofdm_symbol();
+    let n_symbols = 8;
+
+    let preamble = OfdmPreamble::new(4, 32);
+    let capture_hz = fs / (2.0 * preamble.repeat_len as f32);
+    let applied_cfo = capture_hz * 0.3; // within the fractional capture range
+
+    let bits_in: Vec<u8> = (0..n_symbols * bps)
+        .map(|i| ((i / 5 + i % 3) & 1) as u8)
+        .collect();
+
+    let mut modstage = OfdmMod::new(&cfg);
+    let data_iq = modstage.modulate(&bits_in);
+    let preamble_iq = generate_ofdm_preamble(&preamble, &cfg);
+
+    let unknown_start = 137usize;
+    let mut buf = vec![C32::default(); unknown_start];
+    buf.extend_from_slice(&preamble_iq);
+    buf.extend_from_slice(&data_iq);
+    buf.extend(vec![C32::default(); 32]);
+
+    let mut rot = Rotator::new(applied_cfo, fs);
+    let mut with_cfo = vec![C32::default(); buf.len()];
+    rot.rotate_block(&buf, &mut with_cfo);
+
+    let sync_results = ofdm_sync(&with_cfo, fs, &preamble, 0, with_cfo.len());
+    assert!(!sync_results.is_empty(), "sync failed to find the preamble");
+    let best = sync_results[0];
+    assert_eq!(best.start_sample, unknown_start);
+
+    // Correct the estimated CFO, then demod starting right after the
+    // preamble (a fixed, protocol-known offset from the sync point).
+    let mut correction = Rotator::new(-best.cfo_hz, fs);
+    let mut corrected = vec![C32::default(); with_cfo.len()];
+    correction.rotate_block(&with_cfo, &mut corrected);
+
+    let data_start = best.start_sample + preamble.total_len();
+    let iq = &corrected[data_start..data_start + data_iq.len()];
+
+    let mut demod = OfdmDemod::new(&cfg);
+    let mut decider = OfdmDecider::new(&cfg);
+    let samples_per_symbol = cfg.samples_per_ofdm_symbol();
+    let num_data = demod.num_data_carriers();
+    let mut soft = vec![C32::default(); num_data];
+    let mut bits_out = vec![0u8; bits_in.len()];
+
+    let mut in_off = 0usize;
+    let mut out_off = 0usize;
+    while in_off + samples_per_symbol <= iq.len() {
+        demod.process(&iq[in_off..], &mut soft);
+        decider.process(&soft, &mut bits_out[out_off..]);
+        in_off += samples_per_symbol;
+        out_off += bps;
+    }
+
+    assert_eq!(
+        bits_in, bits_out,
+        "OFDM roundtrip with CFO + unknown start failed"
     );
 }
