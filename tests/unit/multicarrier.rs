@@ -163,6 +163,29 @@ fn carrier_plan_validate_accepts_well_formed_plan() {
 }
 
 #[test]
+#[should_panic(expected = "invalid CarrierPlan")]
+fn carrier_grid_from_plan_panics_on_overlap() {
+    // A bin used as both data and pilot fails validate(); from_plan must
+    // reject it rather than silently push it into both data_bins and
+    // pilot_bins (where GridMap would overwrite the data value with the
+    // pilot). Guards the whole Rust OFDM pipeline at construction.
+    let plan = CarrierPlan::new(64, 8)
+        .with_data_carriers([1, 2, 3])
+        .with_pilot_carriers([(3, C32::new(1.0, 0.0))]);
+    let _ = CarrierGrid::from_plan(&plan);
+}
+
+#[test]
+#[should_panic(expected = "invalid CarrierPlan")]
+fn carrier_grid_from_plan_panics_on_out_of_range() {
+    // Carrier 8 is out of range for n_fft=16 (valid signed range -8..=7):
+    // +8 is the Nyquist bin, excluded on the positive side. Without the
+    // validate() gate, rem_euclid would silently accept it.
+    let plan = CarrierPlan::new(16, 4).with_data_carriers([1, 8]);
+    let _ = CarrierGrid::from_plan(&plan);
+}
+
+#[test]
 fn carrier_grid_bin_mapping_negative_wraps() {
     let n_fft = 16;
     let plan = CarrierPlan::new(n_fft, 4).with_data_carriers([-1, -2, 1, 2]);
