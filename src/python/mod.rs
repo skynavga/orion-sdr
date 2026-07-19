@@ -6,6 +6,7 @@ use pyo3::prelude::*;
 mod demodulate;
 mod ft8;
 mod modulate;
+mod ofdm;
 mod psk31;
 
 #[pymodule]
@@ -60,5 +61,7 @@ fn orion_sdr(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // PSK31 sync
     m.add_function(wrap_pyfunction!(psk31::psk31_sync, m)?)?;
     m.add_function(wrap_pyfunction!(psk31::best_psk31_sync, m)?)?;
+    // OFDM config, waveform, RX, sync
+    ofdm::register(m)?;
     Ok(())
 }
