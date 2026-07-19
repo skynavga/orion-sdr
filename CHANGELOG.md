@@ -9,6 +9,35 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.38] - 2026-07-18
+
+### Added
+
+- `OfdmPreamble`, `OfdmSyncResult`, `generate_ofdm_preamble()`, and
+  `ofdm_sync()` (`src/sync/ofdm_sync.rs`, new file): packet sync and
+  fractional CFO/timing acquisition for OFDM via a Schmidl & Cox-style
+  repeated-segment preamble, generic and not tied to any standard. This
+  is Release E / Phase 5 of the OFDM support roadmap.
+- CFO capture range is documented and locked in by regression test as
+  unambiguous within ±½ the subcarrier spacing (±`fs / (2 · repeat_len)`);
+  wider offsets alias, with integer-CFO recovery deferred to a later
+  release.
+- Unit tests (known-offset acquisition, CFO estimate accuracy, aliasing
+  beyond the documented capture bound, no false positives on noise), a
+  full roundtrip test driving an unknown packet start and CFO correction
+  through `OfdmDemod`/`OfdmDecider`, and an acquisition-probability-vs-SNR
+  characterization sweep.
+
+### Fixed
+
+- The Schmidl & Cox correlation-phase timing metric alone forms a wide
+  plateau (not a sharp peak) for a purely periodic preamble, since the
+  correlation window stays fully coherent at any offset inside the
+  repeated structure, not only at the true start. `ofdm_sync` now breaks
+  the tie using the correlated window's own energy, which is maximized
+  only where every correlated sample is real preamble signal, giving a
+  sample-exact, unbiased timing estimate.
+
 ## [0.0.37] - 2026-07-18
 
 ### Added
