@@ -3,4 +3,5 @@
 
 pub mod ft8;
 pub mod ofdm;
+pub mod ofdm_sync;
 pub mod psk31;

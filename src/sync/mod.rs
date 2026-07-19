@@ -15,11 +15,13 @@
 pub mod costas;
 pub mod ft4_sync;
 pub mod ft8_sync;
+pub mod ofdm_sync;
 pub mod psk31_sync;
 pub mod waterfall;
 
 pub use costas::Candidate;
 pub use ft4_sync::{Ft4SyncResult, ft4_sync};
 pub use ft8_sync::{Ft8SyncResult, ft8_sync};
+pub use ofdm_sync::{OfdmPreamble, OfdmSyncResult, generate_ofdm_preamble, ofdm_sync};
 pub use psk31_sync::{Psk31SyncResult, psk31_sync};
 pub use waterfall::{Waterfall, compute_waterfall};
