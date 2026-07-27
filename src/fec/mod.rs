@@ -9,11 +9,17 @@
 //! the OFDM frame layer. Nothing here depends on OFDM — these are generic
 //! channel-coding primitives reusable across waveforms.
 
+pub mod bch;
+pub use bch::{Bch, BchError};
+
 pub mod gf;
 pub use gf::Gf256;
 
 pub mod interleaver;
 pub use interleaver::BlockInterleaver;
+
+pub mod ldpc_codes;
+pub use ldpc_codes::{Ldpc, LdpcCode};
 
 pub mod scrambler;
 pub use scrambler::PnScrambler;

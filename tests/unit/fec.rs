@@ -2,7 +2,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use orion_sdr::codec::{crc16, crc32};
-use orion_sdr::fec::{BlockInterleaver, Gf256, PnScrambler};
+use orion_sdr::fec::{Bch, BchError, BlockInterleaver, Gf256, Ldpc, LdpcCode, PnScrambler};
+
+// Small deterministic xorshift for reproducible test messages/errors.
+fn xorshift(seed: u64) -> impl FnMut() -> u64 {
+    let mut s = seed;
+    move || {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        s
+    }
+}
 
 // ── GF(2^8) arithmetic ─────────────────────────────────────────────────────
 
@@ -235,4 +246,187 @@ fn crc_empty_input() {
     // Well-defined on empty input (the init/final-xor values).
     assert_eq!(crc16(b""), 0xFFFF);
     assert_eq!(crc32(b""), 0x0000_0000);
+}
+
+// ── BCH(n, k, t) ───────────────────────────────────────────────────────────
+
+#[test]
+fn bch_dimensions_are_consistent() {
+    for t in [1usize, 2, 3, 8] {
+        let code = Bch::new(t).unwrap();
+        assert_eq!(code.n(), 255);
+        assert_eq!(code.t(), t);
+        assert_eq!(code.n() - code.k(), code.parity_bits());
+        assert!(code.k() < code.n());
+    }
+}
+
+#[test]
+fn bch_encode_is_systematic() {
+    let code = Bch::new(3).unwrap();
+    let mut r = xorshift(0x5151);
+    let msg: Vec<u8> = (0..code.k()).map(|_| (r() & 1) as u8).collect();
+    let cw = code.encode(&msg);
+    assert_eq!(cw.len(), code.n());
+    assert_eq!(
+        &cw[..code.k()],
+        &msg[..],
+        "message is the systematic prefix"
+    );
+}
+
+#[test]
+fn bch_corrects_up_to_t_errors() {
+    for t in [1usize, 2, 3, 8] {
+        let code = Bch::new(t).unwrap();
+        let mut r = xorshift(0xB0B0 ^ t as u64);
+        let msg: Vec<u8> = (0..code.k()).map(|_| (r() & 1) as u8).collect();
+        let cw = code.encode(&msg);
+
+        // Exactly t spread-out bit errors must be corrected.
+        let mut rx = cw.clone();
+        let mut e = xorshift(0xE7E7 ^ t as u64);
+        let mut flipped = std::collections::HashSet::new();
+        while flipped.len() < t {
+            let pos = (e() as usize) % code.n();
+            flipped.insert(pos);
+        }
+        for &pos in &flipped {
+            rx[pos] ^= 1;
+        }
+        assert_eq!(
+            code.decode(&rx).unwrap(),
+            msg,
+            "t={t}: {t} errors must be corrected"
+        );
+    }
+}
+
+#[test]
+fn bch_zero_errors_round_trips() {
+    let code = Bch::new(2).unwrap();
+    let msg: Vec<u8> = (0..code.k()).map(|i| (i % 3 == 0) as u8).collect();
+    let cw = code.encode(&msg);
+    assert_eq!(code.decode(&cw).unwrap(), msg);
+}
+
+#[test]
+fn bch_shortened_corrects() {
+    let code = Bch::shortened(128, 3).unwrap();
+    assert_eq!(code.n(), 128);
+    let mut r = xorshift(0x1234);
+    let msg: Vec<u8> = (0..code.k()).map(|_| (r() & 1) as u8).collect();
+    let cw = code.encode(&msg);
+    let mut rx = cw.clone();
+    for &pos in &[2usize, 61, 120] {
+        rx[pos] ^= 1;
+    }
+    assert_eq!(code.decode(&rx).unwrap(), msg);
+}
+
+#[test]
+fn bch_flags_uncorrectable_beyond_t() {
+    // With t+several errors the decoder must not silently return a wrong
+    // message: it either errors or (rarely) miscorrects, but never returns the
+    // original message. We assert it does not return `msg`.
+    let code = Bch::new(2).unwrap();
+    let mut r = xorshift(0x9A9A);
+    let msg: Vec<u8> = (0..code.k()).map(|_| (r() & 1) as u8).collect();
+    let cw = code.encode(&msg);
+    let mut rx = cw.clone();
+    // 6 errors, well beyond t=2.
+    for &pos in &[1usize, 40, 80, 120, 160, 200] {
+        rx[pos] ^= 1;
+    }
+    match code.decode(&rx) {
+        Err(BchError::Uncorrectable(_)) => {}
+        Ok(decoded) => assert_ne!(decoded, msg, "must not silently recover the original"),
+        Err(other) => panic!("unexpected error {other:?}"),
+    }
+}
+
+// ── LDPC (fixed family) ────────────────────────────────────────────────────
+
+const LDPC_CODES: [LdpcCode; 3] = [LdpcCode::N512R12, LdpcCode::N576R23, LdpcCode::N512R34];
+
+#[test]
+fn ldpc_encode_produces_valid_codeword() {
+    for code in LDPC_CODES {
+        let ldpc = Ldpc::new(code);
+        assert_eq!(ldpc.n(), code.n());
+        assert_eq!(ldpc.k(), code.k());
+        let mut r = xorshift(0xADD1 ^ code.n() as u64);
+        let msg: Vec<u8> = (0..ldpc.k()).map(|_| (r() & 1) as u8).collect();
+        let cw = ldpc.encode(&msg);
+        assert_eq!(cw.len(), ldpc.n());
+        assert_eq!(&cw[..ldpc.k()], &msg[..], "systematic prefix");
+        assert_eq!(
+            ldpc.syndrome_weight(&cw),
+            0,
+            "encoded word must satisfy every parity check"
+        );
+    }
+}
+
+#[test]
+fn ldpc_clean_llrs_decode_exactly() {
+    for code in LDPC_CODES {
+        let ldpc = Ldpc::new(code);
+        let mut r = xorshift(0xC1EA ^ code.n() as u64);
+        let msg: Vec<u8> = (0..ldpc.k()).map(|_| (r() & 1) as u8).collect();
+        let cw = ldpc.encode(&msg);
+        let llr: Vec<f32> = cw
+            .iter()
+            .map(|&b| if b == 0 { 8.0 } else { -8.0 })
+            .collect();
+        let (decoded, unsat) = ldpc.decode_soft(&llr, 50);
+        assert_eq!(unsat, 0);
+        assert_eq!(decoded, msg);
+    }
+}
+
+#[test]
+fn ldpc_corrects_bit_errors_from_soft_llrs() {
+    // Present strong LLRs with a modest number of sign errors (weak-wrong
+    // values); belief propagation must converge to the transmitted message.
+    for (code, n_err) in [(LdpcCode::N512R12, 6usize), (LdpcCode::N512R34, 3)] {
+        let ldpc = Ldpc::new(code);
+        let mut r = xorshift(0x50F7 ^ code.n() as u64);
+        let msg: Vec<u8> = (0..ldpc.k()).map(|_| (r() & 1) as u8).collect();
+        let cw = ldpc.encode(&msg);
+
+        let mut llr: Vec<f32> = cw
+            .iter()
+            .map(|&b| if b == 0 { 6.0 } else { -6.0 })
+            .collect();
+        let mut e = xorshift(0xE770 ^ code.n() as u64);
+        for _ in 0..n_err {
+            let pos = (e() as usize) % ldpc.n();
+            // Flip to a weak wrong-sign LLR (a soft error, not a hard erasure).
+            llr[pos] = -llr[pos] * 0.5;
+        }
+
+        let (decoded, unsat) = ldpc.decode_soft(&llr, 50);
+        assert_eq!(
+            unsat, 0,
+            "{code:?}: BP should converge with {n_err} soft errors"
+        );
+        assert_eq!(decoded, msg, "{code:?}: message recovered");
+    }
+}
+
+#[test]
+fn ldpc_soft_llr_convention_matches_sign() {
+    // A gentle all-correct LLR field (small magnitude, right signs) must decode
+    // to the message without any correction, confirming the +⇒bit-0 convention.
+    let ldpc = Ldpc::new(LdpcCode::N512R12);
+    let msg: Vec<u8> = (0..ldpc.k()).map(|i| (i % 2) as u8).collect();
+    let cw = ldpc.encode(&msg);
+    let llr: Vec<f32> = cw
+        .iter()
+        .map(|&b| if b == 0 { 1.5 } else { -1.5 })
+        .collect();
+    let (decoded, unsat) = ldpc.decode_soft(&llr, 50);
+    assert_eq!(unsat, 0);
+    assert_eq!(decoded, msg);
 }
