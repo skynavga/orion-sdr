@@ -253,7 +253,7 @@ BpskMod::new(fs, rf_hz, 1.0).process(&syms, &mut iq);
 verbatim) → resource-grid mapping → IFFT → cyclic prefix → optional RF
 upconversion — into a single `Block<In = u8, Out = C32>`. Numerology
 (`n_fft`, `cp_len`, carrier layout) is entirely caller-owned via `CarrierPlan`;
-see [design.md](design.md#multicarrier--ofdm-pipeline) for the FFT
+see [ofdm.md](ofdm.md) for the FFT
 normalization and carrier-indexing conventions.
 
 ```rust

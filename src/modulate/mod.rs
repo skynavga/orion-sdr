@@ -20,7 +20,10 @@ pub mod ft8;
 pub use ft8::{Ft8Frame, Ft8Mod};
 
 pub mod ofdm;
-pub use ofdm::{ConstellationOrder, OfdmConfig, OfdmMod};
+pub use ofdm::{ConstellationOrder, FrameConfigError, OfdmConfig, OfdmMod};
+
+pub mod ofdm_frame;
+pub use ofdm_frame::{Mcs, McsTable, OfdmFrameMod};
 
 pub mod pm;
 pub use pm::PmDirectPhaseMod;

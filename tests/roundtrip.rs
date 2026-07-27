@@ -12,6 +12,7 @@ mod roundtrip {
     pub mod ft8;
     pub mod helpers;
     pub mod ofdm;
+    pub mod ofdm_frame;
     pub mod ofdm_snr;
     pub mod pm;
     pub mod psk31;

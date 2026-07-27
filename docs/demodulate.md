@@ -431,9 +431,9 @@ doesn't capture.
 ### Soft (LLR) demapping
 
 `OfdmSoftDemod` is a separate type from `OfdmDecider` (not a mode flag),
-producing max-log LLRs per bit instead of hard decisions. No mandatory FEC
-ships with this crate — the LLRs are the deliverable for an
-external/user-supplied FEC layer. Positive LLR means the bit is more likely 0,
+producing max-log LLRs per bit instead of hard decisions. These LLRs feed the
+COFDM frame layer's inner FEC decoder (see [ofdm.md](ofdm.md)), or any
+external/user-supplied FEC. Positive LLR means the bit is more likely 0,
 matching the crate-wide convention.
 
 ```rust

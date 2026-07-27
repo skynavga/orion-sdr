@@ -551,7 +551,7 @@ OFDM targets VHF through EHF (predominantly line-of-sight terrestrial-microwave
 and satellite links). The Python surface exposes two fused entry points —
 `OfdmMod` and `OfdmDemod` — plus free functions for packet sync/CFO
 acquisition, matching how the Rust API keeps `CarrierGrid`/`FftBlock`/`GridMap`
-internal. See [design.md](design.md#multicarrier--ofdm-pipeline) for the
+internal. See [ofdm.md](ofdm.md) for the
 underlying FFT-normalization, carrier-indexing, and channel-estimation
 conventions.
 

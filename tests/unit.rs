@@ -10,6 +10,7 @@ mod unit {
     pub mod chains;
     pub mod codec;
     pub mod dsp;
+    pub mod fec;
     pub mod fm;
     pub mod ft4;
     pub mod ft8;
@@ -18,6 +19,7 @@ mod unit {
     pub mod morse;
     pub mod multicarrier;
     pub mod ofdm;
+    pub mod ofdm_frame;
     pub mod ofdm_sync;
     pub mod pm;
     pub mod psk31;
