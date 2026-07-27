@@ -398,3 +398,168 @@ fn stream_corrupted_payload_reports_error() {
     );
     assert!(!results.is_empty(), "an error should be reported");
 }
+
+// ── DVB-style concatenated RS + convolutional frame ────────────────────────
+
+#[test]
+fn roundtrip_frame_rs_convolutional() {
+    use orion_sdr::fec::PunctureRate;
+    use orion_sdr::modulate::Mcs;
+
+    let cfg = plan_config();
+    let pre = preamble(&cfg);
+    // A DVB-style concatenation: Reed–Solomon outer + punctured convolutional
+    // inner. Use a shortened RS so a small frame spans a whole codeword.
+    let table = McsTable::new(vec![
+        Mcs::new(
+            ConstellationOrder::Qpsk,
+            InnerFec::Convolutional {
+                rate: PunctureRate::R1_2,
+            },
+            OuterFec::ReedSolomon { n: 60, n_parity: 8 },
+        ),
+        Mcs::new(
+            ConstellationOrder::Qpsk,
+            InnerFec::Convolutional {
+                rate: PunctureRate::R3_4,
+            },
+            OuterFec::ReedSolomon { n: 60, n_parity: 8 },
+        ),
+    ]);
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+
+    for mcs_index in 0..table.len() as u8 {
+        let payload = sample_payload(40);
+        let frame = FramePacket::new(
+            FrameMetadata::new(100 + mcs_index as u32, mcs_index),
+            payload.clone(),
+        );
+        let iq = modu.modulate_frame(&frame, 0);
+        let body = strip_preamble(&cfg, modu.preamble(), &iq);
+        let got = demodulate_frame(&cfg, &table, &body).expect("RS+conv decode");
+        assert_eq!(got.payload, payload, "mcs {mcs_index}: RS+conv payload");
+    }
+}
+
+#[test]
+fn roundtrip_frame_rs_convolutional_awgn() {
+    use orion_sdr::fec::PunctureRate;
+    use orion_sdr::modulate::Mcs;
+
+    let cfg = plan_config();
+    let pre = preamble(&cfg);
+    let table = McsTable::new(vec![Mcs::new(
+        ConstellationOrder::Qpsk,
+        InnerFec::Convolutional {
+            rate: PunctureRate::R1_2,
+        },
+        OuterFec::ReedSolomon { n: 60, n_parity: 8 },
+    )]);
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+
+    let payload = sample_payload(32);
+    let frame = FramePacket::new(FrameMetadata::new(7, 0), payload.clone());
+    let iq = modu.modulate_frame(&frame, 0);
+    let mut body = strip_preamble(&cfg, modu.preamble(), &iq);
+    let sig_power: f32 = body.iter().map(|s| s.norm_sqr()).sum::<f32>() / body.len() as f32;
+    add_awgn(&mut body, sig_power * 0.06, 0xBADC0DE);
+    let got = demodulate_frame(&cfg, &table, &body).expect("RS+conv AWGN decode");
+    assert_eq!(got.payload, payload);
+}
+
+// ── QAM-16 over RS + convolutional (higher-order constellation) ────────────
+//
+// These mirror the QPSK RS+conv tests but with a QAM-16 payload, to exercise
+// the higher-order constellation through the concatenated FEC. Noiseless and
+// AWGN decode cleanly; multipath is bounded — a QAM-16 payload tolerates a
+// *milder* frequency-selective channel than QPSK before the zero-forcing
+// equalizer's residual error exceeds QAM-16's tighter amplitude margins (see
+// the "High-order-QAM multipath performance" open item in the plan). The
+// multipath test below uses a channel within that bound.
+
+fn qam_rs_conv_table() -> McsTable {
+    use orion_sdr::fec::PunctureRate;
+    use orion_sdr::modulate::Mcs;
+    McsTable::new(vec![Mcs::new(
+        ConstellationOrder::Qam16,
+        InnerFec::Convolutional {
+            rate: PunctureRate::R1_2,
+        },
+        OuterFec::ReedSolomon { n: 60, n_parity: 8 },
+    )])
+}
+
+/// A milder 2-tap channel than `multipath_taps()` — chosen so a QAM-16 payload
+/// still decodes after zero-forcing equalization (QAM-16 has less margin for
+/// residual equalization error than QPSK).
+fn mild_multipath_taps() -> [C32; 3] {
+    [
+        C32::new(0.9, 0.0),
+        C32::new(0.0, 0.0),
+        C32::new(0.15, -0.075),
+    ]
+}
+
+#[test]
+fn roundtrip_frame_qam16_rs_conv_noiseless() {
+    let cfg = plan_config();
+    let pre = preamble(&cfg);
+    let table = qam_rs_conv_table();
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+
+    let payload = sample_payload(40);
+    let frame = FramePacket::new(FrameMetadata::new(200, 0), payload.clone());
+    let iq = modu.modulate_frame(&frame, 0);
+    let body = strip_preamble(&cfg, modu.preamble(), &iq);
+    let got = demodulate_frame(&cfg, &table, &body).expect("QAM-16 RS+conv noiseless decode");
+    assert_eq!(got.payload, payload);
+}
+
+#[test]
+fn roundtrip_frame_qam16_rs_conv_awgn() {
+    let cfg = plan_config();
+    let pre = preamble(&cfg);
+    let table = qam_rs_conv_table();
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+
+    let payload = sample_payload(32);
+    let frame = FramePacket::new(FrameMetadata::new(201, 0), payload.clone());
+    let iq = modu.modulate_frame(&frame, 0);
+    let mut body = strip_preamble(&cfg, modu.preamble(), &iq);
+    let sig_power: f32 = body.iter().map(|s| s.norm_sqr()).sum::<f32>() / body.len() as f32;
+    // QAM-16 has denser constellation points than QPSK, so a lower noise level.
+    add_awgn(&mut body, sig_power * 0.04, 0x1CE_C0DE);
+    let got = demodulate_frame(&cfg, &table, &body).expect("QAM-16 RS+conv AWGN decode");
+    assert_eq!(got.payload, payload);
+}
+
+#[test]
+fn stream_frame_qam16_rs_conv_multipath() {
+    // QAM-16 over RS+conv through a mild frequency-selective channel, decoded
+    // via the training-symbol estimate. The channel is within the bound QAM-16
+    // tolerates (a stronger channel — e.g. `multipath_taps()` — exceeds it; see
+    // the plan's high-order-QAM open item).
+    let cfg = plan_config();
+    let pre = preamble(&cfg);
+    let table = qam_rs_conv_table();
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+
+    let payload = sample_payload(30);
+    let frame = FramePacket::new(FrameMetadata::new(202, 0), payload.clone());
+    let mut buf = vec![C32::default(); 24];
+    buf.extend_from_slice(&modu.modulate_frame(&frame, 0));
+    buf.extend(vec![C32::default(); 64]);
+
+    let taps = mild_multipath_taps();
+    assert!(taps.len() - 1 <= cfg.carrier_plan.cp_len());
+    let channeled = apply_fir_channel(&buf, &taps);
+
+    let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre);
+    let frames: Vec<_> = rx
+        .feed(&channeled)
+        .into_iter()
+        .filter_map(|r| r.ok())
+        .collect();
+    assert_eq!(frames.len(), 1, "QAM-16 RS+conv multipath frame decodes");
+    assert_eq!(frames[0].packet.payload, payload);
+}

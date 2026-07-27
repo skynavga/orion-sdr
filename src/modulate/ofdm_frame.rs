@@ -26,7 +26,8 @@ use super::ofdm::{ConstellationOrder, OfdmConfig, OfdmMod};
 use crate::codec::{crc16, crc32};
 use crate::fec::{
     Bch, CrcKind, FramePacket, HeaderFormat, InnerFec, InterleaverKind, Ldpc, LdpcCode, OuterFec,
-    PnScrambler, ScramblerKind, ScramblerPos, SeedMode,
+    PnScrambler, ReedSolomon, ScramblerKind, ScramblerPos, SeedMode, conv_encode_punctured,
+    punctured_coded_len,
 };
 use crate::multicarrier::CarrierPlan;
 use crate::sync::{OfdmPreamble, generate_ofdm_preamble};
@@ -250,6 +251,12 @@ pub fn block_plan(
             let n_blocks = framed_bits.div_ceil(BCH_INFO_BITS);
             n_blocks * code.n()
         }
+        OuterFec::ReedSolomon { n, n_parity } => {
+            // Byte-domain: whole k-byte info blocks → n-byte codewords.
+            let rs = ReedSolomon::new(n, n_parity).expect("valid RS config");
+            let n_blocks = framed_bytes.div_ceil(rs.k());
+            n_blocks * rs.n() * 8
+        }
     };
 
     let outer_il_bits = match outer_il {
@@ -264,6 +271,7 @@ pub fn block_plan(
             let n_blocks = outer_il_bits.div_ceil(ldpc.k());
             n_blocks * ldpc.n()
         }
+        InnerFec::Convolutional { rate } => punctured_coded_len(outer_il_bits, rate),
     };
 
     let coded_bits = match inner_il {
@@ -340,6 +348,19 @@ pub fn outer_encode(outer: OuterFec, message_bytes: &[u8]) -> Vec<u8> {
             }
             out
         }
+        OuterFec::ReedSolomon { n, n_parity } => {
+            // RS is a byte-domain code: fragment into k-byte blocks, encode each
+            // into an n-byte codeword (final block zero-padded), then emit bits.
+            let rs = ReedSolomon::new(n, n_parity).expect("valid RS config");
+            let k = rs.k();
+            let mut out_bytes = Vec::new();
+            for chunk in message_bytes.chunks(k) {
+                let mut block = chunk.to_vec();
+                block.resize(k, 0);
+                out_bytes.extend_from_slice(&rs.encode(&block));
+            }
+            bytes_to_bits(&out_bytes)
+        }
     }
 }
 
@@ -360,6 +381,9 @@ pub fn inner_encode(inner: InnerFec, info_bits: &[u8]) -> Vec<u8> {
             }
             out
         }
+        // The convolutional code terminates once per block (whole info stream +
+        // tail bits), not per fixed-size fragment.
+        InnerFec::Convolutional { rate } => conv_encode_punctured(info_bits, rate),
     }
 }
 

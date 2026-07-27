@@ -22,7 +22,7 @@ use crate::demodulate::ofdm::{
 use crate::dsp::Rotator;
 use crate::fec::{
     BlockInterleaver, CrcKind, FrameMetadata, FramePacket, HeaderFormat, InnerFec, InterleaverKind,
-    Ldpc, OuterFec, RxError, ScramblerKind, ScramblerPos,
+    Ldpc, OuterFec, ReedSolomon, RxError, ScramblerKind, ScramblerPos, viterbi_decode_soft,
 };
 use crate::modulate::ofdm::{ConstellationOrder, OfdmConfig};
 use crate::modulate::ofdm_frame::{
@@ -161,10 +161,11 @@ fn deinterleave_bits(il: InterleaverKind, bits: &[u8]) -> Vec<u8> {
     }
 }
 
-/// Inner-decodes an LLR stream into hard info bits, fragmenting into N-sized
-/// codeword blocks (mirroring `inner_encode`). Returns the info bits and
-/// whether every block converged.
-fn inner_decode(inner: InnerFec, coded_llrs: &[f32]) -> (Vec<u8>, bool) {
+/// Inner-decodes an LLR stream into hard info bits (mirroring `inner_encode`).
+/// `info_len` is the number of information bits the inner code protects (needed
+/// by the convolutional Viterbi, which is variable-rate). Returns the info bits
+/// and whether every block converged.
+fn inner_decode(inner: InnerFec, coded_llrs: &[f32], info_len: usize) -> (Vec<u8>, bool) {
     match inner {
         InnerFec::None => {
             // Hard-decide the LLRs directly.
@@ -190,6 +191,12 @@ fn inner_decode(inner: InnerFec, coded_llrs: &[f32]) -> (Vec<u8>, bool) {
                 info.extend_from_slice(&msg);
             }
             (info, all_ok)
+        }
+        InnerFec::Convolutional { rate } => {
+            // Soft Viterbi over the whole block; the outer code / CRC below
+            // decides success, so no per-block convergence flag here.
+            let info = viterbi_decode_soft(coded_llrs, info_len, rate);
+            (info, true)
         }
     }
 }
@@ -221,6 +228,27 @@ fn outer_decode(outer: OuterFec, coded_bits: &[u8]) -> (Vec<u8>, bool) {
                 }
             }
             (msg, all_ok)
+        }
+        OuterFec::ReedSolomon { n, n_parity } => {
+            // Byte-domain: pack coded bits to bytes, decode each n-byte codeword.
+            let rs = ReedSolomon::new(n, n_parity).expect("valid RS config");
+            let coded_bytes = bits_to_bytes(coded_bits);
+            let mut msg_bytes = Vec::new();
+            let mut all_ok = true;
+            for chunk in coded_bytes.chunks(n) {
+                if chunk.len() < n {
+                    all_ok = false;
+                    break;
+                }
+                match rs.decode(chunk) {
+                    Ok(block) => msg_bytes.extend_from_slice(&block),
+                    Err(_) => {
+                        all_ok = false;
+                        msg_bytes.extend_from_slice(&chunk[..rs.k()]);
+                    }
+                }
+            }
+            (bytes_to_bits(&msg_bytes), all_ok)
         }
     }
 }
@@ -258,7 +286,7 @@ fn decode_chain(
     // 2. Inner deinterleave (LLR), then inner decode.
     let inner_de = deinterleave_llrs(inner_il, &llrs);
     let inner_de = &inner_de[..plan.inner_coded_bits.min(inner_de.len())];
-    let (mut outer_il_bits, inner_ok) = inner_decode(inner, inner_de);
+    let (mut outer_il_bits, inner_ok) = inner_decode(inner, inner_de, plan.outer_il_bits);
     outer_il_bits.truncate(plan.outer_il_bits);
 
     // 3. Outer deinterleave (byte/bit domain), then outer decode.

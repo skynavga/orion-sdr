@@ -12,6 +12,9 @@
 pub mod bch;
 pub use bch::{Bch, BchError};
 
+pub mod conv;
+pub use conv::{PunctureRate, conv_encode_punctured, punctured_coded_len, viterbi_decode_soft};
+
 pub mod frame;
 pub use frame::{
     CrcKind, FrameMetadata, FramePacket, HeaderFormat, InnerFec, InterleaverKind, OuterFec,
@@ -26,6 +29,9 @@ pub use interleaver::BlockInterleaver;
 
 pub mod ldpc_codes;
 pub use ldpc_codes::{Ldpc, LdpcCode};
+
+pub mod reed_solomon;
+pub use reed_solomon::{ReedSolomon, RsError};
 
 pub mod scrambler;
 pub use scrambler::PnScrambler;

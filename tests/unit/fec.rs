@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use orion_sdr::codec::{crc16, crc32};
-use orion_sdr::fec::{Bch, BchError, BlockInterleaver, Gf256, Ldpc, LdpcCode, PnScrambler};
+use orion_sdr::fec::{
+    Bch, BchError, BlockInterleaver, Gf256, Ldpc, LdpcCode, PnScrambler, PunctureRate, ReedSolomon,
+    RsError, conv_encode_punctured, punctured_coded_len, viterbi_decode_soft,
+};
 
 // Small deterministic xorshift for reproducible test messages/errors.
 fn xorshift(seed: u64) -> impl FnMut() -> u64 {
@@ -429,4 +432,123 @@ fn ldpc_soft_llr_convention_matches_sign() {
     let (decoded, unsat) = ldpc.decode_soft(&llr, 50);
     assert_eq!(unsat, 0);
     assert_eq!(decoded, msg);
+}
+
+// ── Punctured convolutional code ───────────────────────────────────────────
+
+const PUNCTURE_RATES: [PunctureRate; 5] = [
+    PunctureRate::R1_2,
+    PunctureRate::R2_3,
+    PunctureRate::R3_4,
+    PunctureRate::R5_6,
+    PunctureRate::R7_8,
+];
+
+#[test]
+fn conv_noiseless_roundtrip_every_rate() {
+    for rate in PUNCTURE_RATES {
+        let mut r = xorshift(0x7A57 ^ format!("{rate:?}").len() as u64);
+        let info: Vec<u8> = (0..120).map(|_| (r() & 1) as u8).collect();
+        let coded = conv_encode_punctured(&info, rate);
+        assert_eq!(
+            coded.len(),
+            punctured_coded_len(info.len(), rate),
+            "coded length matches the size predictor for {rate:?}"
+        );
+        // Strong LLRs: bit 0 → +4, bit 1 → −4.
+        let llrs: Vec<f32> = coded
+            .iter()
+            .map(|&b| if b == 0 { 4.0 } else { -4.0 })
+            .collect();
+        let decoded = viterbi_decode_soft(&llrs, info.len(), rate);
+        assert_eq!(decoded, info, "noiseless roundtrip for {rate:?}");
+    }
+}
+
+#[test]
+fn conv_corrects_sparse_errors_rate_half() {
+    let mut r = xorshift(0xC0DE);
+    let info: Vec<u8> = (0..96).map(|_| (r() & 1) as u8).collect();
+    let coded = conv_encode_punctured(&info, PunctureRate::R1_2);
+    let mut llrs: Vec<f32> = coded
+        .iter()
+        .map(|&b| if b == 0 { 4.0 } else { -4.0 })
+        .collect();
+    // Corrupt a handful of well-separated coded bits (weak wrong-sign LLR).
+    for &i in &[3usize, 44, 90, 150] {
+        if i < llrs.len() {
+            llrs[i] = -llrs[i] * 0.5;
+        }
+    }
+    let decoded = viterbi_decode_soft(&llrs, info.len(), PunctureRate::R1_2);
+    assert_eq!(decoded, info, "rate-1/2 Viterbi corrects sparse errors");
+}
+
+// ── Reed–Solomon ───────────────────────────────────────────────────────────
+
+#[test]
+fn rs_dvb_dimensions() {
+    let rs = ReedSolomon::dvb();
+    assert_eq!((rs.n(), rs.k(), rs.t()), (204, 188, 8));
+    assert_eq!(rs.parity_bytes(), 16);
+}
+
+#[test]
+fn rs_corrects_t_symbol_errors() {
+    let rs = ReedSolomon::dvb();
+    let mut r = xorshift(0x2004);
+    let msg: Vec<u8> = (0..rs.k()).map(|_| (r() & 0xff) as u8).collect();
+    let cw = rs.encode(&msg);
+    assert_eq!(cw.len(), rs.n());
+    assert_eq!(&cw[..rs.k()], &msg[..], "systematic prefix");
+
+    // Corrupt exactly t=8 bytes with arbitrary nonzero magnitudes.
+    let mut rx = cw.clone();
+    let mut e = xorshift(0x8888);
+    let mut positions = std::collections::HashSet::new();
+    while positions.len() < rs.t() {
+        positions.insert((e() as usize) % rs.n());
+    }
+    for &pos in &positions {
+        rx[pos] ^= ((e() & 0xff) as u8).max(1);
+    }
+    assert_eq!(rs.decode(&rx).unwrap(), msg, "RS corrects t symbol errors");
+}
+
+#[test]
+fn rs_zero_errors_round_trips() {
+    let rs = ReedSolomon::dvb();
+    let msg: Vec<u8> = (0..rs.k()).map(|i| (i % 251) as u8).collect();
+    let cw = rs.encode(&msg);
+    assert_eq!(rs.decode(&cw).unwrap(), msg);
+}
+
+#[test]
+fn rs_flags_uncorrectable_beyond_t() {
+    let rs = ReedSolomon::dvb();
+    let msg: Vec<u8> = (0..rs.k()).map(|i| (i * 3 % 256) as u8).collect();
+    let cw = rs.encode(&msg);
+    let mut rx = cw.clone();
+    // t+1 = 9 symbol errors.
+    for &pos in &[0usize, 11, 22, 33, 44, 55, 66, 77, 88] {
+        rx[pos] ^= 0x7E;
+    }
+    match rs.decode(&rx) {
+        Err(RsError::Uncorrectable(_)) => {}
+        Ok(d) => assert_ne!(d, msg, "9 errors must not recover the original"),
+        Err(other) => panic!("unexpected RS error {other:?}"),
+    }
+}
+
+#[test]
+fn rs_shortened_corrects() {
+    let rs = ReedSolomon::new(40, 8).unwrap(); // t = 4
+    assert_eq!((rs.n(), rs.k(), rs.t()), (40, 32, 4));
+    let msg: Vec<u8> = (0..rs.k()).map(|i| (i * 7 + 1) as u8).collect();
+    let cw = rs.encode(&msg);
+    let mut rx = cw.clone();
+    for &pos in &[1usize, 15, 28, 38] {
+        rx[pos] ^= 0x33;
+    }
+    assert_eq!(rs.decode(&rx).unwrap(), msg);
 }

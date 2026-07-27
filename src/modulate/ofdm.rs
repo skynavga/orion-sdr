@@ -84,6 +84,9 @@ pub enum FrameConfigError {
     /// A BCH outer code was requested with t = 0 (no correction).
     #[error("BCH outer code requires t >= 1")]
     ZeroBchT,
+    /// A Reed–Solomon outer code has invalid dimensions.
+    #[error("Reed–Solomon requires 0 < n_parity < n <= 255 with n_parity even")]
+    BadRsConfig,
 }
 
 impl OfdmConfig {
@@ -179,6 +182,11 @@ impl OfdmConfig {
             && t == 0
         {
             return Err(FrameConfigError::ZeroBchT);
+        }
+        if let OuterFec::ReedSolomon { n, n_parity } = self.outer_fec
+            && (n == 0 || n > 255 || n_parity == 0 || n_parity >= n || n_parity % 2 != 0)
+        {
+            return Err(FrameConfigError::BadRsConfig);
         }
         Ok(())
     }
