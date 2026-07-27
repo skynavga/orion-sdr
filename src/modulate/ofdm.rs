@@ -7,6 +7,10 @@ use super::qam::{Qam16Mapper, Qam64Mapper, Qam256Mapper, QamMapper};
 use super::qpsk::QpskMapper;
 use crate::core::{Block, WorkReport};
 use crate::dsp::Rotator;
+use crate::fec::{
+    CrcKind, HeaderFormat, InnerFec, InterleaverKind, OuterFec, ScramblerKind, ScramblerPos,
+    SeedMode,
+};
 use crate::multicarrier::{CarrierGrid, CarrierPlan, CyclicPrefixInsert, GridMap, IfftBlock};
 use num_complex::Complex32 as C32;
 
@@ -40,6 +44,13 @@ impl ConstellationOrder {
 /// in `carrier_plan`; the library bakes in no standard's spacing or CP length
 /// (see the numerology guidance in `docs/design.md`). `rf_hz == 0.0` selects
 /// baseband output; any nonzero value upconverts via a `Rotator`.
+///
+/// The frame-layer fields (`outer_fec`, `inner_fec`, the two interleavers,
+/// `header_format`, the two CRCs, `scrambler`, `scrambler_pos`) default to
+/// "absent" and are set with the `with_*` builder methods, so the positional
+/// [`OfdmConfig::new`] and the bare `OfdmMod`/`OfdmDemod` symbol pipeline are
+/// unaffected by them. They configure the concatenated COFDM coding chain used
+/// by the OFDM frame modulator/demodulator (see `modulate::ofdm_frame`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct OfdmConfig {
     pub carrier_plan: CarrierPlan,
@@ -47,6 +58,35 @@ pub struct OfdmConfig {
     pub rf_hz: f32,
     pub gain: f32,
     pub constellation: ConstellationOrder,
+    // ── Frame-layer (COFDM) configuration ──
+    pub outer_fec: OuterFec,
+    pub inner_fec: InnerFec,
+    pub outer_interleaver: InterleaverKind,
+    pub inner_interleaver: InterleaverKind,
+    pub header_format: HeaderFormat,
+    pub payload_crc: CrcKind,
+    pub header_crc: CrcKind,
+    pub scrambler: ScramblerKind,
+    pub scrambler_pos: ScramblerPos,
+}
+
+/// Rejects an [`OfdmConfig`] whose frame-layer settings are mutually
+/// inconsistent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum FrameConfigError {
+    /// A per-frame-random scrambler seed has no way to reach the receiver when
+    /// there is no in-band header to carry it.
+    #[error("per-frame-random scrambler seed requires a header (header_format != NoHeader)")]
+    PerFrameSeedNeedsHeader,
+    /// A block interleaver was requested with a zero dimension.
+    #[error("block interleaver dimensions must be nonzero")]
+    ZeroInterleaverDim,
+    /// A BCH outer code was requested with t = 0 (no correction).
+    #[error("BCH outer code requires t >= 1")]
+    ZeroBchT,
+    /// A Reed–Solomon outer code has invalid dimensions.
+    #[error("Reed–Solomon requires 0 < n_parity < n <= 255 with n_parity even")]
+    BadRsConfig,
 }
 
 impl OfdmConfig {
@@ -63,7 +103,92 @@ impl OfdmConfig {
             rf_hz,
             gain,
             constellation,
+            outer_fec: OuterFec::None,
+            inner_fec: InnerFec::None,
+            outer_interleaver: InterleaverKind::None,
+            inner_interleaver: InterleaverKind::None,
+            header_format: HeaderFormat::OrionSdr,
+            payload_crc: CrcKind::Crc32,
+            header_crc: CrcKind::Crc16,
+            scrambler: ScramblerKind::None,
+            scrambler_pos: ScramblerPos::BeforeOuterFec,
         }
+    }
+
+    pub fn with_outer_fec(mut self, outer_fec: OuterFec) -> Self {
+        self.outer_fec = outer_fec;
+        self
+    }
+
+    pub fn with_inner_fec(mut self, inner_fec: InnerFec) -> Self {
+        self.inner_fec = inner_fec;
+        self
+    }
+
+    pub fn with_outer_interleaver(mut self, il: InterleaverKind) -> Self {
+        self.outer_interleaver = il;
+        self
+    }
+
+    pub fn with_inner_interleaver(mut self, il: InterleaverKind) -> Self {
+        self.inner_interleaver = il;
+        self
+    }
+
+    pub fn with_header_format(mut self, header_format: HeaderFormat) -> Self {
+        self.header_format = header_format;
+        self
+    }
+
+    pub fn with_payload_crc(mut self, crc: CrcKind) -> Self {
+        self.payload_crc = crc;
+        self
+    }
+
+    pub fn with_header_crc(mut self, crc: CrcKind) -> Self {
+        self.header_crc = crc;
+        self
+    }
+
+    pub fn with_scrambler(mut self, scrambler: ScramblerKind) -> Self {
+        self.scrambler = scrambler;
+        self
+    }
+
+    pub fn with_scrambler_pos(mut self, pos: ScramblerPos) -> Self {
+        self.scrambler_pos = pos;
+        self
+    }
+
+    /// Validates the frame-layer configuration. Returns `Ok(())` for the bare
+    /// (no-FEC, no-frame) defaults.
+    pub fn validate(&self) -> Result<(), FrameConfigError> {
+        if let ScramblerKind::Additive {
+            seed: SeedMode::PerFrameRandom,
+            ..
+        } = self.scrambler
+            && self.header_format == HeaderFormat::NoHeader
+        {
+            return Err(FrameConfigError::PerFrameSeedNeedsHeader);
+        }
+        for il in [self.outer_interleaver, self.inner_interleaver] {
+            if let InterleaverKind::Block { rows, cols } = il
+                && (rows == 0 || cols == 0)
+            {
+                return Err(FrameConfigError::ZeroInterleaverDim);
+            }
+        }
+        if let OuterFec::Bch { t } = self.outer_fec
+            && t == 0
+        {
+            return Err(FrameConfigError::ZeroBchT);
+        }
+        if let OuterFec::ReedSolomon { n, n_parity } = self.outer_fec
+            && (n == 0 || n > 255 || n_parity == 0 || n_parity >= n || n_parity % 2 != 0)
+        {
+            return Err(FrameConfigError::BadRsConfig);
+        }
+        Ok(())
     }
 
     pub fn bits_per_ofdm_symbol(&self) -> usize {

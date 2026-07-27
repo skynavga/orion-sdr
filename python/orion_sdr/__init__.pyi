@@ -658,6 +658,46 @@ class OfdmConfig:
     def bits_per_ofdm_symbol(self) -> int: ...
     @property
     def samples_per_ofdm_symbol(self) -> int: ...
+    # ── COFDM frame-layer configuration (builder-style; each returns a new
+    #    config with the field set, for the OfdmFrameMod/OfdmFrameStreamDemod). ──
+    def with_outer_fec(self, kind: str, a: int = 0, b: int = 0) -> "OfdmConfig":
+        """Set the outer FEC. *kind*: ``"none"`` | ``"bch"`` |
+        ``"reed_solomon"``. For BCH, *a* is ``t``. For Reed–Solomon, *a* is
+        ``n`` and *b* is ``n_parity`` (``= 2t``)."""
+        ...
+    def with_inner_fec(self, kind: str, code: str = "") -> "OfdmConfig":
+        """Set the inner FEC. *kind*: ``"none"`` | ``"ldpc"`` |
+        ``"convolutional"``. For LDPC, *code* is ``"n512r12"`` | ``"n576r23"``
+        | ``"n512r34"``. For convolutional, *code* is a puncture rate
+        ``"1/2"`` | ``"2/3"`` | ``"3/4"`` | ``"5/6"`` | ``"7/8"``."""
+        ...
+    def with_interleaver(self, stage: str, rows: int, cols: int) -> "OfdmConfig":
+        """Set a rectangular block interleaver on *stage* (``"inner"`` |
+        ``"outer"``); ``rows``/``cols`` = 0 disables it."""
+        ...
+    def with_payload_crc(self, kind: str) -> "OfdmConfig":
+        """Set the payload CRC: ``"none"`` | ``"crc16"`` | ``"crc32"``."""
+        ...
+    def with_header_crc(self, kind: str) -> "OfdmConfig":
+        """Set the header CRC: ``"none"`` | ``"crc16"`` | ``"crc32"``."""
+        ...
+    def with_header_format(self, kind: str) -> "OfdmConfig":
+        """Set the header format: ``"orion_sdr"`` | ``"none"``."""
+        ...
+    def with_scrambler(
+        self,
+        poly: int,
+        width: int,
+        seed: int = 1,
+        per_frame_random: bool = False,
+        position: str = "before_outer",
+    ) -> "OfdmConfig":
+        """Set an additive PN scrambler (``poly`` = 0 disables). *position*:
+        ``"before_outer"`` | ``"after_inner"``."""
+        ...
+    def validate_frame(self) -> None:
+        """Raise ``ValueError`` on an inconsistent frame-layer configuration."""
+        ...
 
 class OfdmMod:
     """OFDM transmitter: fused mapper + resource-grid mapping + IFFT + cyclic
@@ -784,5 +824,120 @@ def generate_ofdm_preamble(
     """Generate a repeated-segment preamble (plus training symbol, if
     *training_n_fft*/*training_cp_len* are given) for prepending before OFDM
     data symbols. See ``ofdm_sync`` for the matching acquisition function.
+    """
+    ...
+
+# ── COFDM frame (MAC) layer ────────────────────────────────────────────────
+
+class FramePacket:
+    """A MAC-layer frame: an opaque byte payload plus metadata.
+
+    *payload* is a uint8 array. *sequence_num*, *mcs_index*, and *flags* are
+    carried in the frame header (for the ``"orion_sdr"`` header format).
+    """
+
+    def __init__(
+        self,
+        payload: NDArray[np.uint8],
+        sequence_num: int = 0,
+        mcs_index: int = 0,
+        flags: int = 0,
+    ) -> None: ...
+    @property
+    def payload(self) -> NDArray[np.uint8]: ...
+    @property
+    def sequence_num(self) -> int: ...
+    @property
+    def mcs_index(self) -> int: ...
+    @property
+    def flags(self) -> int: ...
+
+class McsTable:
+    """Maps each frame's ``mcs_index`` to a modulation-and-coding scheme
+    (constellation + inner/outer FEC). The transmitter and receiver must share
+    the same table.
+    """
+
+    def __init__(self) -> None: ...
+    @staticmethod
+    def default_ladder() -> "McsTable":
+        """BPSK/QPSK/QAM-16/QAM-64, each with an LDPC(n512r12) inner code and a
+        BCH(t=8) outer code."""
+        ...
+    def add(
+        self,
+        constellation: str,
+        inner_kind: str = "none",
+        inner_code: str = "",
+        outer_kind: str = "none",
+        outer_a: int = 0,
+        outer_b: int = 0,
+    ) -> None:
+        """Append an MCS entry. *constellation* is ``"bpsk"``…``"qam256"``;
+        *inner*/*outer* mirror ``OfdmConfig.with_inner_fec``/``with_outer_fec``.
+        """
+        ...
+    @property
+    def len(self) -> int: ...
+
+class OfdmFrameMod:
+    """COFDM frame transmitter: serializes a ``FramePacket`` to a flat IQ
+    stream (``[preamble + training][header][payload]``), applying the
+    concatenated FEC chain configured on *cfg* and selected per frame by
+    *mcs_table*.
+    """
+
+    def __init__(
+        self,
+        cfg: OfdmConfig,
+        mcs_table: McsTable,
+        num_repeats: int = 4,
+        repeat_len: int = 16,
+    ) -> None: ...
+    def modulate_frame(
+        self, frame: FramePacket, per_frame_seed: int = 0
+    ) -> NDArray[np.complex64]:
+        """Modulate a whole frame into IQ. *per_frame_seed* supplies the
+        scrambler seed for a per-frame-random configuration."""
+        ...
+
+class OfdmFrameStreamDemod:
+    """Streaming COFDM frame receiver. Push IQ with ``feed()``; it locates
+    preambles, corrects CFO, estimates the channel from the training symbol,
+    decodes each frame, and returns the completed ones.
+    """
+
+    def __init__(
+        self,
+        cfg: OfdmConfig,
+        mcs_table: McsTable,
+        num_repeats: int = 4,
+        repeat_len: int = 16,
+    ) -> None: ...
+    def feed(self, iq: NDArray[np.complex64]) -> list[FramePacket]:
+        """Feed IQ; return the frames that completed. Failed decodes are
+        omitted (see ``feed_with_errors``)."""
+        ...
+    def feed_with_errors(
+        self, iq: NDArray[np.complex64]
+    ) -> list[tuple[FramePacket | None, str | None]]:
+        """Like ``feed``, but each result is ``(frame_or_None, error_or_None)``
+        so decode failures are observable."""
+        ...
+    def flush(self) -> list[FramePacket]:
+        """Run a final decode pass over the residual buffer."""
+        ...
+    @property
+    def buffered(self) -> int: ...
+    def clear(self) -> None: ...
+
+def demodulate_frame(
+    cfg: OfdmConfig,
+    mcs_table: McsTable,
+    iq: NDArray[np.complex64],
+) -> FramePacket:
+    """Batch-demodulate a single frame at a known start (*iq*[0] is the first
+    sample after the preamble+training). Raises ``ValueError`` on a decode
+    failure. See ``OfdmFrameStreamDemod`` for the streaming path.
     """
     ...

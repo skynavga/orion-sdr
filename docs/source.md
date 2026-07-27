@@ -46,6 +46,8 @@ src/
     ofdm.rs            — OfdmDemod, OfdmDecider, OfdmEqualizer, EqualizerMethod,
                         OfdmSoftDemod, OfdmRxFrame, build_ofdm_rx_frame,
                         bpsk_soft_llr/qpsk_soft_llr/qam_soft_llr
+    ofdm_frame.rs      — demodulate_frame (batch), OfdmFrameStreamDemod (streaming
+                        feed/flush RX), RxFrame (COFDM frame demodulator)
     pm.rs             — PmQuadratureDemod
     psk31.rs          — Bpsk31Demod, Bpsk31Decider, Qpsk31Demod, Qpsk31Decider
     qam.rs            — QamDemod, QamDecider<BITS>, Qam16/64/256Decider
@@ -58,8 +60,11 @@ src/
     fm.rs             — FmPhaseAccumMod
     ft4.rs            — Ft4Mod, Ft4Frame (CPFSK, 4-FSK, 12 kHz)
     ft8.rs            — Ft8Mod, Ft8Frame (CPFSK, 8-FSK, 12 kHz)
-    ofdm.rs            — ConstellationOrder, OfdmConfig, OfdmMod (mapper → grid →
-                        IFFT → cyclic prefix → optional RF upconversion)
+    ofdm.rs            — ConstellationOrder, OfdmConfig (incl. COFDM frame-layer
+                        FEC/interleaver/CRC/scrambler/header fields), OfdmMod
+                        (mapper → grid → IFFT → cyclic prefix → optional RF)
+    ofdm_frame.rs      — OfdmFrameMod, Mcs, McsTable (COFDM frame modulator +
+                        shared coding chain and block-size bookkeeping)
     pm.rs             — PmDirectPhaseMod
     psk31.rs          — Bpsk31Mod, Qpsk31Mod (DBPSK/DQPSK, 31.25 baud, Hann pulse shaping)
     qam.rs            — QamMapper<BITS>, QamMod, Qam16/64/256Mapper
@@ -75,6 +80,21 @@ src/
     psk31.rs          — conv_encode, viterbi_decode, viterbi_decode_coherent, StreamingViterbi,
                         Psk31Stream (streaming BPSK31/QPSK31 decode pipeline)
     varicode.rs       — varicode_encode/decode, VaricodeEncoder, VaricodeDecoder (IZ8BLY)
+  fec/                 — waveform-agnostic channel-coding + framing primitives for
+                        the COFDM (coded OFDM) frame layer
+    gf.rs              — Gf256 (GF(2^8) log/antilog arithmetic; shared by BCH, RS)
+    ldpc_codes.rs      — Ldpc, LdpcCode (parameterized fixed-family LDPC: staircase H,
+                        sum-product decode; distinct from codec/ldpc.rs's FT8 code)
+    bch.rs             — Bch (binary BCH(n,k,t) over GF(2^8); BM + Chien decode)
+    reed_solomon.rs    — ReedSolomon (RS(204,188) t=8 and shortened variants;
+                        syndrome → BM → Chien → Forney)
+    conv.rs            — PunctureRate, conv_encode_punctured, viterbi_decode_soft
+                        (zero-tail punctured convolutional; LLR-domain soft Viterbi)
+    interleaver.rs     — BlockInterleaver (rectangular, generic over bits and LLRs)
+    scrambler.rs       — PnScrambler (parameterized additive LFSR whitener)
+    frame.rs           — FramePacket, FrameMetadata, RxError, and the scheme
+                        descriptors (OuterFec, InnerFec, InterleaverKind, CrcKind,
+                        ScramblerKind/SeedMode/ScramblerPos, HeaderFormat)
   sync/
     costas.rs         — Costas difference-metric scorer and top-N candidate search
     ft4_sync.rs       — ft4_sync() → Vec<Ft4SyncResult>
@@ -97,6 +117,8 @@ src/
     ft8.rs            — Python wrappers for FT8/FT4 waveform, codec, sync, and message
     modulate.rs       — Python wrappers for analog + BPSK/QPSK/QAM modulators
     ofdm.rs            — Python wrappers for OFDM config, mod, demod, RX frame, sync
+    ofdm_frame.rs      — Python wrappers for the COFDM frame layer (FramePacket,
+                        McsTable, OfdmFrameMod, OfdmFrameStreamDemod, demodulate_frame)
     psk31.rs          — Python wrappers for PSK31 mod/demod, Varicode, and psk31_sync
 
 tests/
