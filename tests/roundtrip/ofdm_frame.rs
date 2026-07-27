@@ -3,7 +3,8 @@
 
 use crate::common::add_awgn;
 use num_complex::Complex32 as C32;
-use orion_sdr::demodulate::demodulate_frame;
+use orion_sdr::demodulate::{OfdmFrameStreamDemod, demodulate_frame};
+use orion_sdr::dsp::Rotator;
 use orion_sdr::fec::{
     CrcKind, FrameMetadata, FramePacket, HeaderFormat, InnerFec, InterleaverKind, OuterFec,
     ScramblerKind, ScramblerPos, SeedMode,
@@ -187,4 +188,213 @@ fn roundtrip_frame_no_fec_no_crc() {
     let body = strip_preamble(&cfg, modu.preamble(), &iq);
     let got = demodulate_frame(&cfg, &table, &body).expect("decode bare frame");
     assert_eq!(got.payload, payload);
+}
+
+// ── Streaming receiver (OfdmFrameStreamDemod) ──────────────────────────────
+
+fn apply_fir_channel(iq: &[C32], taps: &[C32]) -> Vec<C32> {
+    let mut out = vec![C32::default(); iq.len()];
+    for (n, &x) in iq.iter().enumerate() {
+        for (k, &h) in taps.iter().enumerate() {
+            if n + k < out.len() {
+                out[n + k] += x * h;
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn stream_frame_unknown_start_and_cfo() {
+    let cfg = plan_config();
+    let pre = preamble(&cfg);
+    let table = McsTable::default_ladder();
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+
+    let payload = sample_payload(40);
+    let frame = FramePacket::new(FrameMetadata::new(42, 0), payload.clone());
+    let iq = modu.modulate_frame(&frame, 0);
+
+    // Place at an unknown offset with trailing silence, then apply a CFO
+    // within the fractional capture range.
+    let fs = cfg.fs;
+    let mut buf = vec![C32::default(); 101];
+    buf.extend_from_slice(&iq);
+    buf.extend(vec![C32::default(); 64]);
+    let capture_hz = fs / (2.0 * pre.repeat_len as f32);
+    let mut rot = Rotator::new(capture_hz * 0.25, fs);
+    let mut with_cfo = vec![C32::default(); buf.len()];
+    rot.rotate_block(&buf, &mut with_cfo);
+
+    let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre);
+    let frames = rx.feed(&with_cfo);
+    let ok: Vec<_> = frames.into_iter().filter_map(|r| r.ok()).collect();
+    assert_eq!(ok.len(), 1, "exactly one frame should decode");
+    assert_eq!(ok[0].packet.payload, payload);
+    assert_eq!(ok[0].packet.metadata.sequence_num, 42);
+    assert!(
+        ok[0].diagnostics.cfo_hz.is_some(),
+        "cfo diagnostic populated"
+    );
+    assert!(ok[0].diagnostics.timing_offset_samples.is_some());
+}
+
+#[test]
+fn stream_back_to_back_frames() {
+    let cfg = plan_config();
+    let pre = preamble(&cfg);
+    let table = McsTable::default_ladder();
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+
+    let p0 = sample_payload(24);
+    let p1 = sample_payload(32);
+    let f0 = FramePacket::new(FrameMetadata::new(1, 0), p0.clone());
+    let f1 = FramePacket::new(FrameMetadata::new(2, 0), p1.clone());
+
+    let mut buf = vec![C32::default(); 40];
+    buf.extend_from_slice(&modu.modulate_frame(&f0, 0));
+    buf.extend_from_slice(&modu.modulate_frame(&f1, 0));
+    buf.extend(vec![C32::default(); 64]);
+
+    let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre);
+    let frames: Vec<_> = rx.feed(&buf).into_iter().filter_map(|r| r.ok()).collect();
+    assert_eq!(frames.len(), 2, "two frames drained from one buffer");
+    assert_eq!(frames[0].packet.payload, p0);
+    assert_eq!(frames[1].packet.payload, p1);
+    assert_eq!(frames[0].packet.metadata.sequence_num, 1);
+    assert_eq!(frames[1].packet.metadata.sequence_num, 2);
+}
+
+#[test]
+fn stream_frame_split_across_feeds() {
+    let cfg = plan_config();
+    let pre = preamble(&cfg);
+    let table = McsTable::default_ladder();
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+
+    let payload = sample_payload(48);
+    let frame = FramePacket::new(FrameMetadata::new(9, 0), payload.clone());
+    let mut buf = vec![C32::default(); 32];
+    buf.extend_from_slice(&modu.modulate_frame(&frame, 0));
+    buf.extend(vec![C32::default(); 64]);
+
+    // Split roughly in the middle of the frame — the first feed must NOT emit,
+    // the second completes it.
+    let split = buf.len() / 2;
+    let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre);
+    let first = rx.feed(&buf[..split]);
+    assert!(
+        first.iter().all(|r| r.is_err()) || first.is_empty(),
+        "partial frame must not decode on the first feed"
+    );
+    let second: Vec<_> = rx
+        .feed(&buf[split..])
+        .into_iter()
+        .filter_map(|r| r.ok())
+        .collect();
+    assert_eq!(second.len(), 1, "frame completes on the second feed");
+    assert_eq!(second[0].packet.payload, payload);
+}
+
+#[test]
+fn stream_frame_multipath_channel() {
+    // A 2-tap frequency-selective channel with delay spread <= cp_len, decoded
+    // via the training-symbol channel estimate. The channel is tuned to be
+    // load-bearing: this same frame decodes WITH the training-symbol estimate
+    // (below) but NOT without it (`stream_multipath_needs_channel_estimate`).
+    let cfg = plan_config();
+    let pre = preamble(&cfg);
+    let table = McsTable::default_ladder();
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+
+    let payload = sample_payload(30);
+    let frame = FramePacket::new(FrameMetadata::new(3, 1), payload.clone()); // mcs 1 = QPSK
+    let mut buf = vec![C32::default(); 24];
+    buf.extend_from_slice(&modu.modulate_frame(&frame, 0));
+    buf.extend(vec![C32::default(); 64]);
+
+    let taps = multipath_taps();
+    assert!(taps.len() - 1 <= cfg.carrier_plan.cp_len());
+    let channeled = apply_fir_channel(&buf, &taps);
+
+    let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre);
+    let frames: Vec<_> = rx
+        .feed(&channeled)
+        .into_iter()
+        .filter_map(|r| r.ok())
+        .collect();
+    assert_eq!(
+        frames.len(),
+        1,
+        "multipath frame decodes via training estimate"
+    );
+    assert_eq!(frames[0].packet.payload, payload);
+}
+
+/// The 2-tap channel used by the multipath tests — strong enough that the
+/// per-carrier channel estimate is required for a correct decode.
+fn multipath_taps() -> [C32; 3] {
+    [
+        C32::new(0.85, 0.0),
+        C32::new(0.0, 0.0),
+        C32::new(0.25, -0.125),
+    ]
+}
+
+#[test]
+fn stream_multipath_needs_channel_estimate() {
+    // Same channel as `stream_frame_multipath_channel`, but a preamble with NO
+    // training symbol, so the receiver has no channel estimate. The frame must
+    // FAIL to decode — proving the training-symbol equalization is load-bearing.
+    let cfg = plan_config();
+    let pre_no_training = OfdmPreamble::new(4, 16); // no training symbol
+    let table = McsTable::default_ladder();
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre_no_training);
+
+    let payload = sample_payload(30);
+    let frame = FramePacket::new(FrameMetadata::new(3, 1), payload.clone());
+    let mut buf = vec![C32::default(); 24];
+    buf.extend_from_slice(&modu.modulate_frame(&frame, 0));
+    buf.extend(vec![C32::default(); 64]);
+    let channeled = apply_fir_channel(&buf, &multipath_taps());
+
+    let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre_no_training);
+    let ok = rx
+        .feed(&channeled)
+        .into_iter()
+        .filter(|r| r.is_ok())
+        .count();
+    assert_eq!(
+        ok, 0,
+        "without a channel estimate the multipath frame must not decode"
+    );
+}
+
+#[test]
+fn stream_corrupted_payload_reports_error() {
+    let cfg = plan_config();
+    let pre = preamble(&cfg);
+    let table = McsTable::default_ladder();
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+
+    let frame = FramePacket::new(FrameMetadata::new(5, 0), sample_payload(40));
+    let mut buf = vec![C32::default(); 16];
+    let frame_iq = modu.modulate_frame(&frame, 0);
+    let header_end = pre.total_len() + 12 * cfg.samples_per_ofdm_symbol();
+    buf.extend_from_slice(&frame_iq);
+    buf.extend(vec![C32::default(); 64]);
+
+    // Corrupt deep in the payload (past the header) beyond the FEC's reach.
+    for s in buf.iter_mut().skip(16 + header_end).take(400) {
+        *s = C32::new(-s.re * 3.0, -s.im * 3.0);
+    }
+
+    let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre);
+    let results = rx.feed(&buf);
+    // No valid frame; at least one error reported (payload CRC/FEC failure).
+    assert!(
+        results.iter().all(|r| r.is_err()),
+        "corrupted payload must not yield Ok"
+    );
+    assert!(!results.is_empty(), "an error should be reported");
 }
