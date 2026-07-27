@@ -187,10 +187,9 @@ is printed alongside for a rough per-sample SNR reference.
 
 Uncoded BER curves as expected: higher-order constellations (QAM-64) degrade
 faster than lower-order ones (QPSK) at the same noise scale, since their
-decision regions are closer together for the same average symbol energy.
-This release ships soft LLRs (`OfdmSoftDemod`) but no mandatory FEC — an
-external/user-supplied FEC layer over these LLRs would improve on these
-uncoded numbers substantially, especially at moderate SNR.
+decision regions are closer together for the same average symbol energy. These
+are the raw `OfdmSoftDemod`/`OfdmDecider` LLR numbers; the COFDM frame layer's
+concatenated FEC (below) improves on them substantially at moderate SNR.
 
 ### OFDM BER under multipath (n_fft=64, cp_len=8, 2-tap synthetic FIR channel, `TrainingSymbolHold` equalizer)
 
@@ -237,6 +236,50 @@ Both curves degrade sharply past `noise_scale ≈ 0.2`, driven by the timing
 metric's tie-break (correlated-window energy) losing discrimination as AWGN
 dominates the preamble's own energy — timing lock is the limiting factor at
 low SNR, not the CFO estimators layered on top of it.
+
+### COFDM frame throughput (n_fft=64, cp_len=8, QPSK payload, 96-byte payload, 200 passes)
+
+Full frame pipeline: `OfdmFrameMod::modulate_frame` (CRC → concatenated FEC
+encode → interleave → map → preamble/header) and `demodulate_frame` (soft-demap
+→ deinterleave → concatenated FEC decode → CRC). Two concatenations are shown.
+"Msps" is total frame samples / wall time.
+
+| Config | mod Msps | demod Msps | frame samples |
+| --- | ---: | ---: | ---: |
+| LDPC(n512r12) + BCH(t=8) | 0.5 | 0.2 | 2584 |
+| Convolutional r1/2 + RS(60,52) | 0.7 | 0.4 | 1936 |
+
+Throughput is two-to-three orders of magnitude below the bare OFDM PHY (164
+Msps roundtrip above) because per-frame FEC dominates: the LDPC sum-product
+decoder runs up to 50 belief-propagation iterations per codeword, and the
+convolutional path runs a full-block soft Viterbi. This is decode-side cost —
+`modulate` is consistently ~2× faster than `demodulate`. Larger payloads
+amortize the fixed preamble/header overhead but not the per-codeword decode.
+
+### COFDM frame-error-rate vs. noise scale (n_fft=64, cp_len=8, QPSK payload, 100 trials/point, flat channel)
+
+Frame-error-rate (whole-frame CRC pass/fail) for the two concatenations, same
+`noise_scale` convention as the uncoded OFDM tables above. Compare against the
+uncoded QPSK column of "OFDM BER vs. noise scale": the FEC drives *frame* errors
+to zero at noise scales where the uncoded *bit*-error rate is already nonzero.
+
+| noise_scale | equiv. SNR (dB) | LDPC+BCH FER | Conv+RS FER |
+| ---: | ---: | ---: | ---: |
+| 0.02 | 17.0 | 0.000 | 0.000 |
+| 0.05 | 13.0 | 0.000 | 0.000 |
+| 0.1 | 10.0 | 0.000 | 0.000 |
+| 0.2 | 7.0 | 0.000 | 0.000 |
+| 0.3 | 5.2 | 0.010 | 0.000 |
+| 0.5 | 3.0 | 0.300 | 0.010 |
+
+Both concatenations hold FER = 0 through `noise_scale = 0.2` (equiv. SNR 7 dB),
+where uncoded QPSK already shows BER ≈ 0.015 — the concatenated FEC's coding
+gain. The convolutional + Reed–Solomon pairing is the more robust of the two at
+the cliff edge (`noise_scale ≥ 0.3`): its soft Viterbi plus RS symbol-error
+correction degrades more gracefully than the LDPC + BCH pairing here. (Frame
+errors are all-or-nothing per the payload CRC, so FER rises steeply once the
+inner code can no longer clear the channel — characteristic of a coded packet
+link, unlike the smooth uncoded BER curves.)
 
 ## Running the Benchmarks
 

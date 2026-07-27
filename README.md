@@ -7,7 +7,7 @@
 
 A composable SDR/DSP library in Rust with Python bindings, targeting HF
 through EHF signal processing — analog modes, single-carrier digital modes,
-FT8/FT4, PSK31, and OFDM.
+FT8/FT4, PSK31, OFDM, and a coded, framed COFDM link.
 
 ## Status
 
@@ -23,7 +23,8 @@ Pre-alpha (v0.0.43). See [CHANGELOG.md](CHANGELOG.md) for release history.
 - [Features](docs/features.md) — what's implemented as of v0.0.43
 - [Build and test commands](docs/commands.md) — cargo aliases, maturin
 - [Source layout](docs/source.md) — module tree
-- [Design patterns](docs/design.md) — Block trait, inner-loop style, IIR structure, multicarrier/OFDM pipeline
+- [Design patterns](docs/design.md) — Block trait, inner-loop style, IIR structure
+- [OFDM / COFDM design](docs/ofdm.md) — OFDM PHY conventions and the coded frame (MAC) layer
 - [Coding conventions](docs/conventions.md) — language, safety, feature flags
 - [Performance benchmarks](docs/performance.md) — throughput results, SNR curves, and how to run them
 - [Demodulator usage](docs/demodulate.md) — Rust examples for CW/AM/SSB/FM/PM, BPSK/QPSK/QAM, FT8/FT4, and OFDM demodulators

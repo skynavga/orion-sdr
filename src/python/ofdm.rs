@@ -16,6 +16,10 @@ use pyo3::types::{PyDict, PyList};
 
 use crate::core::Block;
 use crate::demodulate::{EqualizerMethod, OfdmDecider, OfdmEqualizer};
+use crate::fec::{
+    CrcKind, HeaderFormat, InnerFec, InterleaverKind, LdpcCode, OuterFec, PunctureRate,
+    ScramblerKind, ScramblerPos, SeedMode,
+};
 use crate::modulate::{ConstellationOrder, OfdmConfig, OfdmMod};
 use crate::multicarrier::{CarrierGrid, CarrierPlan, CyclicPrefixRemove, FftBlock, GridExtract};
 use crate::sync::{OfdmPreamble, generate_ofdm_preamble, ofdm_sync as ofdm_sync_fn};
@@ -94,6 +98,200 @@ impl PyOfdmConfig {
     #[getter]
     fn samples_per_ofdm_symbol(&self) -> usize {
         self.0.samples_per_ofdm_symbol()
+    }
+
+    // ── COFDM frame-layer configuration (builder-style setters) ──
+    //
+    // Each returns a new config with the field set, so Python can chain:
+    //   cfg = (OfdmConfig(...).with_inner_fec("ldpc", "n512r12")
+    //                         .with_outer_fec("bch", 8)
+    //                         .with_payload_crc("crc32"))
+
+    /// Sets the outer FEC. `kind` is `"none"`, `"bch"`, or `"reed_solomon"`.
+    /// For `"bch"`, `a` is `t` (errors per codeword). For `"reed_solomon"`,
+    /// `a` is `n` (codeword bytes) and `b` is `n_parity` (`= 2t`).
+    #[pyo3(signature = (kind, a = 0, b = 0))]
+    fn with_outer_fec(&self, kind: &str, a: usize, b: usize) -> PyResult<Self> {
+        let outer = match kind {
+            "none" => OuterFec::None,
+            "bch" => OuterFec::Bch { t: a },
+            "reed_solomon" | "rs" => OuterFec::ReedSolomon { n: a, n_parity: b },
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "with_outer_fec: unknown kind {other:?} (expected none|bch|reed_solomon)"
+                )));
+            }
+        };
+        let mut cfg = self.0.clone();
+        cfg.outer_fec = outer;
+        Ok(Self(cfg))
+    }
+
+    /// Sets the inner FEC. `kind` is `"none"`, `"ldpc"`, or `"convolutional"`.
+    /// For `"ldpc"`, `code` is `"n512r12"`, `"n576r23"`, or `"n512r34"`. For
+    /// `"convolutional"`, `code` is a puncture rate `"1/2"`, `"2/3"`, `"3/4"`,
+    /// `"5/6"`, or `"7/8"`.
+    #[pyo3(signature = (kind, code = ""))]
+    fn with_inner_fec(&self, kind: &str, code: &str) -> PyResult<Self> {
+        let inner = match kind {
+            "none" => InnerFec::None,
+            "ldpc" => InnerFec::Ldpc(parse_ldpc_code(code)?),
+            "convolutional" | "conv" => InnerFec::Convolutional {
+                rate: parse_puncture_rate(code)?,
+            },
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "with_inner_fec: unknown kind {other:?} (expected none|ldpc|convolutional)"
+                )));
+            }
+        };
+        let mut cfg = self.0.clone();
+        cfg.inner_fec = inner;
+        Ok(Self(cfg))
+    }
+
+    /// Sets a rectangular block interleaver on the given stage
+    /// (`"inner"` or `"outer"`). `rows`/`cols` = 0 disables it.
+    #[pyo3(signature = (stage, rows, cols))]
+    fn with_interleaver(&self, stage: &str, rows: usize, cols: usize) -> PyResult<Self> {
+        let il = if rows == 0 || cols == 0 {
+            InterleaverKind::None
+        } else {
+            InterleaverKind::Block { rows, cols }
+        };
+        let mut cfg = self.0.clone();
+        match stage {
+            "inner" => cfg.inner_interleaver = il,
+            "outer" => cfg.outer_interleaver = il,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "with_interleaver: unknown stage {other:?} (expected inner|outer)"
+                )));
+            }
+        }
+        Ok(Self(cfg))
+    }
+
+    /// Sets the payload CRC: `"none"`, `"crc16"`, or `"crc32"`.
+    fn with_payload_crc(&self, kind: &str) -> PyResult<Self> {
+        let mut cfg = self.0.clone();
+        cfg.payload_crc = parse_crc(kind)?;
+        Ok(Self(cfg))
+    }
+
+    /// Sets the header CRC: `"none"`, `"crc16"`, or `"crc32"`.
+    fn with_header_crc(&self, kind: &str) -> PyResult<Self> {
+        let mut cfg = self.0.clone();
+        cfg.header_crc = parse_crc(kind)?;
+        Ok(Self(cfg))
+    }
+
+    /// Sets the header format: `"orion_sdr"` (default) or `"none"`.
+    fn with_header_format(&self, kind: &str) -> PyResult<Self> {
+        let hf = match kind {
+            "orion_sdr" | "orionsdr" => HeaderFormat::OrionSdr,
+            "none" | "no_header" => HeaderFormat::NoHeader,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "with_header_format: unknown format {other:?} (expected orion_sdr|none)"
+                )));
+            }
+        };
+        let mut cfg = self.0.clone();
+        cfg.header_format = hf;
+        Ok(Self(cfg))
+    }
+
+    /// Sets an additive scrambler. `poly`/`width` define the LFSR; `seed` is a
+    /// fixed seed, or pass `per_frame_random = True` for a per-frame seed
+    /// carried in the header. `position` is `"before_outer"` (default) or
+    /// `"after_inner"`. Pass `poly = 0` to disable scrambling.
+    #[pyo3(signature = (poly, width, seed = 1, per_frame_random = false, position = "before_outer"))]
+    fn with_scrambler(
+        &self,
+        poly: u32,
+        width: u8,
+        seed: u32,
+        per_frame_random: bool,
+        position: &str,
+    ) -> PyResult<Self> {
+        let scrambler = if poly == 0 {
+            ScramblerKind::None
+        } else {
+            let seed_mode = if per_frame_random {
+                SeedMode::PerFrameRandom
+            } else {
+                SeedMode::Fixed(seed)
+            };
+            ScramblerKind::Additive {
+                poly,
+                width,
+                seed: seed_mode,
+            }
+        };
+        let pos = match position {
+            "before_outer" => ScramblerPos::BeforeOuterFec,
+            "after_inner" => ScramblerPos::AfterInnerFec,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "with_scrambler: unknown position {other:?} (expected before_outer|after_inner)"
+                )));
+            }
+        };
+        let mut cfg = self.0.clone();
+        cfg.scrambler = scrambler;
+        cfg.scrambler_pos = pos;
+        Ok(Self(cfg))
+    }
+
+    /// Validates the frame-layer configuration, raising `ValueError` on an
+    /// inconsistent combination.
+    fn validate_frame(&self) -> PyResult<()> {
+        self.0
+            .validate()
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+}
+
+impl PyOfdmConfig {
+    /// Clones the wrapped `OfdmConfig` for the frame-layer bindings.
+    pub(crate) fn inner_config(&self) -> OfdmConfig {
+        self.0.clone()
+    }
+}
+
+fn parse_ldpc_code(s: &str) -> PyResult<LdpcCode> {
+    match s {
+        "n512r12" => Ok(LdpcCode::N512R12),
+        "n576r23" => Ok(LdpcCode::N576R23),
+        "n512r34" => Ok(LdpcCode::N512R34),
+        other => Err(PyValueError::new_err(format!(
+            "unknown LDPC code {other:?} (expected n512r12|n576r23|n512r34)"
+        ))),
+    }
+}
+
+fn parse_puncture_rate(s: &str) -> PyResult<PunctureRate> {
+    match s {
+        "1/2" => Ok(PunctureRate::R1_2),
+        "2/3" => Ok(PunctureRate::R2_3),
+        "3/4" => Ok(PunctureRate::R3_4),
+        "5/6" => Ok(PunctureRate::R5_6),
+        "7/8" => Ok(PunctureRate::R7_8),
+        other => Err(PyValueError::new_err(format!(
+            "unknown puncture rate {other:?} (expected 1/2|2/3|3/4|5/6|7/8)"
+        ))),
+    }
+}
+
+fn parse_crc(s: &str) -> PyResult<CrcKind> {
+    match s {
+        "none" => Ok(CrcKind::None),
+        "crc16" => Ok(CrcKind::Crc16),
+        "crc32" => Ok(CrcKind::Crc32),
+        other => Err(PyValueError::new_err(format!(
+            "unknown CRC {other:?} (expected none|crc16|crc32)"
+        ))),
     }
 }
 

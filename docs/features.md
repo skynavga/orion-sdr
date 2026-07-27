@@ -37,9 +37,22 @@
     (default, one estimate/packet) and `PerSymbolPilotInterp` (opt-in, for
     time-varying/Doppler channels) methods
   - Soft (LLR) demapping per constellation order (`OfdmSoftDemod`,
-    `bpsk_soft_llr`/`qpsk_soft_llr`/`qam_soft_llr`); no mandatory FEC — soft
-    LLRs are the deliverable for an external/user-supplied FEC layer
+    `bpsk_soft_llr`/`qpsk_soft_llr`/`qam_soft_llr`)
   - Per-packet RX diagnostics (`OfdmRxFrame`: EVM, CFO, timing offset, channel MSE)
-- Unit, roundtrip, throughput, and SNR-sensitivity tests (212 default `cargo
-  test --release`, 254 total including `--features throughput`)
-- Python bindings (45 classes/functions total, including full PSK31 and OFDM stacks)
+- COFDM (coded, framed OFDM) frame/MAC layer built on the OFDM PHY
+  (see [ofdm.md](ofdm.md)):
+  - Waveform-agnostic FEC/framing primitives (`fec/`): parameterized LDPC and
+    punctured convolutional inner codes, BCH and Reed–Solomon (DVB-T RS(204,188))
+    outer codes over GF(2^8), block interleaver, PN scrambler, generic CRC-16/32,
+    and the `FramePacket`/`RxError` types
+  - Concatenated FEC configured on `OfdmConfig` (outer/inner code, two
+    interleavers, scrambler + position, header/payload CRC, header format), all
+    defaulted-off and set via `with_*` builders; per-frame adaptive coding via
+    an `McsTable`
+  - Frame TX (`OfdmFrameMod`) and streaming RX (`OfdmFrameStreamDemod`,
+    feed/flush) with in-band header, acquisition, CFO correction, equalization,
+    concatenated decode, and CRC check; batch `demodulate_frame` for a known start
+- Unit, roundtrip, throughput, and SNR-sensitivity tests (289 default `cargo
+  test --release`, 331 total including `--features throughput`)
+- Python bindings (50 classes/functions total, including full PSK31, OFDM, and
+  COFDM frame stacks)

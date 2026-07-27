@@ -7,6 +7,7 @@ mod demodulate;
 mod ft8;
 mod modulate;
 mod ofdm;
+mod ofdm_frame;
 mod psk31;
 
 #[pymodule]
@@ -63,5 +64,7 @@ fn orion_sdr(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(psk31::best_psk31_sync, m)?)?;
     // OFDM config, waveform, RX, sync
     ofdm::register(m)?;
+    // COFDM frame (MAC) layer
+    ofdm_frame::register(m)?;
     Ok(())
 }
