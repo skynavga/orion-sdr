@@ -10,7 +10,7 @@ pub mod morse;
 pub mod psk31;
 pub mod varicode;
 
-pub use crc::ft8_crc14;
+pub use crc::{crc16, crc32, ft8_crc14};
 pub use ft4::{Ft4Bits, Ft4Codec};
 pub use ft8::{Ft8Bits, Ft8Codec, Ft8DecodeResult, Ft8StreamDecoder};
 pub use gray::{gray4_decode, gray4_encode, gray8_decode, gray8_encode};
