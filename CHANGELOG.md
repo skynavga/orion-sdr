@@ -9,6 +9,40 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+COFDM: a concatenated-FEC, framed (MAC-layer) link built on the OFDM physical
+layer. See [docs/ofdm.md](docs/ofdm.md).
+
+### Added
+
+- New waveform-agnostic `fec/` module: `Gf256` (GF(2^8) arithmetic),
+  parameterized fixed-family LDPC (`Ldpc`/`LdpcCode`, distinct from FT8's
+  `codec/ldpc.rs`), binary BCH (`Bch`), Reed–Solomon (`ReedSolomon`, DVB-T
+  RS(204,188) t=8), punctured convolutional coding with an LLR-domain soft
+  Viterbi (`conv`, rates 1/2–7/8), a block interleaver (`BlockInterleaver`), a
+  PN scrambler (`PnScrambler`), and the frame/scheme types (`FramePacket`,
+  `FrameMetadata`, `RxError`, and the `OuterFec`/`InnerFec`/`InterleaverKind`/
+  `CrcKind`/`ScramblerKind`/`ScramblerPos`/`HeaderFormat` descriptors).
+- Generic `crc16` (CRC-16/CCITT-FALSE) and `crc32` (CRC-32/ISO-HDLC) in
+  `codec/crc.rs`.
+- `OfdmConfig` frame-layer fields and `with_*` builder methods (outer/inner
+  FEC, the two interleavers, header format, header/payload CRC, scrambler and
+  its chain position), all defaulted-off so the bare OFDM symbol pipeline is
+  unchanged; `OfdmConfig::validate()` for the frame-layer configuration.
+- COFDM frame transmitter `OfdmFrameMod` and `Mcs`/`McsTable` (per-frame
+  adaptive modulation and coding), the batch `demodulate_frame`, and the
+  streaming receiver `OfdmFrameStreamDemod` (feed/flush, with preamble
+  acquisition, CFO correction, training-symbol equalization, concatenated
+  decode, and CRC — mirroring `Ft8StreamDecoder`'s shape).
+- Python bindings for the frame layer (`FramePacket`, `McsTable`,
+  `OfdmFrameMod`, `OfdmFrameStreamDemod`, `demodulate_frame`) plus the
+  `OfdmConfig.with_*` FEC/CRC/scrambler/header configuration methods.
+- `docs/ofdm.md` (OFDM PHY conventions moved out of `docs/design.md`, plus the
+  new COFDM frame-layer design); COFDM throughput and frame-error-rate tables
+  in `docs/performance.md`; new acronym-glossary rows (BCH, BM, COFDM, GF, MAC,
+  MCS, MMSE, PN, RS, LFSR).
+
 ## [0.0.43] - 2026-07-19
 
 Post-review hardening of the OFDM stack: one correctness fix plus test and

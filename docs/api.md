@@ -285,7 +285,7 @@ deliberately **not** routed through these generic chains — see
 
 Waveform-agnostic FFT-domain building blocks in `multicarrier/`, shared by
 OFDM today and by planned future waveforms (DFT-s-OFDM/SC-FDMA, OTFS). See
-[design.md](design.md#multicarrier--ofdm-pipeline) for the FFT-normalization,
+[ofdm.md](ofdm.md) for the FFT-normalization,
 carrier-indexing, and numerology conventions these types follow.
 
 | Type | Description |
@@ -331,8 +331,9 @@ chain. `OfdmEqualizer` is not fused into `OfdmDemod`, so it can be swapped or
 disabled independently; `TrainingSymbolHold` estimates once per packet from
 the training symbol and holds it, `PerSymbolPilotInterp` re-estimates every
 symbol via pilot interpolation for time-varying/Doppler channels.
-`OfdmSoftDemod` is a separate type from `OfdmDecider` — no mandatory FEC
-ships with this crate, so LLRs are the deliverable. `OfdmRxFrame`'s
+`OfdmSoftDemod` is a separate type from `OfdmDecider`, producing per-bit LLRs
+that feed the COFDM frame layer's FEC (see [ofdm.md](ofdm.md)) or an external
+FEC. `OfdmRxFrame`'s
 `Option`-typed fields (`cfo_hz`, `timing_offset_samples`, `channel_mse`) are
 `None` until acquisition/equalization has actually run; `build_ofdm_rx_frame`
 computes `evm_db` by re-mapping hard-decided bits to their ideal

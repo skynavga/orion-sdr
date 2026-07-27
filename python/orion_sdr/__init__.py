@@ -44,6 +44,11 @@ from orion_sdr.orion_sdr import (
     build_ofdm_rx_frame,
     ofdm_sync,
     generate_ofdm_preamble,
+    FramePacket,
+    McsTable,
+    OfdmFrameMod,
+    OfdmFrameStreamDemod,
+    demodulate_frame,
 )
 
 __all__ = [
@@ -92,4 +97,9 @@ __all__ = [
     "build_ofdm_rx_frame",
     "ofdm_sync",
     "generate_ofdm_preamble",
+    "FramePacket",
+    "McsTable",
+    "OfdmFrameMod",
+    "OfdmFrameStreamDemod",
+    "demodulate_frame",
 ]
