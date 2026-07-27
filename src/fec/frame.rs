@@ -16,7 +16,7 @@
 // (reversed on receive), with the scrambler position selected by
 // [`ScramblerPos`]. See the OFDM frame modulator/demodulator for the wiring.
 
-use super::LdpcCode;
+use super::{LdpcCode, PunctureRate};
 
 /// A high-level transport unit (MAC-layer view): metadata plus an opaque byte
 /// payload. The frame modulator serializes this to IQ; the frame demodulator
@@ -88,7 +88,10 @@ pub enum OuterFec {
     /// Binary BCH shortened to fit the frame, correcting up to `t` errors per
     /// codeword.
     Bch { t: usize },
-    // Reed–Solomon (RS(204,188) t=8 and friends) is a later addition.
+    /// Reed–Solomon over GF(2^8): `n` codeword bytes, `n_parity = 2t` parity
+    /// bytes (so `k = n − n_parity`), correcting up to `t` symbol errors per
+    /// codeword. The DVB-T outer code is `ReedSolomon { n: 204, n_parity: 16 }`.
+    ReedSolomon { n: usize, n_parity: usize },
 }
 
 /// Inner (soft-decision) FEC selection. The inner code consumes the
@@ -99,7 +102,9 @@ pub enum InnerFec {
     None,
     /// One of the fixed-family LDPC codes.
     Ldpc(LdpcCode),
-    // Punctured convolutional (Viterbi) is a later addition.
+    /// Zero-tail-terminated, punctured rate-1/2 K=5 convolutional code,
+    /// soft-Viterbi-decoded, at the given puncture rate.
+    Convolutional { rate: PunctureRate },
 }
 
 /// Interleaver selection for either the inner (LLR-domain) or outer
