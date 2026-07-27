@@ -19,6 +19,7 @@ mod unit {
     pub mod morse;
     pub mod multicarrier;
     pub mod ofdm;
+    pub mod ofdm_frame;
     pub mod ofdm_sync;
     pub mod pm;
     pub mod psk31;
