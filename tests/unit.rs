@@ -10,6 +10,7 @@ mod unit {
     pub mod chains;
     pub mod codec;
     pub mod dsp;
+    pub mod fec;
     pub mod fm;
     pub mod ft4;
     pub mod ft8;

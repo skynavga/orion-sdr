@@ -1,0 +1,238 @@
+// Copyright (c) 2026 G & R Associates LLC
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+use orion_sdr::codec::{crc16, crc32};
+use orion_sdr::fec::{BlockInterleaver, Gf256, PnScrambler};
+
+// ── GF(2^8) arithmetic ─────────────────────────────────────────────────────
+
+#[test]
+fn gf256_add_is_xor_and_self_inverse() {
+    let gf = Gf256::new();
+    for a in 0u8..=255 {
+        for b in [0u8, 1, 7, 42, 128, 255] {
+            assert_eq!(gf.add(a, b), a ^ b);
+            // Adding twice cancels.
+            assert_eq!(gf.add(gf.add(a, b), b), a);
+        }
+    }
+}
+
+#[test]
+fn gf256_mul_identity_and_zero() {
+    let gf = Gf256::new();
+    for a in 0u8..=255 {
+        assert_eq!(gf.mul(a, 1), a, "1 is the multiplicative identity");
+        assert_eq!(gf.mul(a, 0), 0, "0 is absorbing");
+        assert_eq!(gf.mul(0, a), 0, "0 is absorbing");
+    }
+}
+
+#[test]
+fn gf256_mul_is_commutative_and_associative() {
+    let gf = Gf256::new();
+    let sample = [1u8, 2, 3, 5, 17, 99, 200, 255];
+    for &a in &sample {
+        for &b in &sample {
+            assert_eq!(gf.mul(a, b), gf.mul(b, a));
+            for &c in &sample {
+                assert_eq!(gf.mul(gf.mul(a, b), c), gf.mul(a, gf.mul(b, c)));
+            }
+        }
+    }
+}
+
+#[test]
+fn gf256_inverse_and_division() {
+    let gf = Gf256::new();
+    for a in 1u8..=255 {
+        let inv = gf.inv(a);
+        assert_eq!(gf.mul(a, inv), 1, "a * a^-1 == 1");
+        // Division is multiplication by the inverse.
+        for b in 1u8..=255 {
+            assert_eq!(gf.div(a, b), gf.mul(a, gf.inv(b)));
+            // (a / b) * b == a
+            assert_eq!(gf.mul(gf.div(a, b), b), a);
+        }
+    }
+}
+
+#[test]
+fn gf256_pow_matches_repeated_mul() {
+    let gf = Gf256::new();
+    for a in [1u8, 2, 3, 10, 100, 255] {
+        let mut acc = 1u8;
+        for n in 0..20usize {
+            assert_eq!(gf.pow(a, n), acc, "pow({a}, {n})");
+            acc = gf.mul(acc, a);
+        }
+    }
+}
+
+#[test]
+fn gf256_exp_log_round_trip() {
+    let gf = Gf256::new();
+    // g^i cycles with period 255; exp_of/log_of invert each other on nonzero.
+    for a in 1u8..=255 {
+        let l = gf.log_of(a) as usize;
+        assert_eq!(gf.exp_of(l), a);
+    }
+    // The generator has full order 255.
+    assert_eq!(gf.exp_of(0), 1);
+    assert_eq!(gf.exp_of(255), 1, "g^255 == 1 (order 255)");
+}
+
+// ── Block interleaver ──────────────────────────────────────────────────────
+
+fn interleave_round_trip<T: Copy + PartialEq + std::fmt::Debug>(
+    il: &BlockInterleaver,
+    data: &[T],
+    fill: T,
+) {
+    let n = il.block_len();
+    // Pad the data up to a full block (the frame layer does this in practice).
+    let mut block: Vec<T> = data.to_vec();
+    block.resize(n, fill);
+
+    let mut interleaved = vec![fill; n];
+    il.interleave(&block, &mut interleaved);
+
+    let mut restored = vec![fill; n];
+    il.deinterleave(&interleaved, &mut restored);
+
+    assert_eq!(restored, block, "deinterleave∘interleave must be identity");
+}
+
+#[test]
+fn interleaver_round_trip_bytes_square() {
+    let il = BlockInterleaver::new(4, 4);
+    let data: Vec<u8> = (0..16).collect();
+    interleave_round_trip(&il, &data, 0u8);
+}
+
+#[test]
+fn interleaver_round_trip_bytes_non_square() {
+    let il = BlockInterleaver::new(3, 7);
+    let data: Vec<u8> = (0..21).map(|i| (i * 3 + 1) as u8).collect();
+    interleave_round_trip(&il, &data, 0u8);
+}
+
+#[test]
+fn interleaver_round_trip_bytes_padded() {
+    // 5×5 = 25 slots, only 19 real elements → final partial row padded.
+    let il = BlockInterleaver::new(5, 5);
+    let data: Vec<u8> = (0..19).map(|i| (200 - i) as u8).collect();
+    interleave_round_trip(&il, &data, 0u8);
+}
+
+#[test]
+fn interleaver_round_trip_llrs() {
+    // The inner deinterleaver runs in the f32 (LLR) domain.
+    let il = BlockInterleaver::new(6, 4);
+    let data: Vec<f32> = (0..24).map(|i| (i as f32) * 0.5 - 5.0).collect();
+    interleave_round_trip(&il, &data, 0.0f32);
+}
+
+#[test]
+fn interleaver_actually_permutes_across_rows() {
+    // A burst confined to one row of the input must be spread across columns
+    // (i.e. non-adjacent) in the interleaved output — the whole point.
+    let il = BlockInterleaver::new(4, 4);
+    // Row 0 = ones, everything else zero.
+    let mut block = vec![0u8; 16];
+    for slot in block.iter_mut().take(4) {
+        *slot = 1;
+    }
+    let mut out = vec![0u8; 16];
+    il.interleave(&block, &mut out);
+    // The four 1s should land at output indices 0, 4, 8, 12 (one per column
+    // read-out), i.e. spread by `rows` apart — never adjacent.
+    let ones: Vec<usize> = out
+        .iter()
+        .enumerate()
+        .filter(|&(_, &v)| v == 1)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(ones, vec![0, 4, 8, 12]);
+}
+
+// ── PN scrambler ───────────────────────────────────────────────────────────
+
+// A few representative additive LFSR parameterizations.
+fn scramblers() -> Vec<PnScrambler> {
+    vec![
+        // 802.11-style: x^7 + x^4 + 1, 7-bit register.
+        PnScrambler::new(0b1001, 7, 0x7F),
+        // DVB energy-dispersal-style: x^15 + x^14 + 1, 15-bit register.
+        PnScrambler::new(0b11 << 13, 15, 0b100_1010_1000_0000),
+        // A wide 32-bit register.
+        PnScrambler::new(0x8020_0003, 32, 0x1234_5678),
+    ]
+}
+
+#[test]
+fn scrambler_is_self_inverse() {
+    let original: Vec<u8> = (0..64).map(|i| (i * 7 + 3) as u8).collect();
+    for sc in scramblers() {
+        let mut data = original.clone();
+        sc.scramble(&mut data);
+        assert_ne!(data, original, "scrambling must change the data");
+        sc.scramble(&mut data);
+        assert_eq!(data, original, "scramble∘scramble must be identity");
+    }
+}
+
+#[test]
+fn scrambler_breaks_all_zero_run() {
+    // An all-zero payload must come out non-trivially whitened (no long runs
+    // of a constant), which is the reason a whitener exists.
+    for sc in scramblers() {
+        let mut data = vec![0u8; 32];
+        sc.scramble(&mut data);
+        let nonzero = data.iter().filter(|&&b| b != 0).count();
+        assert!(
+            nonzero > data.len() / 2,
+            "whitened all-zero input should be mostly nonzero, got {nonzero} nonzero bytes"
+        );
+    }
+}
+
+#[test]
+fn scrambler_deterministic() {
+    let sc = PnScrambler::new(0b1001, 7, 0x7F);
+    let mut a = vec![0xAAu8; 40];
+    let mut b = vec![0xAAu8; 40];
+    sc.scramble(&mut a);
+    sc.scramble(&mut b);
+    assert_eq!(a, b, "same seed/params → same PN sequence");
+}
+
+// ── Generic CRCs ───────────────────────────────────────────────────────────
+
+#[test]
+fn crc_known_answer_vectors() {
+    // The canonical check string "123456789".
+    assert_eq!(crc16(b"123456789"), 0x29B1, "CRC-16/CCITT-FALSE");
+    assert_eq!(crc32(b"123456789"), 0xCBF4_3926, "CRC-32/ISO-HDLC");
+}
+
+#[test]
+fn crc_detects_single_bit_flip() {
+    let msg = b"orion-sdr COFDM frame payload";
+    let good16 = crc16(msg);
+    let good32 = crc32(msg);
+
+    for bit in 0..(msg.len() * 8) {
+        let mut corrupted = msg.to_vec();
+        corrupted[bit / 8] ^= 1 << (bit % 8);
+        assert_ne!(crc16(&corrupted), good16, "CRC-16 must catch bit {bit}");
+        assert_ne!(crc32(&corrupted), good32, "CRC-32 must catch bit {bit}");
+    }
+}
+
+#[test]
+fn crc_empty_input() {
+    // Well-defined on empty input (the init/final-xor values).
+    assert_eq!(crc16(b""), 0xFFFF);
+    assert_eq!(crc32(b""), 0x0000_0000);
+}

@@ -79,3 +79,52 @@ pub fn ft8_add_crc(payload: &[u8; 10], a91: &mut [u8; 12]) {
 pub fn ft8_extract_crc(a91: &[u8; 12]) -> u16 {
     ((a91[9] & 0x07) as u16) << 11 | (a91[10] as u16) << 3 | (a91[11] >> 5) as u16
 }
+
+// ── Generic frame CRCs ─────────────────────────────────────────────────────
+//
+// General-purpose CRCs over arbitrary byte slices, used by the OFDM frame
+// layer (header/payload integrity). Distinct from `ft8_crc14` above, which is
+// tailored to FT8's 77-bit-payload / 91-bit-block layout.
+
+/// CRC-16/CCITT-FALSE over `bytes`.
+///
+/// Parameters: polynomial `0x1021`, initial value `0xFFFF`, non-reflected
+/// input/output, no final XOR (the "CCITT-FALSE" variant). Known-answer:
+/// `crc16(b"123456789") == 0x29B1`.
+pub fn crc16(bytes: &[u8]) -> u16 {
+    const POLY: u16 = 0x1021;
+    let mut crc: u16 = 0xFFFF;
+    for &byte in bytes {
+        crc ^= (byte as u16) << 8;
+        for _ in 0..8 {
+            if crc & 0x8000 != 0 {
+                crc = (crc << 1) ^ POLY;
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    crc
+}
+
+/// CRC-32/ISO-HDLC over `bytes` — the ubiquitous CRC used by Ethernet, zlib,
+/// gzip, and PNG.
+///
+/// Parameters: polynomial `0x04C11DB7` (reflected form `0xEDB88320`), reflected
+/// input/output, initial value `0xFFFFFFFF`, final XOR `0xFFFFFFFF`.
+/// Known-answer: `crc32(b"123456789") == 0xCBF43926`.
+pub fn crc32(bytes: &[u8]) -> u32 {
+    const POLY_REFLECTED: u32 = 0xEDB8_8320;
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &byte in bytes {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ POLY_REFLECTED;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    crc ^ 0xFFFF_FFFF
+}

@@ -7,6 +7,7 @@ pub mod codec;
 pub mod core;
 pub mod demodulate;
 pub mod dsp;
+pub mod fec;
 pub mod message;
 pub mod modulate;
 pub mod multicarrier;
