@@ -26,7 +26,7 @@ pub use ofdm::{
 };
 
 pub mod ofdm_frame;
-pub use ofdm_frame::demodulate_frame;
+pub use ofdm_frame::{OfdmFrameStreamDemod, RxFrame, demodulate_frame};
 
 pub mod pm;
 pub use pm::PmQuadratureDemod;

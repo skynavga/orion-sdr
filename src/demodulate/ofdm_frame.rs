@@ -16,7 +16,10 @@
 // the payload is decoded at the MCS the header selected.
 
 use crate::core::Block;
-use crate::demodulate::ofdm::{OfdmDemod, OfdmSoftDemod};
+use crate::demodulate::ofdm::{
+    EqualizerMethod, OfdmDemod, OfdmEqualizer, OfdmRxFrame, OfdmSoftDemod,
+};
+use crate::dsp::Rotator;
 use crate::fec::{
     BlockInterleaver, CrcKind, FrameMetadata, FramePacket, HeaderFormat, InnerFec, InterleaverKind,
     Ldpc, OuterFec, RxError, ScramblerKind, ScramblerPos,
@@ -27,45 +30,89 @@ use crate::modulate::ofdm_frame::{
     bits_to_bytes, block_plan, build_scrambler, bytes_to_bits, check_and_strip_crc,
     shortened_bch_for, symbol_config, symbols_for_coded_bits,
 };
+use crate::multicarrier::{CarrierGrid, CyclicPrefixRemove, FftBlock, GridExtract};
+use crate::sync::{OfdmPreamble, ofdm_sync};
 use num_complex::Complex32 as C32;
 
 /// Soft-demaps `n_symbols` OFDM symbols starting at `iq[0]` into a flat LLR
 /// vector (one `f32` per coded bit, `+ ⇒ bit 0`). Returns `None` if `iq` is
 /// too short.
+///
+/// With `equalizer = None` this is the flat-channel path (`OfdmDemod →
+/// OfdmSoftDemod`, no per-bin correction) used by the batch entry point. With
+/// an equalizer whose channel estimate is already set (from a training
+/// symbol), it runs the full `CyclicPrefixRemove → FftBlock → OfdmEqualizer →
+/// GridExtract → OfdmSoftDemod` chain, correcting a frequency-selective
+/// channel — the streaming receiver's path.
 fn soft_demap(
     base: &OfdmConfig,
     constellation: ConstellationOrder,
     iq: &[C32],
     n_symbols: usize,
+    equalizer: Option<&mut OfdmEqualizer>,
 ) -> Option<Vec<f32>> {
     let cfg = symbol_config(base, constellation);
     let sps = cfg.samples_per_ofdm_symbol();
     if iq.len() < n_symbols * sps {
         return None;
     }
-    // Two stages: OfdmDemod turns time-domain IQ into per-carrier soft symbols
-    // (CP-remove → FFT → grid-extract), then OfdmSoftDemod turns those soft
-    // symbols into per-bit LLRs. (This flat-channel path has no equalizer; the
-    // streaming receiver adds sync/CFO/equalization in the next release.)
-    let mut demod = OfdmDemod::new(&cfg);
-    let mut soft = OfdmSoftDemod::new(&cfg);
     let n_data = cfg.carrier_plan.data_carriers().len();
     let bps = cfg.bits_per_ofdm_symbol();
+    let mut soft = OfdmSoftDemod::new(&cfg);
     let mut symbols = vec![C32::default(); n_data];
     let mut llrs = vec![0.0f32; n_symbols * bps];
-    let mut in_off = 0;
-    let mut out_off = 0;
-    for _ in 0..n_symbols {
-        let dw = demod.process(&iq[in_off..], &mut symbols);
-        if dw.out_written != n_data {
-            return None;
+
+    match equalizer {
+        None => {
+            let mut demod = OfdmDemod::new(&cfg);
+            let mut in_off = 0;
+            let mut out_off = 0;
+            for _ in 0..n_symbols {
+                let dw = demod.process(&iq[in_off..], &mut symbols);
+                if dw.out_written != n_data {
+                    return None;
+                }
+                let sw = soft.process(&symbols, &mut llrs[out_off..out_off + bps]);
+                if sw.out_written != bps {
+                    return None;
+                }
+                in_off += sps;
+                out_off += bps;
+            }
         }
-        let sw = soft.process(&symbols, &mut llrs[out_off..out_off + bps]);
-        if sw.out_written != bps {
-            return None;
+        Some(eq) => {
+            let n_fft = cfg.carrier_plan.n_fft();
+            let cp_len = cfg.carrier_plan.cp_len();
+            let grid = CarrierGrid::from_plan(&cfg.carrier_plan);
+            let mut cp_remove = CyclicPrefixRemove::new(n_fft, cp_len);
+            let mut fft = FftBlock::new(n_fft);
+            let mut grid_extract = GridExtract::new(grid);
+            let mut time = vec![C32::default(); n_fft];
+            let mut freq = vec![C32::default(); n_fft];
+            let mut equalized = vec![C32::default(); n_fft];
+            let mut in_off = 0;
+            let mut out_off = 0;
+            for _ in 0..n_symbols {
+                if cp_remove.process(&iq[in_off..], &mut time).out_written != n_fft {
+                    return None;
+                }
+                if fft.process(&time, &mut freq).out_written != n_fft {
+                    return None;
+                }
+                if eq.process(&freq, &mut equalized).out_written != n_fft {
+                    return None;
+                }
+                if grid_extract.process(&equalized, &mut symbols).out_written != n_data {
+                    return None;
+                }
+                let sw = soft.process(&symbols, &mut llrs[out_off..out_off + bps]);
+                if sw.out_written != bps {
+                    return None;
+                }
+                in_off += sps;
+                out_off += bps;
+            }
         }
-        in_off += sps;
-        out_off += bps;
     }
     Some(llrs)
 }
@@ -252,19 +299,42 @@ fn apply_pn_to_llrs(s: &crate::fec::PnScrambler, llrs: &mut [f32]) {
     }
 }
 
-/// Batch-demodulates a frame at a KNOWN start (`iq[0]` is the first sample
-/// AFTER the preamble+training — the caller has already synchronized and, if
-/// needed, equalized). Returns the recovered [`FramePacket`] or an [`RxError`].
+/// Distinguishes "waiting for more samples" from a genuine decode failure, so
+/// the streaming receiver can hold a partial frame rather than mis-report it.
+enum BodyError {
+    /// Not enough buffered samples for the header or the (now-known-length)
+    /// payload — hold and retry after more input.
+    Incomplete,
+    /// A real decode failure (bad header CRC, payload CRC, or FEC).
+    Failed(RxError),
+}
+
+/// Decodes a frame body (header + payload) from `iq[0]` — the first sample
+/// AFTER the preamble+training, already CFO-corrected. When
+/// `channel_estimate` is `Some(n_fft freq bins)` the soft-demap equalizes each
+/// symbol against it (multipath); `None` is the flat-channel path.
 ///
-/// This is the non-streaming path for this release; the streaming
-/// `feed`/`flush` receiver that runs `ofdm_sync` and handles unknown start,
-/// CFO, and multipath is the next release.
-pub fn demodulate_frame(
+/// Returns the recovered [`FramePacket`] and the number of IQ samples the
+/// header+payload occupied (so a streaming caller can advance its buffer), or a
+/// [`BodyError`] distinguishing "incomplete" from a genuine failure.
+fn decode_frame_body(
     cfg: &OfdmConfig,
     mcs_table: &McsTable,
     iq: &[C32],
-) -> Result<FramePacket, RxError> {
+    channel_estimate: Option<&[C32]>,
+) -> Result<(FramePacket, usize), BodyError> {
     let mut cursor = 0usize;
+
+    // Builds a fresh equalizer for `constellation` carrying the shared channel
+    // estimate, or `None` for the flat path.
+    let make_eq = |constellation: ConstellationOrder| -> Option<OfdmEqualizer> {
+        channel_estimate.map(|est| {
+            let symcfg = symbol_config(cfg, constellation);
+            let mut eq = OfdmEqualizer::new(&symcfg, EqualizerMethod::TrainingSymbolHold);
+            eq.estimate_from_training_symbol(est);
+            eq
+        })
+    };
 
     // 1. Header (unless NoHeader).
     let (metadata, per_frame_seed, payload_len) = if cfg.header_format == HeaderFormat::OrionSdr {
@@ -277,8 +347,10 @@ pub fn demodulate_frame(
             InterleaverKind::None,
         );
         let n_sym = symbols_for_coded_bits(cfg, HEADER_CONSTELLATION, hplan.coded_bits);
-        let llrs = soft_demap(cfg, HEADER_CONSTELLATION, &iq[cursor..], n_sym)
-            .ok_or(RxError::MalformedHeader)?;
+        let mut eq = make_eq(HEADER_CONSTELLATION);
+        // Too few samples for the header ⇒ incomplete, not malformed.
+        let llrs = soft_demap(cfg, HEADER_CONSTELLATION, &iq[cursor..], n_sym, eq.as_mut())
+            .ok_or(BodyError::Incomplete)?;
         let (fields, ok) = decode_chain(
             &llrs,
             &hplan,
@@ -290,12 +362,13 @@ pub fn demodulate_frame(
             ScramblerKind::None,
             ScramblerPos::BeforeOuterFec,
             0,
-        )?;
+        )
+        .map_err(BodyError::Failed)?;
         if !ok {
-            return Err(RxError::HeaderCrcMismatch);
+            return Err(BodyError::Failed(RxError::HeaderCrcMismatch));
         }
         if fields.len() < HEADER_FIELD_BYTES {
-            return Err(RxError::MalformedHeader);
+            return Err(BodyError::Failed(RxError::MalformedHeader));
         }
         let mcs_index = fields[0];
         let payload_len = u32::from_be_bytes([fields[1], fields[2], fields[3], fields[4]]) as usize;
@@ -316,14 +389,14 @@ pub fn demodulate_frame(
         )
     } else {
         // NoHeader: the caller must convey MCS/length out-of-band. Not
-        // supported by this batch entry point yet.
-        return Err(RxError::MalformedHeader);
+        // supported by this entry point yet.
+        return Err(BodyError::Failed(RxError::MalformedHeader));
     };
 
     // 2. Payload, decoded per the MCS the header selected.
     let mcs = mcs_table
         .get(metadata.mcs_index)
-        .ok_or(RxError::MalformedHeader)?;
+        .ok_or(BodyError::Failed(RxError::MalformedHeader))?;
     let pplan = block_plan(
         payload_len,
         cfg.payload_crc,
@@ -333,8 +406,10 @@ pub fn demodulate_frame(
         cfg.inner_interleaver,
     );
     let n_sym = symbols_for_coded_bits(cfg, mcs.constellation, pplan.coded_bits);
-    let llrs =
-        soft_demap(cfg, mcs.constellation, &iq[cursor..], n_sym).ok_or(RxError::MalformedHeader)?;
+    let mut eq = make_eq(mcs.constellation);
+    // Too few samples for the (now-known-length) payload ⇒ incomplete.
+    let llrs = soft_demap(cfg, mcs.constellation, &iq[cursor..], n_sym, eq.as_mut())
+        .ok_or(BodyError::Incomplete)?;
     let (bytes, ok) = decode_chain(
         &llrs,
         &pplan,
@@ -346,15 +421,250 @@ pub fn demodulate_frame(
         cfg.scrambler,
         cfg.scrambler_pos,
         per_frame_seed,
-    )?;
+    )
+    .map_err(BodyError::Failed)?;
     if !ok {
-        return Err(RxError::CrcMismatch);
+        return Err(BodyError::Failed(RxError::CrcMismatch));
     }
+    let payload_sps = symbol_config(cfg, mcs.constellation).samples_per_ofdm_symbol();
+    cursor += n_sym * payload_sps;
     // Trim to the declared payload length (coding blocks are zero-padded).
     let payload = bytes
         .get(..payload_len)
         .map(|s| s.to_vec())
         .unwrap_or(bytes);
 
-    Ok(FramePacket { metadata, payload })
+    Ok((FramePacket { metadata, payload }, cursor))
+}
+
+/// Batch-demodulates a frame at a KNOWN start (`iq[0]` is the first sample
+/// AFTER the preamble+training — the caller has already synchronized and, if
+/// needed, equalized). Returns the recovered [`FramePacket`] or an [`RxError`].
+///
+/// This is the flat-channel, known-start entry point; the streaming
+/// [`OfdmFrameStreamDemod`] runs `ofdm_sync`, CFO correction, and training-
+/// symbol equalization for unknown start / CFO / multipath.
+pub fn demodulate_frame(
+    cfg: &OfdmConfig,
+    mcs_table: &McsTable,
+    iq: &[C32],
+) -> Result<FramePacket, RxError> {
+    decode_frame_body(cfg, mcs_table, iq, None)
+        .map(|(frame, _)| frame)
+        .map_err(|e| match e {
+            // A batch caller has no "wait for more" option; a truncated buffer
+            // is a malformed input here.
+            BodyError::Incomplete => RxError::MalformedHeader,
+            BodyError::Failed(err) => err,
+        })
+}
+
+// ── Streaming receiver ─────────────────────────────────────────────────────
+
+/// A successfully received frame plus its per-frame RX diagnostics.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RxFrame {
+    pub packet: FramePacket,
+    /// Acquisition/quality diagnostics: `cfo_hz` and `timing_offset_samples`
+    /// are populated by the streaming receiver; `evm_db`/`channel_mse` are
+    /// left `None` here (measured by the per-symbol pipeline, not the frame
+    /// layer).
+    pub diagnostics: OfdmRxFrame,
+}
+
+/// Streaming OFDM frame receiver: push raw IQ with [`feed`](Self::feed), poll
+/// completed frames (or typed errors). Mirrors `Ft8StreamDecoder`'s
+/// accumulate-and-drain shape.
+///
+/// Each `feed` accumulates samples, searches the buffer for a preamble via
+/// `ofdm_sync`, and — for a candidate with enough buffered samples — corrects
+/// CFO (`Rotator`), estimates the channel from the training symbol
+/// (`OfdmEqualizer`), decodes the frame, and drains its samples from the
+/// buffer, looping to drain multiple frames. A frame whose payload has not
+/// fully arrived is held until a later `feed` completes it.
+pub struct OfdmFrameStreamDemod {
+    cfg: OfdmConfig,
+    mcs_table: McsTable,
+    preamble: OfdmPreamble,
+    fs: f32,
+    buf: Vec<C32>,
+    /// Minimum sync score to accept a candidate.
+    score_threshold: f32,
+}
+
+impl OfdmFrameStreamDemod {
+    pub fn new(cfg: OfdmConfig, mcs_table: McsTable, preamble: OfdmPreamble) -> Self {
+        let fs = cfg.fs;
+        Self {
+            cfg,
+            mcs_table,
+            preamble,
+            fs,
+            buf: Vec::new(),
+            score_threshold: 0.5,
+        }
+    }
+
+    /// Overrides the sync-score acceptance threshold (default 0.5).
+    pub fn with_score_threshold(mut self, t: f32) -> Self {
+        self.score_threshold = t;
+        self
+    }
+
+    /// Accumulated (not-yet-consumed) sample count.
+    pub fn len(&self) -> usize {
+        self.buf.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
+
+    /// Read-only view of the accumulated IQ buffer.
+    pub fn view_buf(&self) -> &[C32] {
+        &self.buf
+    }
+
+    /// Discards all accumulated samples.
+    pub fn clear(&mut self) {
+        self.buf.clear();
+    }
+
+    /// Feeds IQ samples and returns any frames (or errors) that completed.
+    pub fn feed(&mut self, iq: &[C32]) -> Vec<Result<RxFrame, RxError>> {
+        self.buf.extend_from_slice(iq);
+        self.drain()
+    }
+
+    /// Runs a final decode pass over the residual buffer (e.g. at end of
+    /// stream). Same semantics as `feed` with no new samples.
+    pub fn flush(&mut self) -> Vec<Result<RxFrame, RxError>> {
+        self.drain()
+    }
+
+    /// Repeatedly locates and decodes frames from the front of the buffer,
+    /// consuming their samples, until no further complete frame is present.
+    fn drain(&mut self) -> Vec<Result<RxFrame, RxError>> {
+        let mut out = Vec::new();
+        while let FrameStep::Decoded(result, consume_to) = self.try_one_frame() {
+            self.buf.drain(..consume_to);
+            out.push(result);
+        }
+        out
+    }
+
+    /// Attempts to decode one frame at the front of the buffer.
+    fn try_one_frame(&mut self) -> FrameStep {
+        let n_fft = self.cfg.carrier_plan.n_fft();
+        let cp_len = self.cfg.carrier_plan.cp_len();
+        let pre_len = self.preamble.total_len();
+
+        // Need at least a full preamble plus one header's worth before a search
+        // can yield a decodable frame.
+        if self.buf.len() < pre_len + (n_fft + cp_len) {
+            return FrameStep::NeedMore;
+        }
+
+        let sync = ofdm_sync(&self.buf, self.fs, &self.preamble, 0, self.buf.len());
+        let Some(best) = sync.into_iter().find(|r| r.score >= self.score_threshold) else {
+            return FrameStep::NeedMore;
+        };
+
+        // Total CFO = fractional + integer·subcarrier-spacing.
+        let subcarrier_spacing = self.fs / n_fft as f32;
+        let total_cfo = best.cfo_hz + best.integer_cfo_bins as f32 * subcarrier_spacing;
+
+        // CFO-correct from the preamble start onward into a scratch buffer.
+        let region = &self.buf[best.start_sample..];
+        let mut corrected = vec![C32::default(); region.len()];
+        let mut rot = Rotator::new(-total_cfo, self.fs);
+        rot.rotate_block(region, &mut corrected);
+
+        // Channel estimate from the training symbol (if the preamble carries
+        // one), located just after the S&C repeats.
+        let channel_estimate = self.estimate_channel(&corrected);
+
+        // The frame body begins right after the whole preamble (S&C + training).
+        if corrected.len() < pre_len {
+            return FrameStep::NeedMore;
+        }
+        let body = &corrected[pre_len..];
+
+        match decode_frame_body(
+            &self.cfg,
+            &self.mcs_table,
+            body,
+            channel_estimate.as_deref(),
+        ) {
+            Ok((packet, body_samples)) => {
+                let diagnostics = OfdmRxFrame {
+                    bits: Vec::new(),
+                    num_symbols: 0,
+                    evm_db: None,
+                    cfo_hz: Some(total_cfo),
+                    timing_offset_samples: Some(best.start_sample as i32),
+                    channel_mse: None,
+                };
+                let consume_to = best.start_sample + pre_len + body_samples;
+                if consume_to > self.buf.len() {
+                    // Shouldn't happen (decode succeeded), but guard the drain.
+                    return FrameStep::NeedMore;
+                }
+                FrameStep::Decoded(
+                    Ok(RxFrame {
+                        packet,
+                        diagnostics,
+                    }),
+                    consume_to,
+                )
+            }
+            // The header or payload has not fully arrived yet — hold and retry
+            // when more samples are fed. No buffer is consumed.
+            Err(BodyError::Incomplete) => FrameStep::NeedMore,
+            // A genuine decode failure on a fully-present frame: report it and
+            // advance just past this preamble so the search continues past it
+            // (avoids re-locking the same corrupt occurrence forever).
+            Err(BodyError::Failed(e)) => {
+                let skip = (best.start_sample + pre_len).min(self.buf.len());
+                FrameStep::Decoded(Err(e), skip)
+            }
+        }
+    }
+
+    /// Estimates the per-bin channel from the training symbol in `corrected`
+    /// (CFO-corrected, preamble-start-relative). Returns `None` if the preamble
+    /// carries no training symbol.
+    fn estimate_channel(&self, corrected: &[C32]) -> Option<Vec<C32>> {
+        let training = self.preamble.training_symbol?;
+        let n_fft = training.n_fft;
+        let cp_len = training.cp_len;
+        let training_start = self.preamble.num_repeats * self.preamble.repeat_len;
+        let end = training_start + n_fft + cp_len;
+        if corrected.len() < end {
+            return None;
+        }
+        let mut cp_remove = CyclicPrefixRemove::new(n_fft, cp_len);
+        let mut fft = FftBlock::new(n_fft);
+        let mut time = vec![C32::default(); n_fft];
+        if cp_remove
+            .process(&corrected[training_start..end], &mut time)
+            .out_written
+            != n_fft
+        {
+            return None;
+        }
+        let mut freq = vec![C32::default(); n_fft];
+        if fft.process(&time, &mut freq).out_written != n_fft {
+            return None;
+        }
+        Some(freq)
+    }
+}
+
+/// One step of the streaming drain loop.
+enum FrameStep {
+    /// A frame (or error) decoded; consume the buffer up to this index.
+    Decoded(Result<RxFrame, RxError>, usize),
+    /// Not enough buffered samples yet; wait for more.
+    NeedMore,
 }
