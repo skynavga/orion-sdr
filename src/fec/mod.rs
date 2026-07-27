@@ -12,6 +12,12 @@
 pub mod bch;
 pub use bch::{Bch, BchError};
 
+pub mod frame;
+pub use frame::{
+    CrcKind, FrameMetadata, FramePacket, HeaderFormat, InnerFec, InterleaverKind, OuterFec,
+    RxError, ScramblerKind, ScramblerPos, SeedMode,
+};
+
 pub mod gf;
 pub use gf::Gf256;
 

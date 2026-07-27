@@ -25,6 +25,9 @@ pub use ofdm::{
     bpsk_soft_llr, build_ofdm_rx_frame, qam_soft_llr, qpsk_soft_llr,
 };
 
+pub mod ofdm_frame;
+pub use ofdm_frame::demodulate_frame;
+
 pub mod pm;
 pub use pm::PmQuadratureDemod;
 
