@@ -44,6 +44,7 @@ pub fn measure_throughput(
 pub mod am;
 pub mod bpsk;
 pub mod cw;
+pub mod fec;
 pub mod fm;
 pub mod ft4;
 pub mod ft8;
