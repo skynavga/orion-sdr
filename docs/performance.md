@@ -293,24 +293,27 @@ link, unlike the smooth uncoded BER curves.)
 > is folded into the released tables above (and this heading removed) at the end of
 > the branch; until then it reflects the current tip, not v0.0.44.
 
-**Current status:** R8a landed — a *measurement* commit adding a selectable LDPC
-check-node `DecodeRule` (`SumProduct` default / `MinSum` / `ScaledMinSum(α)`) so the
-min-sum trade can be characterized on both axes. On-air decode is unchanged
-(`decode_soft` = `decode_soft_with(…, SumProduct)`, bit-exact — a unit test pins it).
-The results are below in "LDPC decode rule: sum-product vs. min-sum". Prior steps: R5
-(the real sum-product lever — tanh caching, `N512R34` ~2.3×), R7 (interleaver
-allocation hoist, small), R2/R3/R4 (GF/code caching, edge-index precompute). Two
-candidates were investigated and **dropped**: R7's byte-wise scrambler (flat) and R6's
-Horner syndromes (a regression — see the R6/R7 note below). Deltas vs. the R1 baseline
+**Current status:** R8 landed — the LDPC decoder's per-edge message arrays (`msg`,
+`ext`) moved from a jagged `Vec<Vec<f32>>` to a flat CSR layout (one contiguous
+buffer + a `check_start` offset table), removing a pointer-chase per check and giving
+the check-/variable-node loops contiguous memory. Bit-exact (pure layout change; the
+full suite passes unchanged). Measured on the isolated `LDPC-Decode` fixtures, on top
+of R5: **~1.2–1.8× further speedup** for sum-product (`N512R12` ~13→~24 Msps), and
+**~1.4–2.2×** for the min-sum rules — CSR helps min-sum more, since with the
+transcendentals gone (R8a) memory access is a larger share of its runtime. Prior
+steps: R8a/R8b (min-sum scaffold, measurement, and the opt-in
+`with_ldpc_decode_rule`), R5 (tanh caching), R7 (interleaver hoist), R2/R3/R4 (GF/code
+caching, edge-index precompute). Two candidates were **dropped**: R7's byte-wise
+scrambler (flat) and R6's Horner syndromes (a regression). Deltas vs. the R1 baseline
 are in the "Since baseline" columns.
 
 ### Per-block, single direction (§1.1)
 
 | Block | Variant | Tx Msps | Rx Msps | Since baseline |
 | --- | --- | ---: | ---: | --- |
-| LDPC | N512R12 (rate 1/2) | 457 | ~13.2 | R5 **~1.1×** (R4 flat) |
-| LDPC | N576R23 (rate 2/3) | 577 | ~18.2 | R5 **~1.3×** (R4 flat) |
-| LDPC | N512R34 (rate 3/4) | 640 | ~8.8 | R5 **~2.3×** (R4 flat) |
+| LDPC | N512R12 (rate 1/2) | 457 | ~24 | **~2.0×** (R5 ~1.1× + R8 CSR ~1.8×) |
+| LDPC | N576R23 (rate 2/3) | 577 | ~25 | **~2.0×** (R5 ~1.3× + R8 CSR ~1.3×) |
+| LDPC | N512R34 (rate 3/4) | 640 | ~11 | **~3.0×** (R5 ~2.3× + R8 CSR ~1.2×) |
 | Convolutional | R1/2 | 610 | 27.1 | baseline |
 | Convolutional | R2/3 | 347 | 27.3 | baseline |
 | Convolutional | R3/4 | 384 | 26.1 | baseline |
@@ -351,6 +354,20 @@ error-injected fixture) gains ~2.3× (~3.8→~8.8 Msps); `N576R23` ~1.3× and `N
 ~1.1×. Warm-run steady-state numbers; the first run of each fixture is a cold-cache
 outlier discarded. Bit-exact — the cached values equal the previous inline
 `fast_tanh` calls and the leave-one-out products multiply in the same order.
+
+**R8 result (flat CSR edge storage).** Replacing the decoder's jagged
+`Vec<Vec<f32>>` message arrays (`msg`, `ext`) with a single contiguous buffer plus a
+`check_start` offset table removes one pointer-chase per check and lets the
+check-/variable-node loops walk contiguous memory. On top of R5 (same isolated
+fixtures, same-session warm A/B against the R5 tip): sum-product gains **~1.2–1.8×**
+(`N512R12` ~13→~24 Msps, `N576R23` ~19→~25, `N512R34` ~9.4→~11), and the min-sum rules
+gain **~1.4–2.2×** — CSR helps min-sum more because, with R8a's transcendentals gone,
+memory layout is a larger fraction of its cost. This is the change the plan flagged as
+conditional ("only if R4+R5 leave a measurable gap"); the gap was real. Bit-exact — a
+pure storage-layout change, identical values in identical order. (Contrary to an
+earlier hunch that R5 had already captured the decode win and R8 could be skipped —
+the layout effect turned out to be substantial and independent of the arithmetic
+savings. Investigated on request; kept on the evidence.)
 
 **R6/R7 findings (dropped candidates).** Two bit-exact changes were implemented,
 measured against the immediately-preceding commit, and reverted because the perf
