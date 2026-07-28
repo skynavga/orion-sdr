@@ -126,12 +126,12 @@ fn deinterleave_llrs(il: InterleaverKind, llrs: &[f32]) -> Vec<f32> {
             let block = rows * cols;
             let bi = BlockInterleaver::new(rows, cols);
             let mut out = Vec::with_capacity(llrs.len());
+            let mut restored = vec![0.0f32; block]; // reused across full chunks
             for chunk in llrs.chunks(block) {
                 if chunk.len() < block {
                     out.extend_from_slice(chunk);
                     continue;
                 }
-                let mut restored = vec![0.0f32; block];
                 bi.deinterleave(chunk, &mut restored);
                 out.extend_from_slice(&restored);
             }
@@ -148,12 +148,12 @@ fn deinterleave_bits(il: InterleaverKind, bits: &[u8]) -> Vec<u8> {
             let block = rows * cols;
             let bi = BlockInterleaver::new(rows, cols);
             let mut out = Vec::with_capacity(bits.len());
+            let mut restored = vec![0u8; block]; // reused across full chunks
             for chunk in bits.chunks(block) {
                 if chunk.len() < block {
                     out.extend_from_slice(chunk);
                     continue;
                 }
-                let mut restored = vec![0u8; block];
                 bi.deinterleave(chunk, &mut restored);
                 out.extend_from_slice(&restored);
             }
