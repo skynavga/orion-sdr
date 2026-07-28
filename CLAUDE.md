@@ -19,3 +19,4 @@ processing with Python bindings via PyO3.
 - [OFDM / COFDM design](docs/ofdm.md) — OFDM PHY conventions and the coded frame (MAC) layer
 - [Coding conventions](docs/conventions.md) — language, safety, feature flags, sync rules
 - [Performance benchmarks](docs/performance.md) — throughput results, SNR curves, and how to run them
+- [Acronym glossary](docs/acronyms.md) — expansions for acronyms used across the source and docs

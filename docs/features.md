@@ -3,7 +3,7 @@
   SPDX-License-Identifier: MIT OR Apache-2.0
 -->
 
-# Features (as of v0.0.44)
+# Features
 
 - Core `Block` trait and runner
 - IQ→IQ, Audio→IQ, IQ→Audio graph schedulers (`IqToIqChain`, `AudioToIqChain`, `IqToAudioChain`)
@@ -49,10 +49,16 @@
     interleavers, scrambler + position, header/payload CRC, header format), all
     defaulted-off and set via `with_*` builders; per-frame adaptive coding via
     an `McsTable`
+  - Selectable LDPC check-node decode rule (`with_ldpc_decode_rule`): exact
+    sum-product (default) or opt-in min-sum / scaled-min-sum (~2× decode for a
+    sub-0.3 dB coding-gain cost on the payload; the header always uses sum-product)
+  - Per-link `CodecCache` sharing constructed FEC codes across frames (and,
+    optionally, across a modulator/demodulator pair), with a process-wide
+    `Gf256`; the batch `demodulate_frame` takes an optional caller-owned cache
   - Frame TX (`OfdmFrameMod`) and streaming RX (`OfdmFrameStreamDemod`,
     feed/flush) with in-band header, acquisition, CFO correction, equalization,
     concatenated decode, and CRC check; batch `demodulate_frame` for a known start
-- Unit, roundtrip, throughput, and SNR-sensitivity tests (289 default `cargo
-  test --release`, 331 total including `--features throughput`)
-- Python bindings (50 classes/functions total, including full PSK31, OFDM, and
+- Unit, roundtrip, throughput, and SNR-sensitivity tests (292 default `cargo
+  test --release`, 360 total including `--features throughput`)
+- Python bindings (51 classes/functions total, including full PSK31, OFDM, and
   COFDM frame stacks)
