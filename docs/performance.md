@@ -281,6 +281,89 @@ errors are all-or-nothing per the payload CRC, so FER rises steeply once the
 inner code can no longer clear the channel — characteristic of a coded packet
 link, unlike the smooth uncoded BER curves.)
 
+## COFDM FEC block throughput (work-in-progress — branch `feature/ofdm-optimize-cofdm`)
+
+> **In-progress optimization tracking, not a released result.** The numbers below
+> are the per-block FEC/interleave/scrambler benchmarks added by that branch
+> (`throughput::fec`), recorded so the optimization commits (`R2`…) can be tracked
+> against an `R1` baseline. Measured on Apple M2 Pro, release build,
+> `--test-threads=1`, 200 passes/point. **"Msps" here = information bits processed
+> per second** (before coding on Tx, after decoding on Rx) — comparable across code
+> rates, and NOT the sample-domain figure used elsewhere in this doc. This section
+> is folded into the released tables above (and this heading removed) at the end of
+> the branch; until then it reflects the current tip, not v0.0.44.
+
+**Current status:** R1 (baseline, no `src/` changes) — the numbers below are the
+pre-optimization reference every later commit improves against.
+
+### Per-block, single direction (§1.1)
+
+| Block | Variant | Tx Msps | Rx Msps | Since baseline |
+| --- | --- | ---: | ---: | --- |
+| LDPC | N512R12 (rate 1/2) | 457 | 11.7 | baseline |
+| LDPC | N576R23 (rate 2/3) | 577 | 12.5 | baseline |
+| LDPC | N512R34 (rate 3/4) | 640 | 3.7 | baseline |
+| Convolutional | R1/2 | 610 | 27.1 | baseline |
+| Convolutional | R2/3 | 347 | 27.3 | baseline |
+| Convolutional | R3/4 | 384 | 26.1 | baseline |
+| Convolutional | R5/6 | 345 | 28.4 | baseline |
+| Convolutional | R7/8 | 328 | 28.8 | baseline |
+| BCH | t=8 | 99.6 | 27.1 | baseline |
+| Reed–Solomon | RS(204,188) | 799 | 165 | baseline |
+| Reed–Solomon | RS(60,52) | 1126 | 140 | baseline |
+| Interleaver | u8, 32×32 | 5088 | 6083 | baseline |
+| Interleaver | f32, 32×32 | 4668 | 7042 | baseline |
+| Scrambler | width 7 | 196 | (self-inverse) | baseline |
+| Scrambler | width 15 | 198 | (self-inverse) | baseline |
+| Scrambler | width 32 | 202 | (self-inverse) | baseline |
+
+Rx (decode) dominates cost across every code, as expected: LDPC sum-product decode
+is 1–2 orders of magnitude slower than its direct staircase encode, and it is the
+single largest term in the COFDM decode path. `LDPC-Decode N512R34` is the slowest
+block measured (3.7 Msps) — the rate-3/4 code's denser checks run more BP work per
+info bit. The interleaver kernels are already near memory-bandwidth-bound (thousands
+of Msps); their optimization target (`R7`) is per-chunk *allocation churn* in the
+chain driver, not the kernel itself.
+
+### Paired forward→inverse roundtrip (§1.2, correctness asserted each pass)
+
+| Roundtrip | Variant | Msps | Since baseline |
+| --- | --- | ---: | --- |
+| LDPC enc→dec | N512R12 | 207 | baseline |
+| LDPC enc→dec | N576R23 | 253 | baseline |
+| LDPC enc→dec | N512R34 | 282 | baseline |
+| Conv enc→dec | R1/2 | 25.1 | baseline |
+| Conv enc→dec | R2/3…R7/8 | 24.3–25.4 | baseline |
+| BCH enc→dec (t errors) | t=8 | 21.9 | baseline |
+| RS enc→dec (t errors) | RS(204,188) | 141 | baseline |
+| RS enc→dec (t errors) | RS(60,52) | 128 | baseline |
+| Interleaver round trip | u8/f32 32×32 | 1533 (f32) | baseline |
+| Scrambler round trip | width 32 | (see per-block) | baseline |
+
+The LDPC roundtrip runs faster than the standalone `LDPC-Decode` block because its
+decode fixture feeds clean codewords (BP converges in one syndrome check and exits),
+whereas the standalone decode fixture injects soft errors to force realistic BP
+iteration — the two measure different, deliberately chosen decoder workloads.
+
+### Per-frame code-object construction cost (§1.3, Finding A)
+
+The concatenated-FEC chain currently rebuilds its code object (`Ldpc::new`,
+`Bch::new`, `ReedSolomon::new`) from scratch **every frame**. These microbenchmarks
+measure that construction in isolation, the target of the `R2`/`R3` caching work.
+
+| Construction | Cost | Notes |
+| --- | ---: | --- |
+| `Ldpc::new(N512R12)` | ~2.7 ms | sparse-H build + HashSet 4-cycle guard |
+| `Bch::new(t=8)` | ~3.4 µs | includes a full `Gf256::new()` table build |
+| `ReedSolomon::dvb()` | ~0.7 µs | includes a full `Gf256::new()` table build |
+| LDPC ×64 frames, rebuilt each frame | 1× (baseline) | status-quo per-frame behavior |
+| LDPC ×64 frames, built once & reused | **~5000×** faster | the amortized target R3 delivers |
+
+`Ldpc::new` is by far the dominant construction cost (~2.7 ms — three orders of
+magnitude above the algebraic codes), so per-frame LDPC reconstruction is the
+highest-value, lowest-risk win in this pass. The 64-frame reuse benchmark shows the
+gap R3's per-instance `CodecCache` closes.
+
 ## Running the Benchmarks
 
 ```bash
@@ -304,6 +387,12 @@ To run only OFDM/multicarrier throughput tests:
 ```bash
 cargo test --release --features throughput "throughput::ofdm" -- --nocapture --test-threads=1
 cargo test --release --features throughput "throughput::multicarrier" -- --nocapture --test-threads=1
+```
+
+To run only the COFDM FEC/interleave/scrambler block benchmarks:
+
+```bash
+cargo test --release --features throughput "throughput::fec" -- --nocapture --test-threads=1
 ```
 
 To run the SNR sensitivity / acquisition-probability sweeps (prints full
