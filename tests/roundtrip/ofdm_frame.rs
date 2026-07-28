@@ -6,8 +6,8 @@ use num_complex::Complex32 as C32;
 use orion_sdr::demodulate::{OfdmFrameStreamDemod, demodulate_frame};
 use orion_sdr::dsp::Rotator;
 use orion_sdr::fec::{
-    CrcKind, FrameMetadata, FramePacket, HeaderFormat, InnerFec, InterleaverKind, OuterFec,
-    ScramblerKind, ScramblerPos, SeedMode,
+    CrcKind, DecodeRule, FrameMetadata, FramePacket, HeaderFormat, InnerFec, InterleaverKind,
+    OuterFec, ScramblerKind, ScramblerPos, SeedMode,
 };
 use orion_sdr::modulate::{ConstellationOrder, McsTable, OfdmConfig, OfdmFrameMod};
 use orion_sdr::sync::OfdmPreamble;
@@ -77,6 +77,27 @@ fn roundtrip_frame_awgn() {
     let sig_power: f32 = body.iter().map(|s| s.norm_sqr()).sum::<f32>() / body.len() as f32;
     add_awgn(&mut body, sig_power * 0.10, 0xC0FFEE);
     let got = demodulate_frame(&cfg, &table, &body, None).expect("decode under AWGN");
+    assert_eq!(got.payload, payload);
+}
+
+#[test]
+fn roundtrip_frame_awgn_scaled_min_sum() {
+    // The opt-in scaled-min-sum LDPC decode rule must recover the same payload
+    // through the full COFDM frame decoder. The payload honors the configured
+    // rule; the header always uses sum-product (decoded before the rule matters
+    // for robustness). Same modest AWGN as `roundtrip_frame_awgn`.
+    let cfg = plan_config().with_ldpc_decode_rule(DecodeRule::ScaledMinSum(0.75));
+    let pre = preamble(&cfg);
+    let table = McsTable::default_ladder();
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+
+    let payload = sample_payload(32);
+    let frame = FramePacket::new(FrameMetadata::new(9, 0), payload.clone());
+    let iq = modu.modulate_frame(&frame, 0);
+    let mut body = strip_preamble(&cfg, modu.preamble(), &iq);
+    let sig_power: f32 = body.iter().map(|s| s.norm_sqr()).sum::<f32>() / body.len() as f32;
+    add_awgn(&mut body, sig_power * 0.10, 0xC0FFEE);
+    let got = demodulate_frame(&cfg, &table, &body, None).expect("min-sum decode under AWGN");
     assert_eq!(got.payload, payload);
 }
 

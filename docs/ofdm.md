@@ -126,6 +126,19 @@ Codes available (`fec/`):
   **Reed–Solomon** (DVB-T's RS(204,188) t=8 and shortened variants), both over
   GF(2^8).
 
+**LDPC decode rule.** The inner LDPC decoder's check-node update is selectable
+via `OfdmConfig::with_ldpc_decode_rule` (`DecodeRule::SumProduct` /
+`MinSum` / `ScaledMinSum(α)`). The **on-air default is exact sum-product**
+(`2·atanh(∏ tanh(msg/2))`); it is the reference and is what the header always
+uses (the header is decoded first, before the MCS is known, so it takes no coding-
+gain risk). `ScaledMinSum(α≈0.75)` is an opt-in that replaces the transcendental
+product with `α·∏sign·min|msg|` — measured at ~2× decode throughput for a ≲0.3 dB
+coding-gain cost (the speed/coding-gain trade is characterized in
+[performance.md](performance.md), "LDPC decode rule: sum-product vs. min-sum"). Only the
+payload honors the configured rule; making min-sum the *default* would require its
+own SNR-threshold revalidation and is deliberately not done. This choice is
+receiver-side only — the transmitter is unaffected.
+
 **Interleaver domains.** The two deinterleavers operate in *different*
 domains, which is why `BlockInterleaver::permute` is generic over `T`: the
 **inner** deinterleaver runs in the **LLR (`f32`) domain**, before the
