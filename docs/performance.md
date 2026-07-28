@@ -293,11 +293,15 @@ link, unlike the smooth uncoded BER curves.)
 > is folded into the released tables above (and this heading removed) at the end of
 > the branch; until then it reflects the current tip, not v0.0.44.
 
-**Current status:** R2 landed — `Bch`/`ReedSolomon` now borrow a process-wide
-shared `Gf256` (`Gf256::shared`, a `OnceLock` singleton) instead of rebuilding the
-512+256-byte log/antilog tables on every construction. Bit-exact (the tables are a
-pure function of the primitive polynomial); the full unit/roundtrip suite passes
-unchanged. Deltas vs. the R1 baseline are noted in the "Since baseline" columns.
+**Current status:** R3 landed — a per-instance `CodecCache` memoizes the constructed
+`Ldpc`/`Bch`/`ReedSolomon` objects so a link builds each code **once**, not once per
+frame. `OfdmFrameMod` and `OfdmFrameStreamDemod` each hold one; the batch
+`demodulate_frame` takes an optional caller-owned cache (`None` builds a per-call
+one; `Some(&cache)` amortizes across a batch of known-start frames). Combined with R2
+(shared `Gf256`), the per-frame FEC-construction overhead that dominated the frame
+chain is gone. Bit-exact (a cached code is identical to a freshly built one — same
+parameters, deterministic construction); the full unit/roundtrip suite passes
+unchanged. Deltas vs. the R1 baseline are in the "Since baseline" columns.
 
 ### Per-block, single direction (§1.1)
 
@@ -350,28 +354,57 @@ iteration — the two measure different, deliberately chosen decoder workloads.
 
 ### Per-frame code-object construction cost (§1.3, Finding A)
 
-The concatenated-FEC chain currently rebuilds its code object (`Ldpc::new`,
-`Bch::new`, `ReedSolomon::new`) from scratch **every frame**. These microbenchmarks
-measure that construction in isolation, the target of the `R2`/`R3` caching work.
+Constructing a code — `Ldpc::new` above all — is the dominant per-frame FEC cost.
+Before R2/R3 the concatenated-FEC chain rebuilt its `Ldpc`/`Bch`/`ReedSolomon` from
+scratch on **every frame**; R3's per-instance `CodecCache` now builds each once per
+link. These microbenchmarks measure construction in isolation.
 
 | Construction | R1 baseline | R2 | Since baseline | Notes |
 | --- | ---: | ---: | --- | --- |
-| `Ldpc::new(N512R12)` | ~2.7 ms | ~2.7 ms | unchanged | sparse-H build + HashSet 4-cycle guard (R3/R4 target, not R2) |
+| `Ldpc::new(N512R12)` | ~2.7 ms | ~2.7 ms | unchanged | sparse-H build + HashSet 4-cycle guard (R4 may trim; R3 caches it) |
 | `Bch::new(t=8)` | ~3.4 µs (0.29 Mc/s) | ~3.1 µs (0.32 Mc/s) | ~1.1× | shared `Gf256`; still dominated by conjugacy-class LCMs |
-| `ReedSolomon::dvb()` | ~0.7 µs (1.45 Mc/s) | ~0.41 µs (2.4–2.6 Mc/s) | **~1.7×** | shared `Gf256`; table build was the larger fraction here |
-| LDPC ×64 frames, rebuilt each frame | 1× (baseline) | 1× | unchanged | status-quo per-frame behavior (R3 target) |
-| LDPC ×64 frames, built once & reused | **~5000×** faster | — | — | the amortized target R3 delivers |
+| `ReedSolomon::dvb()` | ~0.7 µs (1.45 Mc/s) | ~0.41 µs (2.4–2.6 Mc/s) | **~1.7×** | shared `Gf256` |
+| LDPC ×64 frames, rebuilt each frame | 1× (baseline) | — | — | pre-R3 per-frame behavior |
+| LDPC ×64 frames, built once & reused | **~5000×** faster | — | — | the amortized behavior R3's `CodecCache` delivers |
 
-R2 removes the per-construction `Gf256` table build from the algebraic codes.
-`ReedSolomon` gains ~1.7× because its construction is otherwise light (2t
-linear-factor multiplies), so the removed table build was a larger share of the
-total; `Bch` gains less (~1.1×) because its construction is dominated by the
-generator-polynomial conjugacy-class LCMs, which R2 does not touch. `Ldpc::new`
-remains ~2.7 ms — three orders of magnitude above the algebraic codes and untouched
-by R2 (its cost is the sparse-H build, not GF tables), so per-frame LDPC
-reconstruction is still the highest-value win, delivered by R3's per-instance
-`CodecCache` (the 64-frame reuse benchmark shows the gap it closes). "Mc/s" =
-millions of constructions per second.
+R2 removes the per-construction `Gf256` table build from the algebraic codes
+(`ReedSolomon` ~1.7×; `Bch` ~1.1×, since its cost is the generator-polynomial LCMs
+R2 does not touch). `Ldpc::new` stays ~2.7 ms — three orders of magnitude above the
+algebraic codes — so the win is not making it cheaper but calling it *once per link*
+instead of once per frame, which R3 does. "Mc/s" = millions of constructions/s.
+
+### Full COFDM frame chain (§1.2) — the end-to-end R3 result
+
+The real per-link path: `OfdmFrameMod::modulate_frame` and batch `demodulate_frame`
+over many frames on one modulator instance (n_fft=64, cp_len=8, QPSK payload,
+96-byte payload, LDPC(n512r12)+BCH(t=8)). "Msps" = frame IQ samples / wall time,
+directly comparable to the "COFDM frame throughput" table above.
+
+Both paths reuse a warm `CodecCache` across the measured frames — the modulator
+holds one on its `OfdmFrameMod`, and the demodulator is driven through
+`demodulate_frame`'s optional caller-owned cache (`Some(&cache)`), reused across
+passes. This keeps the two on equal footing: both measure steady-state, codes-warm
+throughput, not per-frame code construction.
+
+| Path | pre-optimization (doc table above) | R3 (warm cache) | Since baseline |
+| --- | ---: | ---: | --- |
+| `modulate_frame` | 0.5 | ~56 | **~110×** |
+| `demodulate_frame` | 0.2 | ~41 | **~205×** |
+
+With the cache warm on both sides, Tx and Rx land in the same order of magnitude
+(~56 vs ~41 Msps) — the symmetric encode/decode chain the payload size implies. The
+residual Rx < Tx gap is the *actual* decode cost (belief propagation + Berlekamp–
+Massey), the target of R4/R5/R6, no longer masked by construction.
+
+> **Note on the earlier skew.** An interim R3 benchmark measured the demodulator
+> through `demodulate_frame` with a *fresh* cache per call while the modulator's
+> cache stayed warm, so the Rx figure (~0.94 Msps) was ~98% the ~2.7 ms LDPC
+> rebuild per call — construction, not decode — making the mod/demod comparison
+> apples-to-oranges. `demodulate_frame` now takes an optional caller-owned
+> `CodecCache` (`None` builds a per-call one, as before; `Some(&cache)` reuses one
+> across a batch), and the benchmark passes a persistent cache so both directions
+> are measured warm. The `modulate` figure uses a per-pass-varying seed with full
+> output consumption so it is not constant-folded.
 
 ## Running the Benchmarks
 

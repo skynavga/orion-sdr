@@ -6,8 +6,8 @@ use orion_sdr::fec::{
     ScramblerPos, SeedMode,
 };
 use orion_sdr::modulate::ofdm_frame::{
-    BCH_INFO_BITS, HEADER_FIELD_BYTES, append_crc, bits_to_bytes, block_plan, bytes_to_bits,
-    check_and_strip_crc, pack_header_fields,
+    BCH_INFO_BITS, CodecCache, HEADER_FIELD_BYTES, append_crc, bits_to_bytes, block_plan,
+    bytes_to_bits, check_and_strip_crc, pack_header_fields,
 };
 use orion_sdr::modulate::{ConstellationOrder, FrameConfigError, Mcs, McsTable, OfdmConfig};
 
@@ -109,6 +109,7 @@ fn block_plan_no_coding_is_bits() {
         InnerFec::None,
         InterleaverKind::None,
         InterleaverKind::None,
+        &CodecCache::new(),
     );
     assert_eq!(p.framed_bytes, 10);
     assert_eq!(p.coded_bits, 80);
@@ -125,6 +126,7 @@ fn block_plan_ldpc_bch_fragments() {
         InnerFec::Ldpc(LdpcCode::N512R12),
         InterleaverKind::None,
         InterleaverKind::None,
+        &CodecCache::new(),
     );
     assert_eq!(p.framed_bytes, 44);
     // outer BCH blocks are BCH_INFO_BITS info each; coded is a whole number of

@@ -22,10 +22,15 @@
 // zero-error fast path.
 
 use super::{measure_throughput, minsps_from_env};
+use num_complex::Complex32 as C32;
+use orion_sdr::demodulate::demodulate_frame;
 use orion_sdr::fec::{
-    Bch, BlockInterleaver, Ldpc, LdpcCode, PnScrambler, PunctureRate, ReedSolomon,
-    conv_encode_punctured, punctured_coded_len, viterbi_decode_soft,
+    Bch, BlockInterleaver, FrameMetadata, FramePacket, Ldpc, LdpcCode, PnScrambler, PunctureRate,
+    ReedSolomon, conv_encode_punctured, punctured_coded_len, viterbi_decode_soft,
 };
+use orion_sdr::modulate::{CodecCache, ConstellationOrder, McsTable, OfdmConfig, OfdmFrameMod};
+use orion_sdr::multicarrier::CarrierPlan;
+use orion_sdr::sync::OfdmPreamble;
 use std::hint::black_box;
 
 // Small deterministic xorshift for reproducible messages / error patterns
@@ -682,4 +687,95 @@ fn construction_cost_ldpc_per_frame_vs_reused() {
         reused / fresh.max(f32::MIN_POSITIVE)
     );
     // Measurement run — always passes.
+}
+
+// ── §1.2 Full COFDM frame chain (the per-link path R3's cache lives on) ──────
+//
+// Measures the real `OfdmFrameMod::modulate_frame` and batch `demodulate_frame`
+// over many frames on ONE mod instance — the path where R3's per-instance
+// CodecCache amortizes code construction across frames (the modulator builds its
+// LDPC/BCH once, not per frame). "Msps" here is total frame IQ samples / wall
+// time, matching the "COFDM frame throughput" table in docs/performance.md so the
+// two are directly comparable. Correctness is asserted each pass.
+
+const FRAME_N: usize = 64; // n_fft
+const FRAME_CP: usize = 8;
+
+fn frame_config() -> OfdmConfig {
+    let half = (FRAME_N / 2) as i32;
+    let data: Vec<i32> = (1..half).chain(-(half - 1)..0).collect();
+    let plan = CarrierPlan::new(FRAME_N, FRAME_CP).with_data_carriers(data);
+    OfdmConfig::new(plan, 48_000.0, 0.0, 1.0, ConstellationOrder::Bpsk)
+}
+
+fn frame_preamble(cfg: &OfdmConfig) -> OfdmPreamble {
+    OfdmPreamble::new(4, 16)
+        .with_training_symbol(cfg.carrier_plan.n_fft(), cfg.carrier_plan.cp_len())
+}
+
+#[test]
+fn throughput_frame_chain_ldpc_bch() {
+    let cfg = frame_config();
+    let pre = frame_preamble(&cfg);
+    let table = McsTable::default_ladder(); // LDPC(n512r12) + BCH(t=8), QPSK at mcs 1
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+    let payload = random_bytes(96, 0xF4A3);
+    let mcs_index = 1u8; // QPSK payload, matching the doc's frame table
+
+    // Modulate once to learn the frame's sample count and to exercise decode.
+    let frame = FramePacket::new(FrameMetadata::new(0x2468, mcs_index), payload.clone());
+    let iq = modu.modulate_frame(&frame, 0);
+    let frame_samples = iq.len();
+    let body: Vec<C32> = iq[pre.total_len()..].to_vec();
+
+    let repeats = 200;
+
+    // Modulate path: one instance, many frames — cross-frame cache warm after
+    // the first. This is the R3 win for the TX chain. The frame and seed are
+    // black-boxed each pass so the constant-input modulation can't be hoisted,
+    // and the whole output is consumed.
+    let mut seed = 0u32;
+    let (mod_msps, mod_dt) = measure_throughput(
+        || {
+            seed = seed.wrapping_add(1);
+            let iq = modu.modulate_frame(black_box(&frame), black_box(seed));
+            let mut acc = 0.0f32;
+            for s in &iq {
+                acc += s.re;
+            }
+            black_box(acc);
+            frame_samples
+        },
+        frame_samples,
+        repeats,
+    );
+    println!(
+        "[Frame-Chain-Mod LDPC+BCH] {:.4} Msps in {:.3}s",
+        mod_msps, mod_dt
+    );
+
+    // Demodulate path: batch entry point with a caller-owned cache reused across
+    // all passes — so the FEC codes are built once and the steady-state decode
+    // throughput is measured on the SAME warm-cache footing as the modulate path
+    // above (which reuses one OfdmFrameMod). Without this the Rx loop would
+    // rebuild the ~2.7 ms LDPC every pass and the number would be dominated by
+    // construction, not decode. Asserts correctness each pass.
+    let demod_cache = CodecCache::new();
+    let (demod_msps, demod_dt) = measure_throughput(
+        || {
+            let got = demodulate_frame(&cfg, &table, &body, Some(&demod_cache)).expect("decode");
+            assert_eq!(got.payload, payload, "frame chain: payload recovered");
+            black_box(got.payload[0]);
+            frame_samples
+        },
+        frame_samples,
+        repeats,
+    );
+    println!(
+        "[Frame-Chain-Demod LDPC+BCH] {:.4} Msps in {:.3}s",
+        demod_msps, demod_dt
+    );
+    // Measurement run for the doc table; floor guards gross regressions only.
+    let floor = minsps_from_env(0.05);
+    assert!(mod_msps >= floor && demod_msps >= floor);
 }

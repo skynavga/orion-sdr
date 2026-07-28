@@ -880,6 +880,21 @@ class McsTable:
     @property
     def len(self) -> int: ...
 
+class CodecCache:
+    """A shared cache of constructed FEC codes (LDPC/BCH/Reed-Solomon).
+
+    Building a code (the LDPC parity-check matrix especially) costs
+    milliseconds and depends only on its parameters, so it need only be done
+    once per link. Pass one ``CodecCache`` to an ``OfdmFrameMod``, an
+    ``OfdmFrameStreamDemod``, and/or ``demodulate_frame`` (via ``cache=``) to
+    build each code once and reuse it across all of them — a transmitter and
+    receiver on the same MCS then share the built codes. Omitting ``cache=``
+    gives each object its own private cache, which still amortizes across that
+    object's own calls.
+    """
+
+    def __init__(self) -> None: ...
+
 class OfdmFrameMod:
     """COFDM frame transmitter: serializes a ``FramePacket`` to a flat IQ
     stream (``[preamble + training][header][payload]``), applying the
@@ -893,6 +908,7 @@ class OfdmFrameMod:
         mcs_table: McsTable,
         num_repeats: int = 4,
         repeat_len: int = 16,
+        cache: CodecCache | None = None,
     ) -> None: ...
     def modulate_frame(
         self, frame: FramePacket, per_frame_seed: int = 0
@@ -913,6 +929,7 @@ class OfdmFrameStreamDemod:
         mcs_table: McsTable,
         num_repeats: int = 4,
         repeat_len: int = 16,
+        cache: CodecCache | None = None,
     ) -> None: ...
     def feed(self, iq: NDArray[np.complex64]) -> list[FramePacket]:
         """Feed IQ; return the frames that completed. Failed decodes are
@@ -935,9 +952,12 @@ def demodulate_frame(
     cfg: OfdmConfig,
     mcs_table: McsTable,
     iq: NDArray[np.complex64],
+    cache: CodecCache | None = None,
 ) -> FramePacket:
     """Batch-demodulate a single frame at a known start (*iq*[0] is the first
     sample after the preamble+training). Raises ``ValueError`` on a decode
-    failure. See ``OfdmFrameStreamDemod`` for the streaming path.
+    failure. Pass ``cache=`` a ``CodecCache`` to reuse built FEC codes across a
+    batch of calls (or share them with a modulator). See ``OfdmFrameStreamDemod``
+    for the streaming path.
     """
     ...
