@@ -23,7 +23,7 @@ pub mod ofdm;
 pub use ofdm::{ConstellationOrder, FrameConfigError, OfdmConfig, OfdmMod};
 
 pub mod ofdm_frame;
-pub use ofdm_frame::{Mcs, McsTable, OfdmFrameMod};
+pub use ofdm_frame::{CodecCache, Mcs, McsTable, OfdmFrameMod};
 
 pub mod pm;
 pub use pm::PmDirectPhaseMod;

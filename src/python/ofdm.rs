@@ -17,7 +17,7 @@ use pyo3::types::{PyDict, PyList};
 use crate::core::Block;
 use crate::demodulate::{EqualizerMethod, OfdmDecider, OfdmEqualizer};
 use crate::fec::{
-    CrcKind, HeaderFormat, InnerFec, InterleaverKind, LdpcCode, OuterFec, PunctureRate,
+    CrcKind, DecodeRule, HeaderFormat, InnerFec, InterleaverKind, LdpcCode, OuterFec, PunctureRate,
     ScramblerKind, ScramblerPos, SeedMode,
 };
 use crate::modulate::{ConstellationOrder, OfdmConfig, OfdmMod};
@@ -147,6 +147,28 @@ impl PyOfdmConfig {
         };
         let mut cfg = self.0.clone();
         cfg.inner_fec = inner;
+        Ok(Self(cfg))
+    }
+
+    /// Selects the receiver's LDPC check-node decode rule:
+    /// `"sum_product"` (default, exact), `"min_sum"`, or `"scaled_min_sum"`.
+    /// `scale` applies only to `"scaled_min_sum"` (≈0.75 recovers most of the
+    /// coding gain). Min-sum trades ≲0.3 dB for ~2× decode throughput.
+    #[pyo3(signature = (kind, scale = 0.75))]
+    fn with_ldpc_decode_rule(&self, kind: &str, scale: f32) -> PyResult<Self> {
+        let rule = match kind {
+            "sum_product" | "sum-product" => DecodeRule::SumProduct,
+            "min_sum" | "min-sum" => DecodeRule::MinSum,
+            "scaled_min_sum" | "scaled-min-sum" => DecodeRule::ScaledMinSum(scale),
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "with_ldpc_decode_rule: unknown kind {other:?} \
+                     (expected sum_product|min_sum|scaled_min_sum)"
+                )));
+            }
+        };
+        let mut cfg = self.0.clone();
+        cfg.ldpc_decode_rule = rule;
         Ok(Self(cfg))
     }
 

@@ -41,7 +41,7 @@ pub enum BchError {
 /// shortened to length `n`.
 #[derive(Debug, Clone)]
 pub struct Bch {
-    gf: Gf256,
+    gf: &'static Gf256,
     /// Codeword length (≤ 255; equals 255 when unshortened).
     n: usize,
     /// Information-bit length `k = n − parity_bits`.
@@ -67,8 +67,8 @@ impl Bch {
         if n == 0 || n > 255 {
             return Err(BchError::BadLength(n));
         }
-        let gf = Gf256::new();
-        let gen_poly = build_generator(&gf, t)?;
+        let gf = Gf256::shared();
+        let gen_poly = build_generator(gf, t)?;
         let parity_bits = gen_poly.len() - 1;
         if parity_bits >= n {
             return Err(BchError::BadLength(n));
@@ -130,7 +130,7 @@ impl Bch {
     /// or an inconsistent error locator).
     pub fn decode(&self, received: &[u8]) -> Result<Vec<u8>, BchError> {
         assert_eq!(received.len(), self.n, "BCH word must be exactly n bits");
-        let gf = &self.gf;
+        let gf = self.gf;
 
         // The received word occupies the *high* end of the full length-255
         // code; shortening prepends (255 − n) zero positions. Map a received
@@ -208,7 +208,7 @@ impl Bch {
 
     /// Number of nonzero syndromes for `word` (0 ⇒ a valid codeword).
     fn residual_errors(&self, word: &[u8]) -> usize {
-        let gf = &self.gf;
+        let gf = self.gf;
         let shift = 255 - self.n;
         let mut count = 0;
         for j in 1..=2 * self.t {

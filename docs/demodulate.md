@@ -424,9 +424,8 @@ let mut bits = vec![0u8; cfg.bits_per_ofdm_symbol()];
 decider.process(&soft, &mut bits);
 ```
 
-This release's per-bin equalizer models delay spreads up to `cp_len` — a
-longer channel impulse response causes inter-symbol interference the model
-doesn't capture.
+The per-bin equalizer models delay spreads up to `cp_len` — a longer channel
+impulse response causes inter-symbol interference the model doesn't capture.
 
 ### Soft (LLR) demapping
 
@@ -496,3 +495,77 @@ correction.rotate_block(&received_iq, &mut corrected);
 let training_start = best.start_sample + preamble.num_repeats * preamble.repeat_len;
 let data_start = best.start_sample + preamble.total_len();
 ```
+
+## COFDM Frame Demodulation
+
+The COFDM frame layer recovers a whole `FramePacket` — running the inverse of
+`OfdmFrameMod`'s chain (soft-demap → deinterleave → concatenated FEC decode →
+CRC) — through two entry points.
+
+**Batch, known start.** `demodulate_frame` decodes one frame whose IQ begins at
+the first post-preamble sample (the caller has already synchronized and, if
+needed, equalized). It mirrors `OfdmFrameMod` and shares the same `OfdmConfig`
+and `McsTable`.
+
+```rust
+use orion_sdr::demodulate::demodulate_frame;
+
+// `iq` is a full modulated frame (preamble + training + header + payload); the
+// batch decoder wants the samples after the preamble+training.
+let body = &iq[modu.preamble().total_len()..];
+
+// `None` builds a throwaway CodecCache for this call. Decoding many known-start
+// frames in a loop? Pass `Some(&cache)` (a caller-owned `CodecCache`) to build
+// each FEC code once across the whole batch.
+match demodulate_frame(&cfg, &table, body, None) {
+    Ok(frame) => {
+        assert_eq!(frame.metadata.mcs_index, 1);
+        // frame.payload — the recovered bytes; frame.metadata.sequence_num, etc.
+    }
+    Err(e) => eprintln!("frame decode failed: {e:?}"),
+}
+```
+
+**Streaming, unknown start.** `OfdmFrameStreamDemod` accumulates raw IQ across
+`feed` calls, locates preambles with `ofdm_sync`, corrects total CFO, estimates
+the channel from the training symbol, decodes each frame, and drains its
+samples — yielding any frames (or typed errors) that completed. A frame split
+across `feed` calls is held until a later call completes it. It mirrors
+`Ft8StreamDecoder`'s accumulate-and-drain shape (`feed`/`flush`/`clear`).
+
+```rust
+use orion_sdr::demodulate::OfdmFrameStreamDemod;
+
+let mut rx = OfdmFrameStreamDemod::new(cfg, table, preamble);
+
+// `feed` returns the frames that completed on this call (failed decodes are
+// omitted; `feed_with_errors` surfaces the reasons).
+for result in rx.feed(&received_iq) {
+    match result {
+        Ok(rx_frame) => {
+            // rx_frame.packet — the FramePacket; rx_frame.diagnostics carries
+            // the per-frame CFO and timing offset.
+            let payload = &rx_frame.packet.payload;
+            let _ = payload;
+        }
+        Err(e) => eprintln!("frame error: {e:?}"),
+    }
+}
+let _tail = rx.flush(); // final pass over the residual buffer at end of stream
+```
+
+Both entry points **invert whatever coding chain the config and MCS table
+describe** — non-default FEC, interleavers, and scrambler included — so the
+receiver must be constructed from the *same* `OfdmConfig` and `McsTable` as the
+transmitter. Those parameters (interleaver dimensions, scrambler poly/width/seed
+mode, the MCS mapping) are shared out-of-band link state; only the per-frame
+scrambler *seed* and `mcs_index` are signaled in the header. See
+[modulate.md](modulate.md#configuring-the-coding-chain-non-default-fec--interleave--scramble)
+for building such a config; decode is symmetric — pass the identical `cfg`/`table`
+to `demodulate_frame` or `OfdmFrameStreamDemod`.
+
+The receiver's LDPC inner decoder uses the check-node rule selected by
+`OfdmConfig::with_ldpc_decode_rule` (exact sum-product by default; opt-in
+min-sum / scaled-min-sum for ~2× decode at a sub-0.3 dB coding-gain cost on the
+payload — the header always uses sum-product). See
+[performance.md](performance.md) for the measured trade.

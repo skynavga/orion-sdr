@@ -36,7 +36,7 @@ pub enum RsError {
 /// `2t = n − k` parity bytes correcting up to `t` symbol errors.
 #[derive(Debug, Clone)]
 pub struct ReedSolomon {
-    gf: Gf256,
+    gf: &'static Gf256,
     n: usize,
     k: usize,
     n_parity: usize,
@@ -52,8 +52,8 @@ impl ReedSolomon {
         if n == 0 || n > 255 || n_parity >= n {
             return Err(RsError::BadLength(n, n_parity));
         }
-        let gf = Gf256::new();
-        let gen_poly = build_generator(&gf, n_parity);
+        let gf = Gf256::shared();
+        let gen_poly = build_generator(gf, n_parity);
         Ok(Self {
             gf,
             n,
@@ -89,7 +89,7 @@ impl ReedSolomon {
     /// `[message | parity]`.
     pub fn encode(&self, message: &[u8]) -> Vec<u8> {
         assert_eq!(message.len(), self.k, "RS message must be exactly k bytes");
-        let gf = &self.gf;
+        let gf = self.gf;
         // parity = remainder of message·x^{n_parity} / g(x), via LFSR.
         let mut reg = vec![0u8; self.n_parity];
         for &m in message {
@@ -113,7 +113,7 @@ impl ReedSolomon {
     /// and returns the recovered `k`-byte message.
     pub fn decode(&self, received: &[u8]) -> Result<Vec<u8>, RsError> {
         assert_eq!(received.len(), self.n, "RS word must be exactly n bytes");
-        let gf = &self.gf;
+        let gf = self.gf;
         let shift = 255 - self.n; // shortening: leading zero positions
 
         // Position p (0-based, MSB-first) has code degree d = (n-1-p) + shift.
@@ -199,7 +199,7 @@ impl ReedSolomon {
     }
 
     fn residual_errors(&self, word: &[u8]) -> usize {
-        let gf = &self.gf;
+        let gf = self.gf;
         let shift = 255 - self.n;
         let mut count = 0;
         for j in 0..self.n_parity {

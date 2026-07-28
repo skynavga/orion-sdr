@@ -671,6 +671,14 @@ class OfdmConfig:
         | ``"n512r34"``. For convolutional, *code* is a puncture rate
         ``"1/2"`` | ``"2/3"`` | ``"3/4"`` | ``"5/6"`` | ``"7/8"``."""
         ...
+    def with_ldpc_decode_rule(
+        self, kind: str, scale: float = 0.75
+    ) -> "OfdmConfig":
+        """Select the receiver's LDPC check-node decode rule: ``"sum_product"``
+        (default, exact) | ``"min_sum"`` | ``"scaled_min_sum"``. *scale* applies
+        only to ``"scaled_min_sum"`` (≈0.75 recovers most of the coding gain).
+        Min-sum trades ≲0.3 dB of coding gain for ~2× decode throughput."""
+        ...
     def with_interleaver(self, stage: str, rows: int, cols: int) -> "OfdmConfig":
         """Set a rectangular block interleaver on *stage* (``"inner"`` |
         ``"outer"``); ``rows``/``cols`` = 0 disables it."""
@@ -880,6 +888,21 @@ class McsTable:
     @property
     def len(self) -> int: ...
 
+class CodecCache:
+    """A shared cache of constructed FEC codes (LDPC/BCH/Reed-Solomon).
+
+    Building a code (the LDPC parity-check matrix especially) costs
+    milliseconds and depends only on its parameters, so it need only be done
+    once per link. Pass one ``CodecCache`` to an ``OfdmFrameMod``, an
+    ``OfdmFrameStreamDemod``, and/or ``demodulate_frame`` (via ``cache=``) to
+    build each code once and reuse it across all of them — a transmitter and
+    receiver on the same MCS then share the built codes. Omitting ``cache=``
+    gives each object its own private cache, which still amortizes across that
+    object's own calls.
+    """
+
+    def __init__(self) -> None: ...
+
 class OfdmFrameMod:
     """COFDM frame transmitter: serializes a ``FramePacket`` to a flat IQ
     stream (``[preamble + training][header][payload]``), applying the
@@ -893,6 +916,7 @@ class OfdmFrameMod:
         mcs_table: McsTable,
         num_repeats: int = 4,
         repeat_len: int = 16,
+        cache: CodecCache | None = None,
     ) -> None: ...
     def modulate_frame(
         self, frame: FramePacket, per_frame_seed: int = 0
@@ -913,6 +937,7 @@ class OfdmFrameStreamDemod:
         mcs_table: McsTable,
         num_repeats: int = 4,
         repeat_len: int = 16,
+        cache: CodecCache | None = None,
     ) -> None: ...
     def feed(self, iq: NDArray[np.complex64]) -> list[FramePacket]:
         """Feed IQ; return the frames that completed. Failed decodes are
@@ -935,9 +960,12 @@ def demodulate_frame(
     cfg: OfdmConfig,
     mcs_table: McsTable,
     iq: NDArray[np.complex64],
+    cache: CodecCache | None = None,
 ) -> FramePacket:
     """Batch-demodulate a single frame at a known start (*iq*[0] is the first
     sample after the preamble+training). Raises ``ValueError`` on a decode
-    failure. See ``OfdmFrameStreamDemod`` for the streaming path.
+    failure. Pass ``cache=`` a ``CodecCache`` to reuse built FEC codes across a
+    batch of calls (or share them with a modulator). See ``OfdmFrameStreamDemod``
+    for the streaming path.
     """
     ...
