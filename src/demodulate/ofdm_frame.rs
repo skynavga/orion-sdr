@@ -21,8 +21,8 @@ use crate::demodulate::ofdm::{
 };
 use crate::dsp::Rotator;
 use crate::fec::{
-    BlockInterleaver, CrcKind, FrameMetadata, FramePacket, HeaderFormat, InnerFec, InterleaverKind,
-    OuterFec, RxError, ScramblerKind, ScramblerPos, viterbi_decode_soft,
+    BlockInterleaver, CrcKind, DecodeRule, FrameMetadata, FramePacket, HeaderFormat, InnerFec,
+    InterleaverKind, OuterFec, RxError, ScramblerKind, ScramblerPos, viterbi_decode_soft,
 };
 use crate::modulate::ofdm::{ConstellationOrder, OfdmConfig};
 use crate::modulate::ofdm_frame::{
@@ -171,6 +171,7 @@ fn inner_decode(
     coded_llrs: &[f32],
     info_len: usize,
     cache: &CodecCache,
+    ldpc_rule: DecodeRule,
 ) -> (Vec<u8>, bool) {
     match inner {
         InnerFec::None => {
@@ -190,7 +191,7 @@ fn inner_decode(
                     all_ok = false;
                     break;
                 }
-                let (msg, unsat) = ldpc.decode_soft(chunk, 50);
+                let (msg, unsat) = ldpc.decode_soft_with(chunk, 50, ldpc_rule);
                 if unsat != 0 {
                     all_ok = false;
                 }
@@ -274,6 +275,7 @@ fn decode_chain(
     scrambler_pos: ScramblerPos,
     per_frame_seed: u32,
     cache: &CodecCache,
+    ldpc_rule: DecodeRule,
 ) -> Result<(Vec<u8>, bool), RxError> {
     // 1. Trim to the exact coded-bit count, then invert the after-inner
     //    scramble (bit domain) if configured.
@@ -293,7 +295,8 @@ fn decode_chain(
     // 2. Inner deinterleave (LLR), then inner decode.
     let inner_de = deinterleave_llrs(inner_il, &llrs);
     let inner_de = &inner_de[..plan.inner_coded_bits.min(inner_de.len())];
-    let (mut outer_il_bits, inner_ok) = inner_decode(inner, inner_de, plan.outer_il_bits, cache);
+    let (mut outer_il_bits, inner_ok) =
+        inner_decode(inner, inner_de, plan.outer_il_bits, cache, ldpc_rule);
     outer_il_bits.truncate(plan.outer_il_bits);
 
     // 3. Outer deinterleave (byte/bit domain), then outer decode.
@@ -400,6 +403,10 @@ fn decode_frame_body(
             ScramblerPos::BeforeOuterFec,
             0,
             cache,
+            // The header is decoded first to learn the MCS and must be as robust
+            // as possible, so it always uses exact sum-product regardless of the
+            // payload's configured rule.
+            DecodeRule::SumProduct,
         )
         .map_err(BodyError::Failed)?;
         if !ok {
@@ -461,6 +468,8 @@ fn decode_frame_body(
         cfg.scrambler_pos,
         per_frame_seed,
         cache,
+        // The payload honors the configured LDPC decode rule (opt-in min-sum).
+        cfg.ldpc_decode_rule,
     )
     .map_err(BodyError::Failed)?;
     if !ok {

@@ -121,6 +121,23 @@ class TestFrameRoundtrip:
         assert np.array_equal(got.payload, payload)
         assert got.sequence_num == 0x1234
 
+    def test_scaled_min_sum_decode_rule(self):
+        # The opt-in scaled-min-sum LDPC rule decodes the payload identically.
+        cfg = _ldpc_bch_config().with_ldpc_decode_rule("scaled_min_sum", 0.75)
+        table = sdr.McsTable.default_ladder()
+        mod = sdr.OfdmFrameMod(cfg, table)
+        payload = _sample_payload(40)
+        frame = sdr.FramePacket(payload, sequence_num=0x99, mcs_index=0)
+        iq = mod.modulate_frame(frame)
+        preamble = sdr.generate_ofdm_preamble(cfg, 4, 16, N_FFT, CP_LEN)
+        body = iq[len(preamble):]
+        got = sdr.demodulate_frame(cfg, table, body)
+        assert np.array_equal(got.payload, payload)
+
+    def test_unknown_decode_rule_rejected(self):
+        with pytest.raises(ValueError):
+            _base_config().with_ldpc_decode_rule("bogus")
+
     def test_shared_codec_cache_roundtrip(self):
         # One CodecCache shared across the modulator, the streaming receiver,
         # and the batch demod builds each FEC code once and still decodes

@@ -671,6 +671,14 @@ class OfdmConfig:
         | ``"n512r34"``. For convolutional, *code* is a puncture rate
         ``"1/2"`` | ``"2/3"`` | ``"3/4"`` | ``"5/6"`` | ``"7/8"``."""
         ...
+    def with_ldpc_decode_rule(
+        self, kind: str, scale: float = 0.75
+    ) -> "OfdmConfig":
+        """Select the receiver's LDPC check-node decode rule: ``"sum_product"``
+        (default, exact) | ``"min_sum"`` | ``"scaled_min_sum"``. *scale* applies
+        only to ``"scaled_min_sum"`` (≈0.75 recovers most of the coding gain).
+        Min-sum trades ≲0.3 dB of coding gain for ~2× decode throughput."""
+        ...
     def with_interleaver(self, stage: str, rows: int, cols: int) -> "OfdmConfig":
         """Set a rectangular block interleaver on *stage* (``"inner"`` |
         ``"outer"``); ``rows``/``cols`` = 0 disables it."""
