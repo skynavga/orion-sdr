@@ -293,23 +293,25 @@ link, unlike the smooth uncoded BER curves.)
 > is folded into the released tables above (and this heading removed) at the end of
 > the branch; until then it reflects the current tip, not v0.0.44.
 
-**Current status:** R3 landed — a per-instance `CodecCache` memoizes the constructed
-`Ldpc`/`Bch`/`ReedSolomon` objects so a link builds each code **once**, not once per
-frame. `OfdmFrameMod` and `OfdmFrameStreamDemod` each hold one; the batch
-`demodulate_frame` takes an optional caller-owned cache (`None` builds a per-call
-one; `Some(&cache)` amortizes across a batch of known-start frames). Combined with R2
-(shared `Gf256`), the per-frame FEC-construction overhead that dominated the frame
-chain is gone. Bit-exact (a cached code is identical to a freshly built one — same
-parameters, deterministic construction); the full unit/roundtrip suite passes
-unchanged. Deltas vs. the R1 baseline are in the "Since baseline" columns.
+**Current status:** R4 landed — the LDPC sum-product decoder precomputes each
+Tanner-graph edge's index into its check's bit list, so the per-iteration
+variable-node loops index the `msg`/`ext` edge arrays directly instead of a linear
+`position()` scan per edge per iteration. Bit-exact (the LDPC unit/roundtrip tests
+pass unchanged). **This is not a measured speedup on the current codes** — the scans
+it removes are dwarfed by the tanh/atanh transcendentals that dominate the
+belief-propagation inner loop (isolated `LDPC-Decode` is flat within noise; see
+below) — but it removes genuine `O(edges·degree)` redundant work and matters for
+denser codes and the transcendental-free min-sum path investigated in R8a. R2/R3
+(shared `Gf256`, per-link `CodecCache`) removed the per-frame FEC-construction
+overhead; deltas vs. the R1 baseline are in the "Since baseline" columns.
 
 ### Per-block, single direction (§1.1)
 
 | Block | Variant | Tx Msps | Rx Msps | Since baseline |
 | --- | --- | ---: | ---: | --- |
-| LDPC | N512R12 (rate 1/2) | 457 | 11.7 | baseline |
-| LDPC | N576R23 (rate 2/3) | 577 | 12.5 | baseline |
-| LDPC | N512R34 (rate 3/4) | 640 | 3.7 | baseline |
+| LDPC | N512R12 (rate 1/2) | 457 | 11.5 | R4 flat (within noise) |
+| LDPC | N576R23 (rate 2/3) | 577 | 13.9 | R4 flat (within noise) |
+| LDPC | N512R34 (rate 3/4) | 640 | 3.7 | R4 flat (within noise) |
 | Convolutional | R1/2 | 610 | 27.1 | baseline |
 | Convolutional | R2/3 | 347 | 27.3 | baseline |
 | Convolutional | R3/4 | 384 | 26.1 | baseline |
@@ -327,10 +329,20 @@ unchanged. Deltas vs. the R1 baseline are in the "Since baseline" columns.
 Rx (decode) dominates cost across every code, as expected: LDPC sum-product decode
 is 1–2 orders of magnitude slower than its direct staircase encode, and it is the
 single largest term in the COFDM decode path. `LDPC-Decode N512R34` is the slowest
-block measured (3.7 Msps) — the rate-3/4 code's denser checks run more BP work per
+block measured (~3.7 Msps) — the rate-3/4 code's denser checks run more BP work per
 info bit. The interleaver kernels are already near memory-bandwidth-bound (thousands
 of Msps); their optimization target (`R7`) is per-chunk *allocation churn* in the
 chain driver, not the kernel itself.
+
+**R4 finding (edge-index precompute).** Removing the decoder's per-iteration
+`position()` scans left `LDPC-Decode` flat within run-to-run noise: profiling the
+inner loop, the check-node update's tanh/atanh product (deg·(deg−1) `fast_tanh`
+calls per check per iteration) dominates, so the O(edges·degree) scan it eliminated
+was never the bottleneck on these low-degree codes. The change is kept because it is
+bit-exact, removes real redundant work, and becomes load-bearing under R8a's min-sum
+rule (no transcendentals — the scans would then dominate). The genuine
+decode-throughput lever on the sum-product path is **R5** (caching `tanh(msg/2)` so
+the check-node product stops recomputing it O(deg²) times).
 
 ### Paired forward→inverse roundtrip (§1.2, correctness asserted each pass)
 
@@ -386,15 +398,21 @@ holds one on its `OfdmFrameMod`, and the demodulator is driven through
 passes. This keeps the two on equal footing: both measure steady-state, codes-warm
 throughput, not per-frame code construction.
 
-| Path | pre-optimization (doc table above) | R3 (warm cache) | Since baseline |
+| Path | pre-optimization (doc table above) | R2+R3 (warm cache) | Since baseline |
 | --- | ---: | ---: | --- |
-| `modulate_frame` | 0.5 | ~56 | **~110×** |
-| `demodulate_frame` | 0.2 | ~41 | **~205×** |
+| `modulate_frame` | 0.5 | ~40–56 | **~80–110×** |
+| `demodulate_frame` | 0.2 | ~33–57 | **~150–280×** |
 
-With the cache warm on both sides, Tx and Rx land in the same order of magnitude
-(~56 vs ~41 Msps) — the symmetric encode/decode chain the payload size implies. The
-residual Rx < Tx gap is the *actual* decode cost (belief propagation + Berlekamp–
-Massey), the target of R4/R5/R6, no longer masked by construction.
+With the cache warm on both sides, Tx and Rx land in the same order of magnitude —
+two-plus orders above the pre-optimization frame table — which the per-frame
+FEC-construction removal (R2+R3) accounts for. The ranges are wide because at this
+payload the whole frame is ~a few hundred µs, so timer granularity and scheduling
+dominate the spread; the figures are order-of-magnitude, not precise. This
+benchmark's decode runs on a *noiseless* roundtrip, so each LDPC codeword is already
+valid and the sum-product decoder exits on its initial syndrome check **without
+entering the belief-propagation loop** — which is why R4 (a BP-inner-loop change)
+does not move this number, and why the isolated, error-injected `LDPC-Decode`
+fixture above is the honest measure of decode-kernel work.
 
 > **Note on the earlier skew.** An interim R3 benchmark measured the demodulator
 > through `demodulate_frame` with a *fresh* cache per call while the modulator's

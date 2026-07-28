@@ -99,6 +99,13 @@ pub struct Ldpc {
     check_bits: Vec<Vec<usize>>,
     /// bit → check incidence over all M rows. Length N.
     bit_checks: Vec<Vec<usize>>,
+    /// Parallel to `bit_checks`: `bit_check_edge_idx[bit][j]` is the position of
+    /// `bit` within `check_bits[bit_checks[bit][j]]`. Precomputed once so the
+    /// per-iteration variable-node loops in `decode_soft` index the parallel
+    /// `msg`/`ext` edge arrays directly, instead of a linear `position()` scan of
+    /// the check's bit list on every edge, every iteration. Pure function of the
+    /// graph — bit-exact, decode output unchanged.
+    bit_check_edge_idx: Vec<Vec<usize>>,
 }
 
 impl Ldpc {
@@ -218,6 +225,27 @@ impl Ldpc {
             }
         }
 
+        // Precompute each edge's index into its check's bit list, so the decoder
+        // never does a `position()` scan in its inner loops. For bit `b` and its
+        // j-th incident check `c = bit_checks[b][j]`, store the position of `b`
+        // within `check_bits[c]`. Every bit appears exactly once in each of its
+        // checks, so the lookup is total.
+        let bit_check_edge_idx: Vec<Vec<usize>> = bit_checks
+            .iter()
+            .enumerate()
+            .map(|(b, checks)| {
+                checks
+                    .iter()
+                    .map(|&c| {
+                        check_bits[c]
+                            .iter()
+                            .position(|&x| x == b)
+                            .expect("bit is incident to its check")
+                    })
+                    .collect()
+            })
+            .collect();
+
         Self {
             code,
             n,
@@ -226,6 +254,7 @@ impl Ldpc {
             msg_col_rows,
             check_bits,
             bit_checks,
+            bit_check_edge_idx,
         }
     }
 
@@ -358,9 +387,9 @@ impl Ldpc {
 
             // Variable-node hard decision from channel LLR + all incoming ext.
             for (bit, checks) in self.bit_checks.iter().enumerate() {
+                let edge_idx = &self.bit_check_edge_idx[bit];
                 let mut l = llr[bit];
-                for &c in checks {
-                    let idx = self.check_bits[c].iter().position(|&b| b == bit).unwrap();
+                for (&c, &idx) in checks.iter().zip(edge_idx) {
                     l += ext[c][idx];
                 }
                 hard[bit] = u8::from(l <= 0.0);
@@ -378,16 +407,14 @@ impl Ldpc {
             // Variable→check update: message on edge (c, bit) excludes c's own
             // extrinsic contribution.
             for (bit, checks) in self.bit_checks.iter().enumerate() {
+                let edge_idx = &self.bit_check_edge_idx[bit];
                 let total: f32 = llr[bit]
                     + checks
                         .iter()
-                        .map(|&c| {
-                            let idx = self.check_bits[c].iter().position(|&b| b == bit).unwrap();
-                            ext[c][idx]
-                        })
+                        .zip(edge_idx)
+                        .map(|(&c, &idx)| ext[c][idx])
                         .sum::<f32>();
-                for &c in checks {
-                    let idx = self.check_bits[c].iter().position(|&b| b == bit).unwrap();
+                for (&c, &idx) in checks.iter().zip(edge_idx) {
                     msg[c][idx] = total - ext[c][idx];
                 }
             }
