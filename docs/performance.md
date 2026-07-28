@@ -293,25 +293,24 @@ link, unlike the smooth uncoded BER curves.)
 > is folded into the released tables above (and this heading removed) at the end of
 > the branch; until then it reflects the current tip, not v0.0.44.
 
-**Current status:** R4 landed — the LDPC sum-product decoder precomputes each
-Tanner-graph edge's index into its check's bit list, so the per-iteration
-variable-node loops index the `msg`/`ext` edge arrays directly instead of a linear
-`position()` scan per edge per iteration. Bit-exact (the LDPC unit/roundtrip tests
-pass unchanged). **This is not a measured speedup on the current codes** — the scans
-it removes are dwarfed by the tanh/atanh transcendentals that dominate the
-belief-propagation inner loop (isolated `LDPC-Decode` is flat within noise; see
-below) — but it removes genuine `O(edges·degree)` redundant work and matters for
-denser codes and the transcendental-free min-sum path investigated in R8a. R2/R3
-(shared `Gf256`, per-link `CodecCache`) removed the per-frame FEC-construction
-overhead; deltas vs. the R1 baseline are in the "Since baseline" columns.
+**Current status:** R5 landed — the LDPC check-node update now caches `tanh(msg/2)`
+per incident edge once per iteration, instead of recomputing `fast_tanh` inside every
+leave-one-out product (an O(deg²)→O(deg) transcendental saving). Bit-exact (the cached
+values are the identical `fast_tanh` results and the products multiply in the same
+order; the LDPC unit/roundtrip tests pass unchanged). This is the real sum-product
+decode lever: on the isolated, error-injected `LDPC-Decode` fixtures — the honest
+decode-kernel measure — it speeds up the densest code (`N512R34`) ~2.3× and the others
+~1.1–1.3×, scaling with the BP work per decode. R4 (edge-index precompute) and R2/R3
+(shared `Gf256`, per-link `CodecCache`) are the prior steps; deltas vs. the R1
+baseline are in the "Since baseline" columns.
 
 ### Per-block, single direction (§1.1)
 
 | Block | Variant | Tx Msps | Rx Msps | Since baseline |
 | --- | --- | ---: | ---: | --- |
-| LDPC | N512R12 (rate 1/2) | 457 | 11.5 | R4 flat (within noise) |
-| LDPC | N576R23 (rate 2/3) | 577 | 13.9 | R4 flat (within noise) |
-| LDPC | N512R34 (rate 3/4) | 640 | 3.7 | R4 flat (within noise) |
+| LDPC | N512R12 (rate 1/2) | 457 | ~13.2 | R5 **~1.1×** (R4 flat) |
+| LDPC | N576R23 (rate 2/3) | 577 | ~18.2 | R5 **~1.3×** (R4 flat) |
+| LDPC | N512R34 (rate 3/4) | 640 | ~8.8 | R5 **~2.3×** (R4 flat) |
 | Convolutional | R1/2 | 610 | 27.1 | baseline |
 | Convolutional | R2/3 | 347 | 27.3 | baseline |
 | Convolutional | R3/4 | 384 | 26.1 | baseline |
@@ -328,21 +327,29 @@ overhead; deltas vs. the R1 baseline are in the "Since baseline" columns.
 
 Rx (decode) dominates cost across every code, as expected: LDPC sum-product decode
 is 1–2 orders of magnitude slower than its direct staircase encode, and it is the
-single largest term in the COFDM decode path. `LDPC-Decode N512R34` is the slowest
-block measured (~3.7 Msps) — the rate-3/4 code's denser checks run more BP work per
-info bit. The interleaver kernels are already near memory-bandwidth-bound (thousands
-of Msps); their optimization target (`R7`) is per-chunk *allocation churn* in the
-chain driver, not the kernel itself.
+single largest term in the COFDM decode path. `LDPC-Decode N512R34` remains the
+slowest block (~8.8 Msps after R5, up from ~3.7 at R1) — the rate-3/4 code's denser
+checks and tighter margin run the most BP work per info bit. The interleaver kernels
+are already near memory-bandwidth-bound (thousands of Msps); their optimization
+target (`R7`) is per-chunk *allocation churn* in the chain driver, not the kernel
+itself.
 
 **R4 finding (edge-index precompute).** Removing the decoder's per-iteration
-`position()` scans left `LDPC-Decode` flat within run-to-run noise: profiling the
-inner loop, the check-node update's tanh/atanh product (deg·(deg−1) `fast_tanh`
-calls per check per iteration) dominates, so the O(edges·degree) scan it eliminated
-was never the bottleneck on these low-degree codes. The change is kept because it is
-bit-exact, removes real redundant work, and becomes load-bearing under R8a's min-sum
-rule (no transcendentals — the scans would then dominate). The genuine
-decode-throughput lever on the sum-product path is **R5** (caching `tanh(msg/2)` so
-the check-node product stops recomputing it O(deg²) times).
+`position()` scans left `LDPC-Decode` flat within run-to-run noise: the check-node
+update's tanh/atanh product (deg·(deg−1) `fast_tanh` calls per check per iteration)
+dominates, so the O(edges·degree) scan it eliminated was never the bottleneck on
+these low-degree codes. Kept because it is bit-exact, removes real redundant work,
+and becomes load-bearing under R8a's min-sum rule (no transcendentals — the scans
+would then dominate).
+
+**R5 result (tanh caching).** Caching `tanh(msg/2)` per edge collapses the check-node
+transcendental count from deg·(deg−1) to deg per check per iteration. This *is* the
+bottleneck R4 identified, so the win is real and scales with check degree and
+iteration count: `N512R34` (rate 3/4, degree-5 checks, iterates the most under the
+error-injected fixture) gains ~2.3× (~3.8→~8.8 Msps); `N576R23` ~1.3× and `N512R12`
+~1.1×. Warm-run steady-state numbers; the first run of each fixture is a cold-cache
+outlier discarded. Bit-exact — the cached values equal the previous inline
+`fast_tanh` calls and the leave-one-out products multiply in the same order.
 
 ### Paired forward→inverse roundtrip (§1.2, correctness asserted each pass)
 

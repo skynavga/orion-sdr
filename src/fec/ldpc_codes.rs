@@ -353,6 +353,13 @@ impl Ldpc {
         let mut min_unsat = init_unsat;
         let mut best = hard.clone();
 
+        // Reusable per-check scratch for `tanh(msg/2)` of each incident edge,
+        // sized to the largest check degree so the check-node loop below computes
+        // each edge's `fast_tanh` once per iteration instead of once per
+        // leave-one-out product (an O(deg²)→O(deg) transcendental saving).
+        let max_deg = self.check_bits.iter().map(Vec::len).max().unwrap_or(0);
+        let mut tanh_half = vec![0.0f32; max_deg];
+
         for _iter in 0..max_iter {
             // Check-node update (tanh product rule):
             //   ext = 2·atanh(∏_{other bits} tanh(msg/2)).
@@ -362,15 +369,25 @@ impl Ldpc {
             // code's checks have mixed degrees (4 and 5).
             for (c, bits) in self.check_bits.iter().enumerate() {
                 let deg = bits.len();
+                // Cache `tanh(msg/2)` per incident edge once, so the leave-one-out
+                // products below read it instead of recomputing `fast_tanh` for
+                // every (i1, i2) pair. `tanh_half[i2]` here is bit-identical to
+                // the `fast_tanh(msg[c][i2] / 2.0)` the product used before, and
+                // the products still multiply in the same index order — so the
+                // float result is unchanged, only the transcendental count drops.
+                let msg_c = &msg[c];
+                for j in 0..deg {
+                    tanh_half[j] = fast_tanh(msg_c[j] / 2.0);
+                }
                 // `i1`/`i2` index the parallel per-edge `msg`/`ext` arrays; the
                 // leave-one-out product needs both indices, so this stays a
                 // range loop (same pattern as `codec::ldpc`'s BP decoder).
                 #[allow(clippy::needless_range_loop)]
                 for i1 in 0..deg {
                     let mut prod = 1.0f32;
-                    for (i2, _) in bits.iter().enumerate() {
+                    for i2 in 0..deg {
                         if i2 != i1 {
-                            prod *= fast_tanh(msg[c][i2] / 2.0);
+                            prod *= tanh_half[i2];
                         }
                     }
                     // Clamp before `fast_atanh`: `fast_tanh` can overshoot
