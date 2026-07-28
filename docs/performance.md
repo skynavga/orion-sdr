@@ -293,8 +293,11 @@ link, unlike the smooth uncoded BER curves.)
 > is folded into the released tables above (and this heading removed) at the end of
 > the branch; until then it reflects the current tip, not v0.0.44.
 
-**Current status:** R1 (baseline, no `src/` changes) — the numbers below are the
-pre-optimization reference every later commit improves against.
+**Current status:** R2 landed — `Bch`/`ReedSolomon` now borrow a process-wide
+shared `Gf256` (`Gf256::shared`, a `OnceLock` singleton) instead of rebuilding the
+512+256-byte log/antilog tables on every construction. Bit-exact (the tables are a
+pure function of the primitive polynomial); the full unit/roundtrip suite passes
+unchanged. Deltas vs. the R1 baseline are noted in the "Since baseline" columns.
 
 ### Per-block, single direction (§1.1)
 
@@ -351,18 +354,24 @@ The concatenated-FEC chain currently rebuilds its code object (`Ldpc::new`,
 `Bch::new`, `ReedSolomon::new`) from scratch **every frame**. These microbenchmarks
 measure that construction in isolation, the target of the `R2`/`R3` caching work.
 
-| Construction | Cost | Notes |
-| --- | ---: | --- |
-| `Ldpc::new(N512R12)` | ~2.7 ms | sparse-H build + HashSet 4-cycle guard |
-| `Bch::new(t=8)` | ~3.4 µs | includes a full `Gf256::new()` table build |
-| `ReedSolomon::dvb()` | ~0.7 µs | includes a full `Gf256::new()` table build |
-| LDPC ×64 frames, rebuilt each frame | 1× (baseline) | status-quo per-frame behavior |
-| LDPC ×64 frames, built once & reused | **~5000×** faster | the amortized target R3 delivers |
+| Construction | R1 baseline | R2 | Since baseline | Notes |
+| --- | ---: | ---: | --- | --- |
+| `Ldpc::new(N512R12)` | ~2.7 ms | ~2.7 ms | unchanged | sparse-H build + HashSet 4-cycle guard (R3/R4 target, not R2) |
+| `Bch::new(t=8)` | ~3.4 µs (0.29 Mc/s) | ~3.1 µs (0.32 Mc/s) | ~1.1× | shared `Gf256`; still dominated by conjugacy-class LCMs |
+| `ReedSolomon::dvb()` | ~0.7 µs (1.45 Mc/s) | ~0.41 µs (2.4–2.6 Mc/s) | **~1.7×** | shared `Gf256`; table build was the larger fraction here |
+| LDPC ×64 frames, rebuilt each frame | 1× (baseline) | 1× | unchanged | status-quo per-frame behavior (R3 target) |
+| LDPC ×64 frames, built once & reused | **~5000×** faster | — | — | the amortized target R3 delivers |
 
-`Ldpc::new` is by far the dominant construction cost (~2.7 ms — three orders of
-magnitude above the algebraic codes), so per-frame LDPC reconstruction is the
-highest-value, lowest-risk win in this pass. The 64-frame reuse benchmark shows the
-gap R3's per-instance `CodecCache` closes.
+R2 removes the per-construction `Gf256` table build from the algebraic codes.
+`ReedSolomon` gains ~1.7× because its construction is otherwise light (2t
+linear-factor multiplies), so the removed table build was a larger share of the
+total; `Bch` gains less (~1.1×) because its construction is dominated by the
+generator-polynomial conjugacy-class LCMs, which R2 does not touch. `Ldpc::new`
+remains ~2.7 ms — three orders of magnitude above the algebraic codes and untouched
+by R2 (its cost is the sparse-H build, not GF tables), so per-frame LDPC
+reconstruction is still the highest-value win, delivered by R3's per-instance
+`CodecCache` (the 64-frame reuse benchmark shows the gap it closes). "Mc/s" =
+millions of constructions per second.
 
 ## Running the Benchmarks
 
