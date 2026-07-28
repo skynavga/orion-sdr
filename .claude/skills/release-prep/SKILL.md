@@ -30,8 +30,7 @@ before editing it.
 |------|----------------|
 | `Cargo.toml` | `version = "OLD_VERSION"` |
 | `pyproject.toml` | `version = "OLD_VERSION"` |
-| `README.md` | `Pre-alpha (vOLD_VERSION)` and `as of vOLD_VERSION` in the Features doc link |
-| `docs/features.md` | `# Features (as of vOLD_VERSION)` heading |
+| `README.md` | `Pre-alpha (vOLD_VERSION)` in the Status section |
 | `docs/performance.md` | `## vOLD_VERSION Results` heading |
 | `CLAUDE.md` | `vOLD_VERSION), edition 2024` in the project description |
 | `memory/MEMORY.md` at `~/.claude/projects/.../memory/MEMORY.md` | version in the Project Summary line |
