@@ -380,15 +380,25 @@ impl Ldpc {
             return (hard[..self.k].to_vec(), 0);
         }
 
-        // Edge messages, keyed by (check, bit) via the incidence lists. We store
-        // per-check variable→check messages `m[check][idx]` and check→variable
-        // messages `e[check][idx]`, where `idx` indexes into check_bits[check].
-        let mut msg: Vec<Vec<f32>> = self
-            .check_bits
-            .iter()
-            .map(|bits| bits.iter().map(|&b| llr[b]).collect())
-            .collect();
-        let mut ext: Vec<Vec<f32>> = self.check_bits.iter().map(|b| vec![0.0; b.len()]).collect();
+        // Edge messages in a flat CSR layout: one contiguous buffer over all
+        // edges, with `check_start[c]..check_start[c+1]` the slice for check `c`
+        // (parallel to `check_bits[c]`). This replaces the jagged
+        // `Vec<Vec<f32>>` — one allocation and one pointer-chase-free scan per
+        // check — while indexing identically (`msg[c][i]` → `msg[check_start[c]
+        // + i]`). Bit-exact: same values, same order.
+        let n_edges: usize = self.check_bits.iter().map(Vec::len).sum();
+        let mut check_start = vec![0usize; self.m + 1];
+        for (c, bits) in self.check_bits.iter().enumerate() {
+            check_start[c + 1] = check_start[c] + bits.len();
+        }
+        let mut msg = vec![0.0f32; n_edges];
+        for (c, bits) in self.check_bits.iter().enumerate() {
+            let base = check_start[c];
+            for (i, &b) in bits.iter().enumerate() {
+                msg[base + i] = llr[b];
+            }
+        }
+        let mut ext = vec![0.0f32; n_edges];
 
         let mut min_unsat = init_unsat;
         let mut best = hard.clone();
@@ -409,7 +419,9 @@ impl Ldpc {
             // code's checks have mixed degrees (4 and 5).
             for (c, bits) in self.check_bits.iter().enumerate() {
                 let deg = bits.len();
-                let msg_c = &msg[c];
+                let base = check_start[c];
+                let msg_c = &msg[base..base + deg];
+                let ext_c = &mut ext[base..base + deg];
                 match rule {
                     DecodeRule::SumProduct => {
                         // Cache `tanh(msg/2)` per incident edge once, so the
@@ -443,7 +455,7 @@ impl Ldpc {
                             // clamp only removes the approximation's overshoot —
                             // harmless for the current codes (max product ~1.07 <
                             // pole) and a hard safety guard for any denser code.
-                            ext[c][i1] = 2.0 * fast_atanh(prod.clamp(-1.0, 1.0));
+                            ext_c[i1] = 2.0 * fast_atanh(prod.clamp(-1.0, 1.0));
                         }
                     }
                     DecodeRule::MinSum | DecodeRule::ScaledMinSum(_) => {
@@ -482,7 +494,7 @@ impl Ldpc {
                                 sign_parity
                             };
                             let mag = if i1 == argmin { min2 } else { min1 };
-                            ext[c][i1] = scale * s_other * mag;
+                            ext_c[i1] = scale * s_other * mag;
                         }
                     }
                 }
@@ -493,7 +505,7 @@ impl Ldpc {
                 let edge_idx = &self.bit_check_edge_idx[bit];
                 let mut l = llr[bit];
                 for (&c, &idx) in checks.iter().zip(edge_idx) {
-                    l += ext[c][idx];
+                    l += ext[check_start[c] + idx];
                 }
                 hard[bit] = u8::from(l <= 0.0);
             }
@@ -515,10 +527,11 @@ impl Ldpc {
                     + checks
                         .iter()
                         .zip(edge_idx)
-                        .map(|(&c, &idx)| ext[c][idx])
+                        .map(|(&c, &idx)| ext[check_start[c] + idx])
                         .sum::<f32>();
                 for (&c, &idx) in checks.iter().zip(edge_idx) {
-                    msg[c][idx] = total - ext[c][idx];
+                    let e = check_start[c] + idx;
+                    msg[e] = total - ext[e];
                 }
             }
         }
