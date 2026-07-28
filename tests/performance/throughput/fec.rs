@@ -25,12 +25,14 @@ use super::{measure_throughput, minsps_from_env};
 use num_complex::Complex32 as C32;
 use orion_sdr::demodulate::demodulate_frame;
 use orion_sdr::fec::{
-    Bch, BlockInterleaver, DecodeRule, FrameMetadata, FramePacket, InterleaverKind, Ldpc, LdpcCode,
-    PnScrambler, PunctureRate, ReedSolomon, conv_encode_punctured, punctured_coded_len,
-    viterbi_decode_soft,
+    Bch, BlockInterleaver, DecodeRule, FrameMetadata, FramePacket, InnerFec, InterleaverKind, Ldpc,
+    LdpcCode, OuterFec, PnScrambler, PunctureRate, ReedSolomon, conv_encode_punctured,
+    punctured_coded_len, viterbi_decode_soft,
 };
 use orion_sdr::modulate::ofdm_frame::interleave_bits;
-use orion_sdr::modulate::{CodecCache, ConstellationOrder, McsTable, OfdmConfig, OfdmFrameMod};
+use orion_sdr::modulate::{
+    CodecCache, ConstellationOrder, Mcs, McsTable, OfdmConfig, OfdmFrameMod,
+};
 use orion_sdr::multicarrier::CarrierPlan;
 use orion_sdr::sync::OfdmPreamble;
 use std::hint::black_box;
@@ -755,14 +757,15 @@ fn construction_cost_ldpc_per_frame_vs_reused() {
     // Measurement run — always passes.
 }
 
-// ── §1.2 Full COFDM frame chain (the per-link path R3's cache lives on) ──────
+// ── §1.2 Full COFDM frame chain (the per-link path the CodecCache lives on) ──
 //
 // Measures the real `OfdmFrameMod::modulate_frame` and batch `demodulate_frame`
-// over many frames on ONE mod instance — the path where R3's per-instance
-// CodecCache amortizes code construction across frames (the modulator builds its
-// LDPC/BCH once, not per frame). "Msps" here is total frame IQ samples / wall
-// time, matching the "COFDM frame throughput" table in docs/performance.md so the
-// two are directly comparable. Correctness is asserted each pass.
+// over many frames on ONE mod instance — the path where the per-instance
+// CodecCache amortizes code construction across frames (each FEC code is built
+// once, not per frame). "Msps" is total frame IQ samples / wall time, matching
+// the "COFDM frame throughput" table in docs/performance.md. Both configs from
+// that table are covered: LDPC(n512r12)+BCH(t=8) and Convolutional r1/2 +
+// RS(60,52). Correctness is asserted each pass.
 
 const FRAME_N: usize = 64; // n_fft
 const FRAME_CP: usize = 8;
@@ -779,16 +782,15 @@ fn frame_preamble(cfg: &OfdmConfig) -> OfdmPreamble {
         .with_training_symbol(cfg.carrier_plan.n_fft(), cfg.carrier_plan.cp_len())
 }
 
-#[test]
-fn throughput_frame_chain_ldpc_bch() {
+/// Measures mod (`modulate_frame`, cache warm across frames) and batch demod
+/// (`demodulate_frame` with a persistent cache) for one concatenation, printing
+/// both Msps. `mcs_index` selects the entry from `table` to exercise.
+fn frame_chain(table: McsTable, mcs_index: u8, label: &str) {
     let cfg = frame_config();
     let pre = frame_preamble(&cfg);
-    let table = McsTable::default_ladder(); // LDPC(n512r12) + BCH(t=8), QPSK at mcs 1
     let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
     let payload = random_bytes(96, 0xF4A3);
-    let mcs_index = 1u8; // QPSK payload, matching the doc's frame table
 
-    // Modulate once to learn the frame's sample count and to exercise decode.
     let frame = FramePacket::new(FrameMetadata::new(0x2468, mcs_index), payload.clone());
     let iq = modu.modulate_frame(&frame, 0);
     let frame_samples = iq.len();
@@ -796,10 +798,9 @@ fn throughput_frame_chain_ldpc_bch() {
 
     let repeats = 200;
 
-    // Modulate path: one instance, many frames — cross-frame cache warm after
-    // the first. This is the R3 win for the TX chain. The frame and seed are
-    // black-boxed each pass so the constant-input modulation can't be hoisted,
-    // and the whole output is consumed.
+    // Modulate path: one instance, many frames — cross-frame cache warm after the
+    // first. The frame and seed are black-boxed each pass so the constant-input
+    // modulation can't be hoisted, and the whole output is consumed.
     let mut seed = 0u32;
     let (mod_msps, mod_dt) = measure_throughput(
         || {
@@ -815,17 +816,12 @@ fn throughput_frame_chain_ldpc_bch() {
         frame_samples,
         repeats,
     );
-    println!(
-        "[Frame-Chain-Mod LDPC+BCH] {:.4} Msps in {:.3}s",
-        mod_msps, mod_dt
-    );
+    println!("[Frame-Chain-Mod {label}] {mod_msps:.4} Msps in {mod_dt:.3}s");
 
     // Demodulate path: batch entry point with a caller-owned cache reused across
-    // all passes — so the FEC codes are built once and the steady-state decode
-    // throughput is measured on the SAME warm-cache footing as the modulate path
-    // above (which reuses one OfdmFrameMod). Without this the Rx loop would
-    // rebuild the ~2.7 ms LDPC every pass and the number would be dominated by
-    // construction, not decode. Asserts correctness each pass.
+    // all passes, so decode throughput is measured on the SAME warm-cache footing
+    // as the modulate path (not dominated by per-call code construction). Asserts
+    // correctness each pass.
     let demod_cache = CodecCache::new();
     let (demod_msps, demod_dt) = measure_throughput(
         || {
@@ -837,11 +833,28 @@ fn throughput_frame_chain_ldpc_bch() {
         frame_samples,
         repeats,
     );
-    println!(
-        "[Frame-Chain-Demod LDPC+BCH] {:.4} Msps in {:.3}s",
-        demod_msps, demod_dt
-    );
+    println!("[Frame-Chain-Demod {label}] {demod_msps:.4} Msps in {demod_dt:.3}s");
     // Measurement run for the doc table; floor guards gross regressions only.
     let floor = minsps_from_env(0.05);
     assert!(mod_msps >= floor && demod_msps >= floor);
+}
+
+#[test]
+fn throughput_frame_chain_ldpc_bch() {
+    // The default ladder is LDPC(n512r12)+BCH(t=8); mcs 1 is the QPSK payload.
+    frame_chain(McsTable::default_ladder(), 1, "LDPC+BCH");
+}
+
+#[test]
+fn throughput_frame_chain_conv_rs() {
+    // The DVB-style concatenation: punctured convolutional r1/2 + RS(60,52),
+    // QPSK payload — the second row of the COFDM frame-throughput table.
+    let table = McsTable::new(vec![Mcs::new(
+        ConstellationOrder::Qpsk,
+        InnerFec::Convolutional {
+            rate: PunctureRate::R1_2,
+        },
+        OuterFec::ReedSolomon { n: 60, n_parity: 8 },
+    )]);
+    frame_chain(table, 0, "Conv+RS");
 }

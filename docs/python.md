@@ -629,7 +629,95 @@ frame = sdr.build_ofdm_rx_frame(cfg, soft, bits_out)
 
 print(frame.evm_db)     # populated immediately (soft vs. ideal constellation)
 print(frame.cfo_hz)     # None until you've run ofdm_sync yourself
-print(frame.channel_mse)  # None — not computed by this release's equalizer
+print(frame.channel_mse)  # None — not computed by the equalizer
+```
+
+### COFDM frame round-trip
+
+The coded, framed COFDM link wraps the OFDM PHY: `OfdmFrameMod` serializes a
+`FramePacket` (metadata + payload bytes) with the concatenated FEC configured on
+`OfdmConfig`, and `demodulate_frame` (batch, known start) or
+`OfdmFrameStreamDemod` (streaming, unknown start) recovers it.
+
+```python
+import orion_sdr as sdr
+import numpy as np
+
+N_FFT, CP_LEN, FS = 64, 8, 48_000.0
+half = N_FFT // 2
+data = np.array(list(range(1, half)) + list(range(-(half - 1), 0)), dtype=np.int32)
+
+# Enable the concatenated FEC via the config builders (all default off).
+cfg = (
+    sdr.OfdmConfig(N_FFT, CP_LEN, data,
+                   np.zeros(0, np.int32), np.zeros(0, np.complex64),
+                   FS, 0.0, 1.0, "bpsk")
+    .with_inner_fec("ldpc", "n512r12")
+    .with_outer_fec("bch", 8)
+    .with_payload_crc("crc32")
+    .with_header_crc("crc16")
+    # Optional: opt into scaled-min-sum LDPC decoding (~2x decode, <0.3 dB cost).
+    .with_ldpc_decode_rule("scaled_min_sum", 0.75)
+)
+table = sdr.McsTable.default_ladder()   # rate-1/2 LDPC + BCH(t=8) ladder
+
+mod = sdr.OfdmFrameMod(cfg, table)
+payload = np.frombuffer(bytes((i * 37 + 11) & 0xFF for i in range(96)), dtype=np.uint8)
+frame = sdr.FramePacket(payload, sequence_num=1, mcs_index=0)
+iq = mod.modulate_frame(frame)
+
+# Batch decode: strip the preamble+training, then demodulate one frame.
+preamble = sdr.generate_ofdm_preamble(cfg, 4, 16, N_FFT, CP_LEN)
+body = iq[len(preamble):]
+got = sdr.demodulate_frame(cfg, table, body)   # pass cache=<CodecCache> to reuse codes
+assert np.array_equal(got.payload, payload)
+print(got.sequence_num, got.mcs_index)
+
+# Streaming decode (unknown start): feed raw IQ, collect completed frames.
+rx = sdr.OfdmFrameStreamDemod(cfg, table)
+for f in rx.feed(iq):
+    print(f.sequence_num, bytes(f.payload)[:8])
+```
+
+Share one set of built FEC codes across the transmitter, receiver, and batch
+calls by passing the same `sdr.CodecCache()` as the `cache=` argument to
+`OfdmFrameMod`, `OfdmFrameStreamDemod`, and `demodulate_frame`.
+
+#### Non-default FEC / interleave / scramble
+
+The round-trip above used `default_ladder()`. Split the two kinds of
+configuration: **per-frame coding** (constellation + inner/outer FEC) goes in a
+custom `McsTable` via `add(...)`, selected by `mcs_index`; **link-wide settings**
+(interleavers, scrambler, CRCs) go on the config with the string builders. The
+receiver must use the identical `cfg` and `table` — those parameters are shared
+out-of-band, with only the per-frame scrambler seed and `mcs_index` in the header.
+
+```python
+# Per-frame coding: (constellation, inner_kind, inner_code, outer_kind, a, b).
+table = sdr.McsTable()
+table.add("qpsk", "convolutional", "1/2", "rs", 60, 8)   # Conv r1/2 + RS(60,52)
+table.add("qam16", "ldpc", "n512r34", "bch", 8)          # LDPC r3/4 + BCH(t=8)
+
+cfg = (
+    sdr.OfdmConfig(N_FFT, CP_LEN, data,
+                   np.zeros(0, np.int32), np.zeros(0, np.complex64),
+                   FS, 0.0, 1.0, "bpsk")
+    .with_interleaver("outer", 4, 8)      # rows, cols (0,0 disables)
+    .with_interleaver("inner", 8, 16)
+    # Additive PN scrambler: poly, width, then a fixed seed or per_frame_random.
+    .with_scrambler(0b1001, 7, seed=0x7F, position="after_inner")
+    .with_payload_crc("crc32")
+    .with_header_crc("crc16")
+)
+cfg.validate_frame()   # raises ValueError on an inconsistent chain
+
+mod = sdr.OfdmFrameMod(cfg, table)
+frame = sdr.FramePacket(payload, sequence_num=7, mcs_index=0)  # mcs 0 = Conv+RS
+iq = mod.modulate_frame(frame)                                 # decode with same cfg/table
+
+# Per-frame-random seed: signal it in the header via modulate_frame's 2nd arg.
+cfg = cfg.with_scrambler(0b1001, 7, per_frame_random=True)
+iq = sdr.OfdmFrameMod(cfg, table).modulate_frame(frame, 0xABCD_1234)
 ```
 
 ## Notes
