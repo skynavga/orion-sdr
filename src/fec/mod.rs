@@ -28,7 +28,7 @@ pub mod interleaver;
 pub use interleaver::BlockInterleaver;
 
 pub mod ldpc_codes;
-pub use ldpc_codes::{Ldpc, LdpcCode};
+pub use ldpc_codes::{DecodeRule, Ldpc, LdpcCode};
 
 pub mod reed_solomon;
 pub use reed_solomon::{ReedSolomon, RsError};
