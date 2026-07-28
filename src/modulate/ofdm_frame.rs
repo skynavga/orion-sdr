@@ -32,6 +32,94 @@ use crate::fec::{
 use crate::multicarrier::CarrierPlan;
 use crate::sync::{OfdmPreamble, generate_ofdm_preamble};
 use num_complex::Complex32 as C32;
+use std::sync::{Arc, Mutex};
+
+/// Memoizes the constructed FEC code objects a link reuses frame after frame.
+///
+/// Constructing a code — especially [`Ldpc::new`], whose sparse parity-check
+/// build with its 4-cycle guard costs milliseconds — is a pure function of the
+/// code's parameters, so the object is identical every frame. Without this the
+/// concatenated-FEC chain rebuilt its `Ldpc`/`Bch`/`ReedSolomon` on *every*
+/// frame (encode and decode); the cache builds each once per link and hands out
+/// shared references thereafter.
+///
+/// The key spaces are tiny (a link uses one header LDPC plus the handful of
+/// codes in its MCS table), so linear-scan association lists beat a hash map
+/// here. A `Mutex` gives lazy population behind the `&self` encode/decode entry
+/// points; the cached objects are handed out as `Arc`s so callers hold them
+/// without keeping the lock across the (potentially long) encode/decode call.
+///
+/// `Send + Sync` (via `Arc`/`Mutex`) so it can live inside an `OfdmFrameMod` /
+/// `OfdmFrameStreamDemod` exposed to the PyO3 bindings, which require their
+/// pyclasses to be thread-safe. Access is a handful of uncontended lookups per
+/// frame, so the lock is effectively free. The produced codes are bit-identical
+/// to freshly constructed ones — this changes speed, never output.
+///
+/// A tiny memo map keyed by `K`, holding shared code objects `V`.
+type CodeMemo<K, V> = Mutex<Vec<(K, Arc<V>)>>;
+
+#[derive(Debug, Default)]
+pub struct CodecCache {
+    ldpc: CodeMemo<LdpcCode, Ldpc>,
+    /// Shortened-BCH keyed by `(t, msg_bits)`.
+    bch: CodeMemo<(usize, usize), Bch>,
+    /// Reed–Solomon keyed by `(n, n_parity)`.
+    rs: CodeMemo<(usize, usize), ReedSolomon>,
+}
+
+impl Clone for CodecCache {
+    /// A cloned cache starts empty rather than copying entries — cache contents
+    /// are pure derivations of the codes used, rebuilt on demand, and this keeps
+    /// `Clone` free of a lock acquisition. (Only `OfdmFrameMod` derives `Clone`;
+    /// it is not exercised on a hot path.)
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl CodecCache {
+    /// A fresh, empty cache.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the [`Ldpc`] for `code`, building and caching it on first use.
+    pub fn ldpc(&self, code: LdpcCode) -> Arc<Ldpc> {
+        let mut table = self.ldpc.lock().unwrap();
+        if let Some((_, c)) = table.iter().find(|(k, _)| *k == code) {
+            return Arc::clone(c);
+        }
+        let built = Arc::new(Ldpc::new(code));
+        table.push((code, Arc::clone(&built)));
+        built
+    }
+
+    /// Returns the shortened [`Bch`] correcting `t` errors with a `msg_bits`
+    /// message part, building and caching it on first use.
+    pub fn bch(&self, t: usize, msg_bits: usize) -> Arc<Bch> {
+        let key = (t, msg_bits);
+        let mut table = self.bch.lock().unwrap();
+        if let Some((_, c)) = table.iter().find(|(k, _)| *k == key) {
+            return Arc::clone(c);
+        }
+        let built = Arc::new(shortened_bch_for(t, msg_bits));
+        table.push((key, Arc::clone(&built)));
+        built
+    }
+
+    /// Returns the [`ReedSolomon`] code `(n, n_parity)`, building and caching it
+    /// on first use.
+    pub fn rs(&self, n: usize, n_parity: usize) -> Arc<ReedSolomon> {
+        let key = (n, n_parity);
+        let mut table = self.rs.lock().unwrap();
+        if let Some((_, c)) = table.iter().find(|(k, _)| *k == key) {
+            return Arc::clone(c);
+        }
+        let built = Arc::new(ReedSolomon::new(n, n_parity).expect("valid RS config"));
+        table.push((key, Arc::clone(&built)));
+        built
+    }
+}
 
 /// Number of header field bytes before the header CRC: `mcs_index` (1) +
 /// `payload_len` (4, big-endian) + `sequence_num` (4) + `flags` (1) +
@@ -232,7 +320,10 @@ fn round_up(n: usize, block: usize) -> usize {
     }
 }
 
-/// Computes the [`BlockPlan`] for `info_bytes` under the given coding chain.
+/// Computes the [`BlockPlan`] for `info_bytes` under the given coding chain,
+/// reusing constructed code objects from `cache` (their dimensions are all this
+/// needs, but sharing the cache avoids rebuilding them here and in the
+/// encode/decode passes).
 pub fn block_plan(
     info_bytes: usize,
     crc: CrcKind,
@@ -240,6 +331,7 @@ pub fn block_plan(
     inner: InnerFec,
     outer_il: InterleaverKind,
     inner_il: InterleaverKind,
+    cache: &CodecCache,
 ) -> BlockPlan {
     let framed_bytes = info_bytes + crc.len_bytes();
     let framed_bits = framed_bytes * 8;
@@ -247,13 +339,13 @@ pub fn block_plan(
     let outer_coded_bits = match outer {
         OuterFec::None => framed_bits,
         OuterFec::Bch { t } => {
-            let code = shortened_bch_for(t, BCH_INFO_BITS);
+            let code = cache.bch(t, BCH_INFO_BITS);
             let n_blocks = framed_bits.div_ceil(BCH_INFO_BITS);
             n_blocks * code.n()
         }
         OuterFec::ReedSolomon { n, n_parity } => {
             // Byte-domain: whole k-byte info blocks → n-byte codewords.
-            let rs = ReedSolomon::new(n, n_parity).expect("valid RS config");
+            let rs = cache.rs(n, n_parity);
             let n_blocks = framed_bytes.div_ceil(rs.k());
             n_blocks * rs.n() * 8
         }
@@ -267,7 +359,9 @@ pub fn block_plan(
     let inner_coded_bits = match inner {
         InnerFec::None => outer_il_bits,
         InnerFec::Ldpc(code) => {
-            let ldpc = Ldpc::new(code);
+            // LDPC dimensions come straight off the code point (no construction
+            // needed), but touch the cache so the object is warm for encode.
+            let ldpc = cache.ldpc(code);
             let n_blocks = outer_il_bits.div_ceil(ldpc.k());
             n_blocks * ldpc.n()
         }
@@ -310,12 +404,15 @@ pub fn interleave_bits(il: InterleaverKind, bits: &[u8]) -> Vec<u8> {
         InterleaverKind::None => bits.to_vec(),
         InterleaverKind::Block { rows, cols } => {
             let block = rows * cols;
+            let bi = crate::fec::BlockInterleaver::new(rows, cols);
             let mut out = Vec::with_capacity(bits.len().div_ceil(block) * block);
+            // Reused across chunks: the interleaver and both scratch buffers are
+            // built once instead of per chunk.
+            let mut padded = vec![0u8; block];
+            let mut permuted = vec![0u8; block];
             for chunk in bits.chunks(block) {
-                let mut padded = chunk.to_vec();
-                padded.resize(block, 0);
-                let bi = crate::fec::BlockInterleaver::new(rows, cols);
-                let mut permuted = vec![0u8; block];
+                padded[..chunk.len()].copy_from_slice(chunk);
+                padded[chunk.len()..].fill(0);
                 bi.interleave(&padded, &mut permuted);
                 out.extend_from_slice(&permuted);
             }
@@ -334,12 +431,12 @@ pub const BCH_INFO_BITS: usize = 120;
 /// [`BCH_INFO_BITS`]-bit blocks, each encoded into one shortened BCH codeword;
 /// the final block is zero-padded. `None` outer code passes the bytes through
 /// as bits.
-pub fn outer_encode(outer: OuterFec, message_bytes: &[u8]) -> Vec<u8> {
+pub fn outer_encode(outer: OuterFec, message_bytes: &[u8], cache: &CodecCache) -> Vec<u8> {
     match outer {
         OuterFec::None => bytes_to_bits(message_bytes),
         OuterFec::Bch { t } => {
             let msg_bits = bytes_to_bits(message_bytes);
-            let code = shortened_bch_for(t, BCH_INFO_BITS);
+            let code = cache.bch(t, BCH_INFO_BITS);
             let mut out = Vec::new();
             for chunk in msg_bits.chunks(BCH_INFO_BITS) {
                 let mut block = chunk.to_vec();
@@ -351,7 +448,7 @@ pub fn outer_encode(outer: OuterFec, message_bytes: &[u8]) -> Vec<u8> {
         OuterFec::ReedSolomon { n, n_parity } => {
             // RS is a byte-domain code: fragment into k-byte blocks, encode each
             // into an n-byte codeword (final block zero-padded), then emit bits.
-            let rs = ReedSolomon::new(n, n_parity).expect("valid RS config");
+            let rs = cache.rs(n, n_parity);
             let k = rs.k();
             let mut out_bytes = Vec::new();
             for chunk in message_bytes.chunks(k) {
@@ -367,11 +464,11 @@ pub fn outer_encode(outer: OuterFec, message_bytes: &[u8]) -> Vec<u8> {
 /// Encodes `info_bits` through the inner code, returning coded bits. The info
 /// bit stream is fragmented into K-bit blocks, each encoded into one N-bit
 /// codeword (final block zero-padded). `None` passes through.
-pub fn inner_encode(inner: InnerFec, info_bits: &[u8]) -> Vec<u8> {
+pub fn inner_encode(inner: InnerFec, info_bits: &[u8], cache: &CodecCache) -> Vec<u8> {
     match inner {
         InnerFec::None => info_bits.to_vec(),
         InnerFec::Ldpc(code) => {
-            let ldpc = Ldpc::new(code);
+            let ldpc = cache.ldpc(code);
             let k = ldpc.k();
             let mut out = Vec::new();
             for chunk in info_bits.chunks(k) {
@@ -410,6 +507,7 @@ pub fn encode_chain(
     scrambler: ScramblerKind,
     scrambler_pos: ScramblerPos,
     per_frame_seed: u32,
+    cache: &CodecCache,
 ) -> Vec<u8> {
     // 1. CRC over the raw bytes.
     let mut framed = append_crc(crc, bytes);
@@ -424,11 +522,11 @@ pub fn encode_chain(
 
     // 3. Outer FEC (byte → coded bits), then outer interleave (byte-domain,
     //    but we operate on bits here for a single generic interleaver).
-    let outer_bits = outer_encode(outer, &framed);
+    let outer_bits = outer_encode(outer, &framed, cache);
     let outer_il_bits = interleave_bits(outer_il, &outer_bits);
 
     // 4. Inner FEC (bits → coded bits), then inner interleave.
-    let inner_bits = inner_encode(inner, &outer_il_bits);
+    let inner_bits = inner_encode(inner, &outer_il_bits, cache);
     let mut coded = interleave_bits(inner_il, &inner_bits);
 
     // 5. Optional scramble after the inner code (bit domain).
@@ -506,17 +604,36 @@ pub struct OfdmFrameMod {
     cfg: OfdmConfig,
     mcs_table: McsTable,
     preamble: OfdmPreamble,
+    /// FEC code cache, so a stream of frames builds each code once (see
+    /// [`CodecCache`]). Held behind `Arc` so it can be shared with a paired
+    /// demodulator (TX and RX then reuse the same built codes).
+    cache: Arc<CodecCache>,
 }
 
 impl OfdmFrameMod {
     /// Creates a frame modulator over `cfg`, an `mcs_table`, and the
     /// acquisition `preamble` (which should carry a training symbol sized to
-    /// the plan for the receiver's channel estimation).
+    /// the plan for the receiver's channel estimation). The modulator owns a
+    /// fresh, private [`CodecCache`]; use [`with_cache`](Self::with_cache) to
+    /// share one with a demodulator.
     pub fn new(cfg: OfdmConfig, mcs_table: McsTable, preamble: OfdmPreamble) -> Self {
+        Self::with_cache(cfg, mcs_table, preamble, Arc::new(CodecCache::new()))
+    }
+
+    /// Like [`new`](Self::new), but reuses the caller-provided `cache` — share
+    /// one `Arc<CodecCache>` across a modulator/demodulator pair (or several
+    /// links on the same MCS) so each FEC code is constructed only once.
+    pub fn with_cache(
+        cfg: OfdmConfig,
+        mcs_table: McsTable,
+        preamble: OfdmPreamble,
+        cache: Arc<CodecCache>,
+    ) -> Self {
         Self {
             cfg,
             mcs_table,
             preamble,
+            cache,
         }
     }
 
@@ -560,6 +677,7 @@ impl OfdmFrameMod {
                 ScramblerKind::None,
                 ScramblerPos::BeforeOuterFec,
                 0,
+                &self.cache,
             );
             out.extend_from_slice(&map_bits_to_iq(
                 &self.cfg,
@@ -583,6 +701,7 @@ impl OfdmFrameMod {
             self.cfg.scrambler,
             self.cfg.scrambler_pos,
             per_frame_seed,
+            &self.cache,
         );
         out.extend_from_slice(&map_bits_to_iq(&self.cfg, mcs.constellation, &payload_bits));
 

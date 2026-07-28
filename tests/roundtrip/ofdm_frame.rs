@@ -6,8 +6,8 @@ use num_complex::Complex32 as C32;
 use orion_sdr::demodulate::{OfdmFrameStreamDemod, demodulate_frame};
 use orion_sdr::dsp::Rotator;
 use orion_sdr::fec::{
-    CrcKind, FrameMetadata, FramePacket, HeaderFormat, InnerFec, InterleaverKind, OuterFec,
-    ScramblerKind, ScramblerPos, SeedMode,
+    CrcKind, DecodeRule, FrameMetadata, FramePacket, HeaderFormat, InnerFec, InterleaverKind,
+    OuterFec, ScramblerKind, ScramblerPos, SeedMode,
 };
 use orion_sdr::modulate::{ConstellationOrder, McsTable, OfdmConfig, OfdmFrameMod};
 use orion_sdr::sync::OfdmPreamble;
@@ -52,7 +52,7 @@ fn roundtrip_frame_noiseless_ldpc_bch() {
         );
         let iq = modu.modulate_frame(&frame, 0);
         let body = strip_preamble(&cfg, modu.preamble(), &iq);
-        let got = demodulate_frame(&cfg, &table, &body).expect("decode");
+        let got = demodulate_frame(&cfg, &table, &body, None).expect("decode");
         assert_eq!(got.payload, payload, "mcs {mcs_index}: payload");
         assert_eq!(got.metadata.mcs_index, mcs_index);
         assert_eq!(got.metadata.sequence_num, 0x1234_5678 + mcs_index as u32);
@@ -76,7 +76,28 @@ fn roundtrip_frame_awgn() {
     let mut body = strip_preamble(&cfg, modu.preamble(), &iq);
     let sig_power: f32 = body.iter().map(|s| s.norm_sqr()).sum::<f32>() / body.len() as f32;
     add_awgn(&mut body, sig_power * 0.10, 0xC0FFEE);
-    let got = demodulate_frame(&cfg, &table, &body).expect("decode under AWGN");
+    let got = demodulate_frame(&cfg, &table, &body, None).expect("decode under AWGN");
+    assert_eq!(got.payload, payload);
+}
+
+#[test]
+fn roundtrip_frame_awgn_scaled_min_sum() {
+    // The opt-in scaled-min-sum LDPC decode rule must recover the same payload
+    // through the full COFDM frame decoder. The payload honors the configured
+    // rule; the header always uses sum-product (decoded before the rule matters
+    // for robustness). Same modest AWGN as `roundtrip_frame_awgn`.
+    let cfg = plan_config().with_ldpc_decode_rule(DecodeRule::ScaledMinSum(0.75));
+    let pre = preamble(&cfg);
+    let table = McsTable::default_ladder();
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+
+    let payload = sample_payload(32);
+    let frame = FramePacket::new(FrameMetadata::new(9, 0), payload.clone());
+    let iq = modu.modulate_frame(&frame, 0);
+    let mut body = strip_preamble(&cfg, modu.preamble(), &iq);
+    let sig_power: f32 = body.iter().map(|s| s.norm_sqr()).sum::<f32>() / body.len() as f32;
+    add_awgn(&mut body, sig_power * 0.10, 0xC0FFEE);
+    let got = demodulate_frame(&cfg, &table, &body, None).expect("min-sum decode under AWGN");
     assert_eq!(got.payload, payload);
 }
 
@@ -94,7 +115,7 @@ fn frame_header_crc_catches_corruption() {
     for s in body.iter_mut().take(200) {
         *s = C32::new(-s.re, -s.im);
     }
-    let res = demodulate_frame(&cfg, &table, &body);
+    let res = demodulate_frame(&cfg, &table, &body, None);
     assert!(
         res.is_err(),
         "corrupted header must not decode to a valid frame"
@@ -111,7 +132,7 @@ fn roundtrip_frame_no_header_rejected_by_batch() {
     let frame = FramePacket::new(FrameMetadata::new(1, 0), sample_payload(8));
     let iq = modu.modulate_frame(&frame, 0);
     let body = strip_preamble(&cfg, modu.preamble(), &iq);
-    assert!(demodulate_frame(&cfg, &table, &body).is_err());
+    assert!(demodulate_frame(&cfg, &table, &body, None).is_err());
 }
 
 #[test]
@@ -131,7 +152,7 @@ fn roundtrip_frame_scrambler_positions() {
         let frame = FramePacket::new(FrameMetadata::new(2, 0), payload.clone());
         let iq = modu.modulate_frame(&frame, 0);
         let body = strip_preamble(&cfg, modu.preamble(), &iq);
-        let got = demodulate_frame(&cfg, &table, &body).expect("decode with scrambler");
+        let got = demodulate_frame(&cfg, &table, &body, None).expect("decode with scrambler");
         assert_eq!(got.payload, payload, "scrambler pos {pos:?}");
     }
 }
@@ -151,7 +172,7 @@ fn roundtrip_frame_per_frame_random_seed() {
     let seed = 0xABCD_1234u32;
     let iq = modu.modulate_frame(&frame, seed);
     let body = strip_preamble(&cfg, modu.preamble(), &iq);
-    let got = demodulate_frame(&cfg, &table, &body).expect("decode with per-frame seed");
+    let got = demodulate_frame(&cfg, &table, &body, None).expect("decode with per-frame seed");
     assert_eq!(got.payload, payload);
 }
 
@@ -167,7 +188,7 @@ fn roundtrip_frame_with_interleavers() {
     let frame = FramePacket::new(FrameMetadata::new(4, 1), payload.clone());
     let iq = modu.modulate_frame(&frame, 0);
     let body = strip_preamble(&cfg, modu.preamble(), &iq);
-    let got = demodulate_frame(&cfg, &table, &body).expect("decode with interleavers");
+    let got = demodulate_frame(&cfg, &table, &body, None).expect("decode with interleavers");
     assert_eq!(got.payload, payload);
 }
 
@@ -186,7 +207,7 @@ fn roundtrip_frame_no_fec_no_crc() {
     let frame = FramePacket::new(FrameMetadata::new(5, 0), payload.clone());
     let iq = modu.modulate_frame(&frame, 0);
     let body = strip_preamble(&cfg, modu.preamble(), &iq);
-    let got = demodulate_frame(&cfg, &table, &body).expect("decode bare frame");
+    let got = demodulate_frame(&cfg, &table, &body, None).expect("decode bare frame");
     assert_eq!(got.payload, payload);
 }
 
@@ -436,7 +457,7 @@ fn roundtrip_frame_rs_convolutional() {
         );
         let iq = modu.modulate_frame(&frame, 0);
         let body = strip_preamble(&cfg, modu.preamble(), &iq);
-        let got = demodulate_frame(&cfg, &table, &body).expect("RS+conv decode");
+        let got = demodulate_frame(&cfg, &table, &body, None).expect("RS+conv decode");
         assert_eq!(got.payload, payload, "mcs {mcs_index}: RS+conv payload");
     }
 }
@@ -463,7 +484,7 @@ fn roundtrip_frame_rs_convolutional_awgn() {
     let mut body = strip_preamble(&cfg, modu.preamble(), &iq);
     let sig_power: f32 = body.iter().map(|s| s.norm_sqr()).sum::<f32>() / body.len() as f32;
     add_awgn(&mut body, sig_power * 0.06, 0xBADC0DE);
-    let got = demodulate_frame(&cfg, &table, &body).expect("RS+conv AWGN decode");
+    let got = demodulate_frame(&cfg, &table, &body, None).expect("RS+conv AWGN decode");
     assert_eq!(got.payload, payload);
 }
 
@@ -511,7 +532,7 @@ fn roundtrip_frame_qam16_rs_conv_noiseless() {
     let frame = FramePacket::new(FrameMetadata::new(200, 0), payload.clone());
     let iq = modu.modulate_frame(&frame, 0);
     let body = strip_preamble(&cfg, modu.preamble(), &iq);
-    let got = demodulate_frame(&cfg, &table, &body).expect("QAM-16 RS+conv noiseless decode");
+    let got = demodulate_frame(&cfg, &table, &body, None).expect("QAM-16 RS+conv noiseless decode");
     assert_eq!(got.payload, payload);
 }
 
@@ -529,7 +550,7 @@ fn roundtrip_frame_qam16_rs_conv_awgn() {
     let sig_power: f32 = body.iter().map(|s| s.norm_sqr()).sum::<f32>() / body.len() as f32;
     // QAM-16 has denser constellation points than QPSK, so a lower noise level.
     add_awgn(&mut body, sig_power * 0.04, 0x1CE_C0DE);
-    let got = demodulate_frame(&cfg, &table, &body).expect("QAM-16 RS+conv AWGN decode");
+    let got = demodulate_frame(&cfg, &table, &body, None).expect("QAM-16 RS+conv AWGN decode");
     assert_eq!(got.payload, payload);
 }
 

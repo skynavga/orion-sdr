@@ -9,7 +9,7 @@ Measurements taken on Apple M2 Pro, release build (`opt-level=3`, `lto=fat`,
 `codegen-units=1`), no SIMD.  Results are ordered by throughput (descending)
 within each table.
 
-## v0.0.44 Results
+## v0.0.45 Results
 
 ### Analog modes (65536 samples × 30 passes)
 
@@ -244,17 +244,27 @@ encode → interleave → map → preamble/header) and `demodulate_frame` (soft-
 → deinterleave → concatenated FEC decode → CRC). Two concatenations are shown.
 "Msps" is total frame samples / wall time.
 
+Both paths reuse a warm per-link `CodecCache` across the measured frames (the
+modulator holds one; the batch demodulator is driven with a persistent
+caller-owned cache), so the figures are steady-state and not dominated by
+per-frame FEC-code construction. Warm-run steady-state numbers.
+
 | Config | mod Msps | demod Msps | frame samples |
 | --- | ---: | ---: | ---: |
-| LDPC(n512r12) + BCH(t=8) | 0.5 | 0.2 | 2584 |
-| Convolutional r1/2 + RS(60,52) | 0.7 | 0.4 | 1936 |
+| LDPC(n512r12) + BCH(t=8) | ~87 | ~58 | 2584 |
+| Convolutional r1/2 + RS(60,52) | ~97 | ~29 | 1936 |
 
-Throughput is two-to-three orders of magnitude below the bare OFDM PHY (164
-Msps roundtrip above) because per-frame FEC dominates: the LDPC sum-product
-decoder runs up to 50 belief-propagation iterations per codeword, and the
-convolutional path runs a full-block soft Viterbi. This is decode-side cost —
-`modulate` is consistently ~2× faster than `demodulate`. Larger payloads
-amortize the fixed preamble/header overhead but not the per-codeword decode.
+Decode is the limiting side of both concatenations, but for different reasons.
+The LDPC+BCH demodulator (~58 Msps) runs the sum-product decoder, whose per-edge
+message storage is a flat contiguous buffer and whose check-node update caches
+`tanh(msg/2)` per edge — so its cost is the belief-propagation iteration itself,
+not memory or transcendental overhead. The Conv+RS demodulator (~29 Msps) is
+slower because the punctured convolutional inner code runs a full-block soft
+Viterbi over the whole payload every frame, which the LDPC path's per-codeword
+belief propagation and the shared code cache do not lighten. Both are far above
+the per-frame FEC-*construction* cost, which the `CodecCache` removes entirely
+(see "Per-frame code-object construction cost" below). Larger payloads amortize
+the fixed preamble/header overhead but not the per-codeword decode.
 
 ### COFDM frame-error-rate vs. noise scale (n_fft=64, cp_len=8, QPSK payload, 100 trials/point, flat channel)
 
@@ -281,6 +291,157 @@ errors are all-or-nothing per the payload CRC, so FER rises steeply once the
 inner code can no longer clear the channel — characteristic of a coded packet
 link, unlike the smooth uncoded BER curves.)
 
+## COFDM FEC block throughput
+
+Per-block benchmarks for the individual channel-coding blocks (`throughput::fec`),
+measured on Apple M2 Pro, release build, `--test-threads=1`, 200 passes/point.
+**"Msps" in this section = information bits processed per second** (before coding on
+Tx, after decoding on Rx) — comparable across code rates, and NOT the sample-domain
+figure used elsewhere in this doc. Numbers are warm-run steady-state; the first run
+of each fixture is a cold-cache outlier and is discarded.
+
+### Per-block, single direction
+
+| Block | Variant | Tx Msps | Rx Msps |
+| --- | --- | ---: | ---: |
+| LDPC | N512R12 (rate 1/2) | 457 | ~24 |
+| LDPC | N576R23 (rate 2/3) | 577 | ~25 |
+| LDPC | N512R34 (rate 3/4) | 640 | ~11 |
+| Convolutional | rate 1/2 | 610 | 27.1 |
+| Convolutional | rate 2/3 | 347 | 27.3 |
+| Convolutional | rate 3/4 | 384 | 26.1 |
+| Convolutional | rate 5/6 | 345 | 28.4 |
+| Convolutional | rate 7/8 | 328 | 28.8 |
+| BCH | t=8 | 99.6 | 27.1 |
+| Reed–Solomon | RS(204,188) | 799 | 165 |
+| Reed–Solomon | RS(60,52) | 1126 | 140 |
+| Interleaver | u8, 32×32 (kernel) | 5088 | 6083 |
+| Interleaver | f32, 32×32 (kernel) | 4668 | 7042 |
+| Interleave-Bits | chain driver, 8+ blocks | ~1700 | — |
+| Scrambler | width 7 / 15 / 32 | 196 / 198 / 202 | (self-inverse) |
+
+Decode is the limiting direction for every code: the algebraic Berlekamp–Massey and
+the LDPC belief propagation cost far more than the systematic encoders. `LDPC-Decode
+N512R34` is the slowest block (~11 Msps) — the rate-3/4 code's denser checks and
+tighter error margin run the most belief-propagation work per information bit.
+
+**LDPC decoder structure.** The sum-product decoder stores its per-edge messages in a
+flat contiguous buffer with a `check_start` offset table (a compressed-sparse-row
+layout), so the check- and variable-node loops walk contiguous memory rather than a
+jagged `Vec<Vec<f32>>`; and its check-node update caches `tanh(msg/2)` once per edge
+per iteration instead of recomputing the transcendental inside every leave-one-out
+product (an O(deg²)→O(deg) reduction). The Tanner-graph edge indices are precomputed
+at construction, so the inner loops index the message arrays directly with no
+per-iteration search. Together these keep the decode cost at the belief-propagation
+iteration itself; the densest, most-iterating code benefits most.
+
+**Interleaver / scrambler.** The `BlockInterleaver` kernels are memory-bandwidth-bound
+(thousands of Msps). The chain-driver `interleave_bits` (which fragments into blocks,
+pads, and permutes) builds its interleaver and scratch buffers once per call rather
+than per block — the `Interleave-Bits chain` row measures that path, since the default
+MCS uses no interleaver and so the frame chain does not exercise it. The scrambler is
+an additive LFSR whitener; its throughput is set by the per-byte `count_ones` feedback
+advance.
+
+### Paired forward→inverse roundtrip (correctness asserted each pass)
+
+| Roundtrip | Variant | Msps |
+| --- | --- | ---: |
+| LDPC enc→dec | N512R12 | 207 |
+| LDPC enc→dec | N576R23 | 253 |
+| LDPC enc→dec | N512R34 | 282 |
+| Conv enc→dec | rate 1/2 | 25.1 |
+| Conv enc→dec | rate 2/3…7/8 | 24.3–25.4 |
+| BCH enc→dec (t errors) | t=8 | 21.9 |
+| RS enc→dec (t errors) | RS(204,188) | 141 |
+| RS enc→dec (t errors) | RS(60,52) | 128 |
+| Interleaver round trip | u8/f32 32×32 | 1533 (f32) |
+| Scrambler round trip | width 32 | (see per-block) |
+
+The LDPC roundtrip runs faster than the standalone `LDPC-Decode` block because it
+feeds clean codewords: belief propagation converges on the initial syndrome check and
+exits, whereas the standalone decode fixture injects soft errors to force realistic
+iteration. The two measure different, deliberately chosen decoder workloads.
+
+### LDPC decode rule: sum-product vs. min-sum
+
+The LDPC inner decoder's check-node rule is selectable via
+`OfdmConfig::with_ldpc_decode_rule` (`DecodeRule::SumProduct` / `MinSum` /
+`ScaledMinSum(α)`); sum-product is the default. Min-sum replaces the transcendental
+tanh product with `∏sign · min|msg|`, trading a little coding gain for a cheaper
+update. **Speed** (`throughput::fec` `throughput_ldpc_decode_rules`, error-injected
+fixture, warm steady-state Msps):
+
+| Code | sum-product | min-sum | scaled-min-sum(0.75) |
+| --- | ---: | ---: | ---: |
+| N512R12 | ~8.4 | ~14.9 (1.8×) | ~12.6 (1.5×) |
+| N576R23 | ~12.3 | ~21.3 (1.7×) | ~21.7 (1.8×) |
+| N512R34 | ~7.4 | ~17.8 (2.4×) | ~19.0 (2.6×) |
+
+Min-sum runs ~1.7–2.6× faster, and the densest/most-iterating code (`N512R34`) gains
+most. **Coding gain** (`snr::ldpc_decode_rule`, BPSK-over-AWGN on the codeword, 200
+trials/point, mean post-decode BER; all rules see the identical noise realization):
+
+| Es/N0 (dB) | N512R12 SP | MS | SMS(0.75) | N512R34 SP | MS | SMS(0.75) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| −2.5 | 0.070 | 0.086 | 0.074 | 0.143 | 0.160 | 0.152 |
+| −2.0 | 0.033 | 0.041 | 0.040 | 0.128 | 0.145 | 0.137 |
+| −1.5 | 0.015 | 0.019 | 0.020 | 0.114 | 0.130 | 0.123 |
+| −1.0 | 0.0036 | 0.0043 | 0.0061 | 0.100 | 0.114 | 0.108 |
+| 0.0 | 0.0002 | 0.0001 | 0.0002 | 0.060 | 0.073 | 0.065 |
+
+Reading the waterfall's horizontal (dB) shift at matched BER: plain min-sum costs
+~0.3–0.5 dB of coding gain, while scaled-min-sum(0.75) recovers most of it — within
+~0.15–0.3 dB of sum-product across the slope (closest on the denser `N512R34`). So
+scaled-min-sum buys ~2× decode speed for a sub-0.3-dB penalty. It is an opt-in choice
+on the payload decode; the header always decodes with sum-product, and sum-product is
+the on-air default.
+
+### Per-frame code-object construction cost
+
+Constructing a code — `Ldpc::new` above all — would otherwise be the dominant
+per-frame FEC cost. The per-link `CodecCache` builds each `Ldpc`/`Bch`/`ReedSolomon`
+once and reuses it across every frame, and `Bch`/`ReedSolomon` share a single process-
+wide `Gf256` rather than rebuilding its log/antilog tables per construction. These
+microbenchmarks measure construction in isolation.
+
+| Construction | Cost | Notes |
+| --- | ---: | --- |
+| `Ldpc::new(N512R12)` | ~2.7 ms | sparse-H build + HashSet 4-cycle guard; three orders of magnitude above the algebraic codes |
+| `Bch::new(t=8)` | ~3.1 µs (0.32 Mc/s) | dominated by generator-polynomial conjugacy-class LCMs |
+| `ReedSolomon::dvb()` | ~0.41 µs (2.4–2.6 Mc/s) | 2t linear-factor multiplies over the shared `Gf256` |
+| LDPC ×64 frames, built once & reused | **~5000×** vs. rebuilding each frame | the amortized behavior the `CodecCache` delivers |
+
+`Ldpc::new`'s ~2.7 ms is why per-frame reconstruction is untenable: the cache turns it
+into a one-time per-link cost. "Mc/s" = millions of constructions per second.
+
+### Full COFDM frame chain
+
+The end-to-end per-link path: `OfdmFrameMod::modulate_frame` and batch
+`demodulate_frame` over many frames on one modulator instance (n_fft=64, cp_len=8,
+QPSK payload, 96-byte payload), for both concatenations. "Msps" = frame IQ samples /
+wall time, directly comparable to the "COFDM frame throughput" table above. Both paths
+reuse a warm `CodecCache` across the measured frames — the modulator holds one, and
+the batch demodulator is driven with a persistent caller-owned cache
+(`demodulate_frame`'s optional `cache` argument) — so both directions measure
+steady-state, codes-warm throughput, not per-frame code construction.
+
+| Config | mod Msps | demod Msps |
+| --- | ---: | ---: |
+| LDPC(n512r12) + BCH(t=8) | ~87 | ~58 |
+| Convolutional r1/2 + RS(60,52) | ~97 | ~29 |
+
+The modulate figure uses a per-pass-varying seed and consumes the whole output, so it
+is not constant-folded. The demodulate figure runs on a noiseless roundtrip: each
+LDPC codeword arrives already valid, so the sum-product decoder exits on its initial
+syndrome check without entering the belief-propagation loop — this measures the
+frame-chain plumbing (soft-demap, deinterleave, syndrome check, CRC) with the cache
+warm, not the worst-case iteration count. For decode-kernel cost under real error
+loads, see the isolated, error-injected `LDPC-Decode` fixtures above. The Conv+RS
+demodulator is slower because its convolutional inner code runs a full-block soft
+Viterbi over the whole payload every frame — work the LDPC path's per-codeword belief
+propagation and shared code cache do not lighten.
+
 ## Running the Benchmarks
 
 ```bash
@@ -306,6 +467,12 @@ cargo test --release --features throughput "throughput::ofdm" -- --nocapture --t
 cargo test --release --features throughput "throughput::multicarrier" -- --nocapture --test-threads=1
 ```
 
+To run only the COFDM FEC/interleave/scrambler block benchmarks:
+
+```bash
+cargo test --release --features throughput "throughput::fec" -- --nocapture --test-threads=1
+```
+
 To run the SNR sensitivity / acquisition-probability sweeps (prints full
 curves, always passes — these are measurement runs, not assertions):
 
@@ -317,6 +484,12 @@ To run just the OFDM SNR/acquisition sweeps:
 
 ```bash
 cargo test --release --features throughput "snr::ofdm" -- --nocapture --test-threads=1
+```
+
+To run the LDPC decode-rule (min-sum) coding-gain sweep:
+
+```bash
+cargo test --release --features throughput "snr::ldpc_decode_rule" -- --nocapture --test-threads=1
 ```
 
 To run the CI SNR regression tests (fixed thresholds, part of the default

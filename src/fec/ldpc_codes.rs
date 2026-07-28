@@ -83,6 +83,27 @@ impl LdpcCode {
     }
 }
 
+/// The check-node update rule for [`Ldpc::decode_soft_with`].
+///
+/// [`SumProduct`](DecodeRule::SumProduct) is the exact belief-propagation rule
+/// (`2·atanh(∏ tanh(msg/2))`) and the default everywhere — on-air decode uses it
+/// unless a caller explicitly opts into a min-sum variant. The min-sum rules
+/// approximate the check-node update by its dominant term (`∏sign · min|msg|`),
+/// trading a small coding-gain loss for a cheaper, transcendental-free update;
+/// [`ScaledMinSum`](DecodeRule::ScaledMinSum) attenuates the min-sum message by a
+/// factor (~0.75–0.8 recovers most of the gap). This enum exists to *measure*
+/// that trade (see the `snr::ldpc_decode_rule` sweep and the `throughput::fec`
+/// LDPC benchmarks); it is not wired into the frame layer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DecodeRule {
+    /// Exact sum-product (tanh product rule). The default.
+    SumProduct,
+    /// Min-sum approximation: `ext = ∏sign(other) · min|other|`.
+    MinSum,
+    /// Scaled (attenuated) min-sum: min-sum message multiplied by this factor.
+    ScaledMinSum(f32),
+}
+
 /// A constructed LDPC code: sparse parity-check incidence plus the dimensions
 /// needed to encode and decode.
 #[derive(Debug, Clone)]
@@ -99,6 +120,13 @@ pub struct Ldpc {
     check_bits: Vec<Vec<usize>>,
     /// bit → check incidence over all M rows. Length N.
     bit_checks: Vec<Vec<usize>>,
+    /// Parallel to `bit_checks`: `bit_check_edge_idx[bit][j]` is the position of
+    /// `bit` within `check_bits[bit_checks[bit][j]]`. Precomputed once so the
+    /// per-iteration variable-node loops in `decode_soft` index the parallel
+    /// `msg`/`ext` edge arrays directly, instead of a linear `position()` scan of
+    /// the check's bit list on every edge, every iteration. Pure function of the
+    /// graph — bit-exact, decode output unchanged.
+    bit_check_edge_idx: Vec<Vec<usize>>,
 }
 
 impl Ldpc {
@@ -218,6 +246,27 @@ impl Ldpc {
             }
         }
 
+        // Precompute each edge's index into its check's bit list, so the decoder
+        // never does a `position()` scan in its inner loops. For bit `b` and its
+        // j-th incident check `c = bit_checks[b][j]`, store the position of `b`
+        // within `check_bits[c]`. Every bit appears exactly once in each of its
+        // checks, so the lookup is total.
+        let bit_check_edge_idx: Vec<Vec<usize>> = bit_checks
+            .iter()
+            .enumerate()
+            .map(|(b, checks)| {
+                checks
+                    .iter()
+                    .map(|&c| {
+                        check_bits[c]
+                            .iter()
+                            .position(|&x| x == b)
+                            .expect("bit is incident to its check")
+                    })
+                    .collect()
+            })
+            .collect();
+
         Self {
             code,
             n,
@@ -226,6 +275,7 @@ impl Ldpc {
             msg_col_rows,
             check_bits,
             bit_checks,
+            bit_check_edge_idx,
         }
     }
 
@@ -299,7 +349,26 @@ impl Ldpc {
     /// `max_iter` — maximum belief-propagation iterations.
     /// Returns the recovered `K`-bit message and the residual unsatisfied-check
     /// count (0 ⇒ a valid codeword was reached).
+    ///
+    /// This is the on-air decoder: it uses the exact sum-product check-node rule.
+    /// [`decode_soft_with`](Self::decode_soft_with) selects a [`DecodeRule`] for
+    /// the min-sum investigation; `decode_soft` is `decode_soft_with(…,
+    /// SumProduct)` and its output is unchanged by that refactor.
     pub fn decode_soft(&self, llr: &[f32], max_iter: usize) -> (Vec<u8>, usize) {
+        self.decode_soft_with(llr, max_iter, DecodeRule::SumProduct)
+    }
+
+    /// [`decode_soft`](Self::decode_soft) with a selectable check-node
+    /// [`DecodeRule`]. Only the check-node update differs between rules; the
+    /// variable-node update, syndrome checks, best-snapshot tracking, and
+    /// early-exit are identical. `SumProduct` is bit-identical to `decode_soft`
+    /// before this knob existed.
+    pub fn decode_soft_with(
+        &self,
+        llr: &[f32],
+        max_iter: usize,
+        rule: DecodeRule,
+    ) -> (Vec<u8>, usize) {
         assert_eq!(llr.len(), self.n, "LDPC LLR slice must be N long");
 
         let mut hard = vec![0u8; self.n];
@@ -311,18 +380,35 @@ impl Ldpc {
             return (hard[..self.k].to_vec(), 0);
         }
 
-        // Edge messages, keyed by (check, bit) via the incidence lists. We store
-        // per-check variable→check messages `m[check][idx]` and check→variable
-        // messages `e[check][idx]`, where `idx` indexes into check_bits[check].
-        let mut msg: Vec<Vec<f32>> = self
-            .check_bits
-            .iter()
-            .map(|bits| bits.iter().map(|&b| llr[b]).collect())
-            .collect();
-        let mut ext: Vec<Vec<f32>> = self.check_bits.iter().map(|b| vec![0.0; b.len()]).collect();
+        // Edge messages in a flat CSR layout: one contiguous buffer over all
+        // edges, with `check_start[c]..check_start[c+1]` the slice for check `c`
+        // (parallel to `check_bits[c]`). This replaces the jagged
+        // `Vec<Vec<f32>>` — one allocation and one pointer-chase-free scan per
+        // check — while indexing identically (`msg[c][i]` → `msg[check_start[c]
+        // + i]`). Bit-exact: same values, same order.
+        let n_edges: usize = self.check_bits.iter().map(Vec::len).sum();
+        let mut check_start = vec![0usize; self.m + 1];
+        for (c, bits) in self.check_bits.iter().enumerate() {
+            check_start[c + 1] = check_start[c] + bits.len();
+        }
+        let mut msg = vec![0.0f32; n_edges];
+        for (c, bits) in self.check_bits.iter().enumerate() {
+            let base = check_start[c];
+            for (i, &b) in bits.iter().enumerate() {
+                msg[base + i] = llr[b];
+            }
+        }
+        let mut ext = vec![0.0f32; n_edges];
 
         let mut min_unsat = init_unsat;
         let mut best = hard.clone();
+
+        // Reusable per-check scratch for `tanh(msg/2)` of each incident edge,
+        // sized to the largest check degree so the check-node loop below computes
+        // each edge's `fast_tanh` once per iteration instead of once per
+        // leave-one-out product (an O(deg²)→O(deg) transcendental saving).
+        let max_deg = self.check_bits.iter().map(Vec::len).max().unwrap_or(0);
+        let mut tanh_half = vec![0.0f32; max_deg];
 
         for _iter in 0..max_iter {
             // Check-node update (tanh product rule):
@@ -333,35 +419,93 @@ impl Ldpc {
             // code's checks have mixed degrees (4 and 5).
             for (c, bits) in self.check_bits.iter().enumerate() {
                 let deg = bits.len();
-                // `i1`/`i2` index the parallel per-edge `msg`/`ext` arrays; the
-                // leave-one-out product needs both indices, so this stays a
-                // range loop (same pattern as `codec::ldpc`'s BP decoder).
-                #[allow(clippy::needless_range_loop)]
-                for i1 in 0..deg {
-                    let mut prod = 1.0f32;
-                    for (i2, _) in bits.iter().enumerate() {
-                        if i2 != i1 {
-                            prod *= fast_tanh(msg[c][i2] / 2.0);
+                let base = check_start[c];
+                let msg_c = &msg[base..base + deg];
+                let ext_c = &mut ext[base..base + deg];
+                match rule {
+                    DecodeRule::SumProduct => {
+                        // Cache `tanh(msg/2)` per incident edge once, so the
+                        // leave-one-out products below read it instead of
+                        // recomputing `fast_tanh` for every (i1, i2) pair.
+                        // `tanh_half[i2]` here is bit-identical to the
+                        // `fast_tanh(msg[c][i2] / 2.0)` the product used before, and
+                        // the products still multiply in the same index order — so
+                        // the float result is unchanged, only the transcendental
+                        // count drops.
+                        for j in 0..deg {
+                            tanh_half[j] = fast_tanh(msg_c[j] / 2.0);
+                        }
+                        // `i1`/`i2` index the parallel per-edge `msg`/`ext` arrays;
+                        // the leave-one-out product needs both indices, so this
+                        // stays a range loop (same pattern as `codec::ldpc`'s BP
+                        // decoder).
+                        #[allow(clippy::needless_range_loop)]
+                        for i1 in 0..deg {
+                            let mut prod = 1.0f32;
+                            for i2 in 0..deg {
+                                if i2 != i1 {
+                                    prod *= tanh_half[i2];
+                                }
+                            }
+                            // Clamp before `fast_atanh`: `fast_tanh` can overshoot
+                            // slightly above 1.0 near its cutoff, so a high-degree
+                            // product could exceed 1.0 and cross `fast_atanh`'s pole
+                            // (~1.1035), injecting a huge wrong-signed message. The
+                            // true tanh product is always within [-1, 1], so this
+                            // clamp only removes the approximation's overshoot —
+                            // harmless for the current codes (max product ~1.07 <
+                            // pole) and a hard safety guard for any denser code.
+                            ext_c[i1] = 2.0 * fast_atanh(prod.clamp(-1.0, 1.0));
                         }
                     }
-                    // Clamp before `fast_atanh`: `fast_tanh` can overshoot
-                    // slightly above 1.0 near its cutoff, so a high-degree
-                    // product could exceed 1.0 and cross `fast_atanh`'s pole
-                    // (~1.1035), injecting a huge wrong-signed message. The true
-                    // tanh product is always within [-1, 1], so this clamp only
-                    // removes the approximation's overshoot — harmless for the
-                    // current codes (max product ~1.07 < pole) and a hard
-                    // safety guard for any denser code added later.
-                    ext[c][i1] = 2.0 * fast_atanh(prod.clamp(-1.0, 1.0));
+                    DecodeRule::MinSum | DecodeRule::ScaledMinSum(_) => {
+                        // Min-sum: the check→bit message is the product of the
+                        // *other* edges' signs times the *minimum* of their
+                        // magnitudes. Computed leave-one-out via the two smallest
+                        // magnitudes over the whole check plus the total sign
+                        // parity, so each edge is O(1) after an O(deg) pass.
+                        let scale = match rule {
+                            DecodeRule::ScaledMinSum(a) => a,
+                            _ => 1.0,
+                        };
+                        let mut min1 = f32::INFINITY; // smallest |msg|
+                        let mut min2 = f32::INFINITY; // second smallest |msg|
+                        let mut argmin = 0usize; // index of the smallest
+                        let mut sign_parity = 1.0f32; // ∏ sign over all edges
+                        for (j, &v) in msg_c.iter().enumerate() {
+                            if v < 0.0 {
+                                sign_parity = -sign_parity;
+                            }
+                            let a = v.abs();
+                            if a < min1 {
+                                min2 = min1;
+                                min1 = a;
+                                argmin = j;
+                            } else if a < min2 {
+                                min2 = a;
+                            }
+                        }
+                        for i1 in 0..deg {
+                            // Leave-one-out: exclude edge i1 from both the sign
+                            // product and the magnitude min.
+                            let s_other = if msg_c[i1] < 0.0 {
+                                -sign_parity
+                            } else {
+                                sign_parity
+                            };
+                            let mag = if i1 == argmin { min2 } else { min1 };
+                            ext_c[i1] = scale * s_other * mag;
+                        }
+                    }
                 }
             }
 
             // Variable-node hard decision from channel LLR + all incoming ext.
             for (bit, checks) in self.bit_checks.iter().enumerate() {
+                let edge_idx = &self.bit_check_edge_idx[bit];
                 let mut l = llr[bit];
-                for &c in checks {
-                    let idx = self.check_bits[c].iter().position(|&b| b == bit).unwrap();
-                    l += ext[c][idx];
+                for (&c, &idx) in checks.iter().zip(edge_idx) {
+                    l += ext[check_start[c] + idx];
                 }
                 hard[bit] = u8::from(l <= 0.0);
             }
@@ -378,17 +522,16 @@ impl Ldpc {
             // Variable→check update: message on edge (c, bit) excludes c's own
             // extrinsic contribution.
             for (bit, checks) in self.bit_checks.iter().enumerate() {
+                let edge_idx = &self.bit_check_edge_idx[bit];
                 let total: f32 = llr[bit]
                     + checks
                         .iter()
-                        .map(|&c| {
-                            let idx = self.check_bits[c].iter().position(|&b| b == bit).unwrap();
-                            ext[c][idx]
-                        })
+                        .zip(edge_idx)
+                        .map(|(&c, &idx)| ext[check_start[c] + idx])
                         .sum::<f32>();
-                for &c in checks {
-                    let idx = self.check_bits[c].iter().position(|&b| b == bit).unwrap();
-                    msg[c][idx] = total - ext[c][idx];
+                for (&c, &idx) in checks.iter().zip(edge_idx) {
+                    let e = check_start[c] + idx;
+                    msg[e] = total - ext[e];
                 }
             }
         }

@@ -302,3 +302,134 @@ flow and would silently truncate the IFFT+CP's rate expansion.
 Prepend a packet-sync preamble with `generate_ofdm_preamble` (see
 [demodulate.md](demodulate.md#ofdm-packet-sync--cfo-acquisition)) when the
 receiver doesn't already know the packet start time and carrier offset.
+
+## COFDM Frame Modulator
+
+`OfdmFrameMod` builds on the OFDM PHY to serialize a whole `FramePacket`
+(metadata + opaque payload bytes) into a flat IQ stream —
+`[preamble + training][header][payload]` — applying the concatenated FEC chain
+configured on `OfdmConfig` and selected per frame by an `McsTable`. The FEC
+stages (CRC, outer + inner code, two interleavers, PN scrambler) all default
+off and are enabled with `with_*` builders; see [ofdm.md](ofdm.md) for the chain
+order and design conventions.
+
+```rust
+use orion_sdr::{
+    fec::{FrameMetadata, FramePacket},
+    modulate::{ConstellationOrder, OfdmConfig, OfdmFrameMod, McsTable},
+    multicarrier::CarrierPlan,
+    sync::OfdmPreamble,
+};
+
+let n_fft = 64;
+let cp_len = 8;
+let half = (n_fft / 2) as i32;
+let data: Vec<i32> = (1..half).chain(-(half - 1)..0).collect();
+let plan = CarrierPlan::new(n_fft, cp_len).with_data_carriers(data);
+
+// The payload's inner/outer FEC and constellation come from the MCS table
+// (below), selected per frame by `mcs_index` — not from the config's own
+// `inner_fec`/`outer_fec`. The config carries the link-wide settings: CRCs,
+// interleavers, scrambler, header format. `McsTable::default_ladder` pairs a
+// rate-1/2 LDPC inner code with a BCH(t=8) outer code across a BPSK→QAM-64
+// ladder.
+let cfg = OfdmConfig::new(plan, 48_000.0, 0.0, 1.0, ConstellationOrder::Bpsk)
+    .with_payload_crc(orion_sdr::fec::CrcKind::Crc32)
+    .with_header_crc(orion_sdr::fec::CrcKind::Crc16);
+
+// A Schmidl & Cox preamble with a training symbol sized to the plan, so the
+// receiver can acquire timing/CFO and estimate the channel.
+let preamble = OfdmPreamble::new(4, 16)
+    .with_training_symbol(cfg.carrier_plan.n_fft(), cfg.carrier_plan.cp_len());
+
+let table = McsTable::default_ladder();
+let modu = OfdmFrameMod::new(cfg, table, preamble);
+
+// Modulate a frame. `mcs_index` selects the payload's constellation + FEC
+// from the table; `sequence_num` and the payload are carried end to end.
+let payload: Vec<u8> = (0..96).map(|i| (i * 37 + 11) as u8).collect();
+let frame = FramePacket::new(FrameMetadata::new(/*sequence_num*/ 1, /*mcs_index*/ 1), payload);
+let iq = modu.modulate_frame(&frame, /*per_frame_seed*/ 0);
+```
+
+`OfdmFrameMod` holds a per-link `CodecCache`, so a stream of frames builds each
+FEC code (the LDPC parity-check matrix especially) only once. To share one set
+of built codes between a modulator and a demodulator, construct both with
+`OfdmFrameMod::with_cache`/`OfdmFrameStreamDemod::with_cache` and the same
+`Arc<CodecCache>`. The receiver's LDPC decode rule is a *config* choice
+(`with_ldpc_decode_rule`) read on the RX side; it does not affect modulation.
+
+### Configuring the coding chain (non-default FEC / interleave / scramble)
+
+The example above leans on `McsTable::default_ladder()`. To exercise the full
+chain, split the two kinds of configuration: **per-frame coding** (the
+constellation with its inner/outer FEC) lives in the `McsTable`, selected by
+`mcs_index`; **link-wide settings** (interleavers, scrambler, CRCs, header
+format) live on `OfdmConfig`.
+The chain order is `payload → CRC → [scramble] → outer → outer-interleave →
+inner → inner-interleave → [scramble] → map` (see [ofdm.md](ofdm.md)); the two
+scrambler positions are `BeforeOuterFec` (the default, DVB energy-dispersal
+placement) and `AfterInnerFec`.
+
+```rust
+use orion_sdr::{
+    fec::{InnerFec, InterleaverKind, LdpcCode, OuterFec, PunctureRate,
+          ScramblerKind, ScramblerPos, SeedMode},
+    modulate::{ConstellationOrder, Mcs, McsTable, OfdmConfig},
+};
+
+// A custom MCS table: each entry is (constellation, inner FEC, outer FEC),
+// selected per frame by `mcs_index`. Here a DVB-style pairing — punctured
+// convolutional inner + Reed–Solomon outer — and an LDPC + BCH alternative.
+let table = McsTable::new(vec![
+    Mcs::new(
+        ConstellationOrder::Qpsk,
+        InnerFec::Convolutional { rate: PunctureRate::R1_2 },
+        OuterFec::ReedSolomon { n: 60, n_parity: 8 },   // RS(60,52), t=4
+    ),
+    Mcs::new(
+        ConstellationOrder::Qam16,
+        InnerFec::Ldpc(LdpcCode::N512R34),
+        OuterFec::Bch { t: 8 },
+    ),
+]);
+
+// Link-wide settings on the config: both block interleavers, a fixed-seed
+// additive PN scrambler placed after the inner FEC, and CRCs. (`outer_fec` /
+// `inner_fec` on the config are unused when an MCS table drives the payload.)
+let cfg = OfdmConfig::new(plan, 48_000.0, 0.0, 1.0, ConstellationOrder::Bpsk)
+    .with_outer_interleaver(InterleaverKind::Block { rows: 4, cols: 8 })
+    .with_inner_interleaver(InterleaverKind::Block { rows: 8, cols: 16 })
+    .with_scrambler(ScramblerKind::Additive {
+        poly: 0b1001,           // x^7 + x^4 + 1 (802.11-style)
+        width: 7,
+        seed: SeedMode::Fixed(0x7F),
+    })
+    .with_scrambler_pos(ScramblerPos::AfterInnerFec)
+    .with_payload_crc(orion_sdr::fec::CrcKind::Crc32)
+    .with_header_crc(orion_sdr::fec::CrcKind::Crc16);
+
+cfg.validate().expect("consistent frame config");
+```
+
+The **receiver must be built from the same `OfdmConfig` and `McsTable`** — the
+interleaver dimensions, scrambler parameters, and MCS mapping are all shared
+state, not signaled in band (only the per-frame scrambler *seed* and `mcs_index`
+travel in the header). `OfdmConfig::validate()` rejects inconsistent
+combinations (e.g. a zero interleaver dimension, or a `PerFrameRandom` scrambler
+seed with `HeaderFormat::NoHeader`, which has no header to carry the seed).
+
+For a **per-frame-random scrambler**, set `seed: SeedMode::PerFrameRandom` and
+pass the drawn seed as `modulate_frame`'s second argument — it is recorded in
+the header so the receiver rebuilds the descrambler:
+
+```rust
+let cfg = cfg.with_scrambler(ScramblerKind::Additive {
+    poly: 0b1001,
+    width: 7,
+    seed: SeedMode::PerFrameRandom,
+});
+// ... build modu ...
+let per_frame_seed = 0xABCD_1234;               // draw a fresh one per frame
+let iq = modu.modulate_frame(&frame, per_frame_seed);
+```

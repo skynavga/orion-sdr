@@ -8,8 +8,8 @@ use super::qpsk::QpskMapper;
 use crate::core::{Block, WorkReport};
 use crate::dsp::Rotator;
 use crate::fec::{
-    CrcKind, HeaderFormat, InnerFec, InterleaverKind, OuterFec, ScramblerKind, ScramblerPos,
-    SeedMode,
+    CrcKind, DecodeRule, HeaderFormat, InnerFec, InterleaverKind, OuterFec, ScramblerKind,
+    ScramblerPos, SeedMode,
 };
 use crate::multicarrier::{CarrierGrid, CarrierPlan, CyclicPrefixInsert, GridMap, IfftBlock};
 use num_complex::Complex32 as C32;
@@ -68,6 +68,12 @@ pub struct OfdmConfig {
     pub header_crc: CrcKind,
     pub scrambler: ScramblerKind,
     pub scrambler_pos: ScramblerPos,
+    /// Check-node rule the receiver's LDPC inner decoder uses.
+    /// [`DecodeRule::SumProduct`] (the default) is exact belief propagation;
+    /// [`DecodeRule::ScaledMinSum`] trades ≲0.3 dB of coding gain for ~2×
+    /// decode throughput (see the R8a investigation in `docs/performance.md`).
+    /// TX-only paths ignore this.
+    pub ldpc_decode_rule: DecodeRule,
 }
 
 /// Rejects an [`OfdmConfig`] whose frame-layer settings are mutually
@@ -112,6 +118,7 @@ impl OfdmConfig {
             header_crc: CrcKind::Crc16,
             scrambler: ScramblerKind::None,
             scrambler_pos: ScramblerPos::BeforeOuterFec,
+            ldpc_decode_rule: DecodeRule::SumProduct,
         }
     }
 
@@ -157,6 +164,14 @@ impl OfdmConfig {
 
     pub fn with_scrambler_pos(mut self, pos: ScramblerPos) -> Self {
         self.scrambler_pos = pos;
+        self
+    }
+
+    /// Selects the LDPC inner-decoder check-node rule (receiver side). Defaults
+    /// to [`DecodeRule::SumProduct`]; pass [`DecodeRule::ScaledMinSum`] (α ≈
+    /// 0.75) for ~2× decode throughput at a ≲0.3 dB coding-gain cost.
+    pub fn with_ldpc_decode_rule(mut self, rule: DecodeRule) -> Self {
+        self.ldpc_decode_rule = rule;
         self
     }
 

@@ -15,8 +15,17 @@
 // unique `i` in 0..255, so `a*b = g^(log[a] + log[b])`. The tables are built
 // once by `Gf256::new()`.
 
+use std::sync::OnceLock;
+
 /// The primitive polynomial x^8 + x^4 + x^3 + x^2 + 1, low 9 bits set.
 const PRIMITIVE_POLY: u16 = 0x11D;
+
+/// Process-wide singleton, built once on first use. The tables are a pure
+/// function of [`PRIMITIVE_POLY`], so a single shared instance is always valid;
+/// [`Gf256::shared`] hands out `&'static` references so the algebraic codes can
+/// borrow it instead of rebuilding the 512+256-byte tables per construction
+/// (which, in the COFDM frame layer, means per frame).
+static SHARED: OnceLock<Gf256> = OnceLock::new();
 
 /// Precomputed GF(2^8) log/antilog tables for fast multiply/divide/inverse.
 #[derive(Debug, Clone)]
@@ -66,6 +75,17 @@ impl Gf256 {
         }
 
         Self { exp, log }
+    }
+
+    /// Returns the process-wide shared `Gf256`, building it once on first call.
+    ///
+    /// Prefer this over [`Gf256::new`] wherever the tables would otherwise be
+    /// rebuilt repeatedly (block-code construction, per-frame decode). The
+    /// returned reference is `'static` and the instance is immutable, so it is
+    /// freely shareable across threads. The tables are bit-identical to
+    /// [`Gf256::new`]'s — this only avoids recomputing them.
+    pub fn shared() -> &'static Gf256 {
+        SHARED.get_or_init(Gf256::new)
     }
 
     /// Field addition (= subtraction): bitwise XOR.
