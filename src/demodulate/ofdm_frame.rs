@@ -22,17 +22,18 @@ use crate::demodulate::ofdm::{
 use crate::dsp::Rotator;
 use crate::fec::{
     BlockInterleaver, CrcKind, FrameMetadata, FramePacket, HeaderFormat, InnerFec, InterleaverKind,
-    Ldpc, OuterFec, ReedSolomon, RxError, ScramblerKind, ScramblerPos, viterbi_decode_soft,
+    OuterFec, RxError, ScramblerKind, ScramblerPos, viterbi_decode_soft,
 };
 use crate::modulate::ofdm::{ConstellationOrder, OfdmConfig};
 use crate::modulate::ofdm_frame::{
-    BCH_INFO_BITS, BlockPlan, HEADER_CONSTELLATION, HEADER_FIELD_BYTES, HEADER_LDPC, McsTable,
-    bits_to_bytes, block_plan, build_scrambler, bytes_to_bits, check_and_strip_crc,
-    shortened_bch_for, symbol_config, symbols_for_coded_bits,
+    BCH_INFO_BITS, BlockPlan, CodecCache, HEADER_CONSTELLATION, HEADER_FIELD_BYTES, HEADER_LDPC,
+    McsTable, bits_to_bytes, block_plan, build_scrambler, bytes_to_bits, check_and_strip_crc,
+    symbol_config, symbols_for_coded_bits,
 };
 use crate::multicarrier::{CarrierGrid, CyclicPrefixRemove, FftBlock, GridExtract};
 use crate::sync::{OfdmPreamble, ofdm_sync};
 use num_complex::Complex32 as C32;
+use std::sync::Arc;
 
 /// Soft-demaps `n_symbols` OFDM symbols starting at `iq[0]` into a flat LLR
 /// vector (one `f32` per coded bit, `+ ⇒ bit 0`). Returns `None` if `iq` is
@@ -165,7 +166,12 @@ fn deinterleave_bits(il: InterleaverKind, bits: &[u8]) -> Vec<u8> {
 /// `info_len` is the number of information bits the inner code protects (needed
 /// by the convolutional Viterbi, which is variable-rate). Returns the info bits
 /// and whether every block converged.
-fn inner_decode(inner: InnerFec, coded_llrs: &[f32], info_len: usize) -> (Vec<u8>, bool) {
+fn inner_decode(
+    inner: InnerFec,
+    coded_llrs: &[f32],
+    info_len: usize,
+    cache: &CodecCache,
+) -> (Vec<u8>, bool) {
     match inner {
         InnerFec::None => {
             // Hard-decide the LLRs directly.
@@ -175,7 +181,7 @@ fn inner_decode(inner: InnerFec, coded_llrs: &[f32], info_len: usize) -> (Vec<u8
             )
         }
         InnerFec::Ldpc(code) => {
-            let ldpc = Ldpc::new(code);
+            let ldpc = cache.ldpc(code);
             let n = ldpc.n();
             let mut info = Vec::new();
             let mut all_ok = true;
@@ -204,11 +210,11 @@ fn inner_decode(inner: InnerFec, coded_llrs: &[f32], info_len: usize) -> (Vec<u8
 /// Outer-decodes hard bits into message bits, fragmenting into shortened-BCH
 /// codeword blocks (mirroring `outer_encode`). Returns the message bits and
 /// whether every block decoded.
-fn outer_decode(outer: OuterFec, coded_bits: &[u8]) -> (Vec<u8>, bool) {
+fn outer_decode(outer: OuterFec, coded_bits: &[u8], cache: &CodecCache) -> (Vec<u8>, bool) {
     match outer {
         OuterFec::None => (coded_bits.to_vec(), true),
         OuterFec::Bch { t } => {
-            let code = shortened_bch_for(t, BCH_INFO_BITS);
+            let code = cache.bch(t, BCH_INFO_BITS);
             let n = code.n();
             let mut msg = Vec::new();
             let mut all_ok = true;
@@ -231,7 +237,7 @@ fn outer_decode(outer: OuterFec, coded_bits: &[u8]) -> (Vec<u8>, bool) {
         }
         OuterFec::ReedSolomon { n, n_parity } => {
             // Byte-domain: pack coded bits to bytes, decode each n-byte codeword.
-            let rs = ReedSolomon::new(n, n_parity).expect("valid RS config");
+            let rs = cache.rs(n, n_parity);
             let coded_bytes = bits_to_bytes(coded_bits);
             let mut msg_bytes = Vec::new();
             let mut all_ok = true;
@@ -267,6 +273,7 @@ fn decode_chain(
     scrambler: ScramblerKind,
     scrambler_pos: ScramblerPos,
     per_frame_seed: u32,
+    cache: &CodecCache,
 ) -> Result<(Vec<u8>, bool), RxError> {
     // 1. Trim to the exact coded-bit count, then invert the after-inner
     //    scramble (bit domain) if configured.
@@ -286,13 +293,13 @@ fn decode_chain(
     // 2. Inner deinterleave (LLR), then inner decode.
     let inner_de = deinterleave_llrs(inner_il, &llrs);
     let inner_de = &inner_de[..plan.inner_coded_bits.min(inner_de.len())];
-    let (mut outer_il_bits, inner_ok) = inner_decode(inner, inner_de, plan.outer_il_bits);
+    let (mut outer_il_bits, inner_ok) = inner_decode(inner, inner_de, plan.outer_il_bits, cache);
     outer_il_bits.truncate(plan.outer_il_bits);
 
     // 3. Outer deinterleave (byte/bit domain), then outer decode.
     let outer_de = deinterleave_bits(outer_il, &outer_il_bits);
     let outer_de = &outer_de[..plan.outer_coded_bits.min(outer_de.len())];
-    let (mut framed_bits, outer_ok) = outer_decode(outer, outer_de);
+    let (mut framed_bits, outer_ok) = outer_decode(outer, outer_de, cache);
     framed_bits.truncate(plan.framed_bytes * 8);
 
     if framed_bits.len() < plan.framed_bytes * 8 {
@@ -350,6 +357,7 @@ fn decode_frame_body(
     mcs_table: &McsTable,
     iq: &[C32],
     channel_estimate: Option<&[C32]>,
+    cache: &CodecCache,
 ) -> Result<(FramePacket, usize), BodyError> {
     let mut cursor = 0usize;
 
@@ -373,6 +381,7 @@ fn decode_frame_body(
             InnerFec::Ldpc(HEADER_LDPC),
             InterleaverKind::None,
             InterleaverKind::None,
+            cache,
         );
         let n_sym = symbols_for_coded_bits(cfg, HEADER_CONSTELLATION, hplan.coded_bits);
         let mut eq = make_eq(HEADER_CONSTELLATION);
@@ -390,6 +399,7 @@ fn decode_frame_body(
             ScramblerKind::None,
             ScramblerPos::BeforeOuterFec,
             0,
+            cache,
         )
         .map_err(BodyError::Failed)?;
         if !ok {
@@ -432,6 +442,7 @@ fn decode_frame_body(
         mcs.inner_fec,
         cfg.outer_interleaver,
         cfg.inner_interleaver,
+        cache,
     );
     let n_sym = symbols_for_coded_bits(cfg, mcs.constellation, pplan.coded_bits);
     let mut eq = make_eq(mcs.constellation);
@@ -449,6 +460,7 @@ fn decode_frame_body(
         cfg.scrambler,
         cfg.scrambler_pos,
         per_frame_seed,
+        cache,
     )
     .map_err(BodyError::Failed)?;
     if !ok {
@@ -472,12 +484,29 @@ fn decode_frame_body(
 /// This is the flat-channel, known-start entry point; the streaming
 /// [`OfdmFrameStreamDemod`] runs `ofdm_sync`, CFO correction, and training-
 /// symbol equalization for unknown start / CFO / multipath.
+///
+/// `cache` is an optional caller-owned [`CodecCache`]. Pass `Some(&cache)` when
+/// decoding many known-start frames in a loop to build each FEC code once across
+/// the whole batch (the `Ldpc` construction is milliseconds); pass `None` for a
+/// one-shot decode, which builds a throwaway cache for that call (the header and
+/// payload codes are still each built at most once within the call). The
+/// decode output is identical either way — the cache only affects speed.
 pub fn demodulate_frame(
     cfg: &OfdmConfig,
     mcs_table: &McsTable,
     iq: &[C32],
+    cache: Option<&CodecCache>,
 ) -> Result<FramePacket, RxError> {
-    decode_frame_body(cfg, mcs_table, iq, None)
+    // Borrow the caller's cache, or stand up a per-call one when none is given.
+    let owned;
+    let cache = match cache {
+        Some(c) => c,
+        None => {
+            owned = CodecCache::new();
+            &owned
+        }
+    };
+    decode_frame_body(cfg, mcs_table, iq, None, cache)
         .map(|(frame, _)| frame)
         .map_err(|e| match e {
             // A batch caller has no "wait for more" option; a truncated buffer
@@ -518,10 +547,28 @@ pub struct OfdmFrameStreamDemod {
     buf: Vec<C32>,
     /// Minimum sync score to accept a candidate.
     score_threshold: f32,
+    /// FEC code cache, warmed across the frames this receiver decodes (see
+    /// [`CodecCache`]). Held behind `Arc` so it can be shared with a paired
+    /// modulator.
+    cache: Arc<CodecCache>,
 }
 
 impl OfdmFrameStreamDemod {
+    /// Creates a streaming receiver with a fresh, private [`CodecCache`]; use
+    /// [`with_cache`](Self::with_cache) to share one with a modulator.
     pub fn new(cfg: OfdmConfig, mcs_table: McsTable, preamble: OfdmPreamble) -> Self {
+        Self::with_cache(cfg, mcs_table, preamble, Arc::new(CodecCache::new()))
+    }
+
+    /// Like [`new`](Self::new), but reuses the caller-provided `cache` so a
+    /// modulator/demodulator pair sharing one `Arc<CodecCache>` builds each FEC
+    /// code only once between them.
+    pub fn with_cache(
+        cfg: OfdmConfig,
+        mcs_table: McsTable,
+        preamble: OfdmPreamble,
+        cache: Arc<CodecCache>,
+    ) -> Self {
         let fs = cfg.fs;
         Self {
             cfg,
@@ -530,6 +577,7 @@ impl OfdmFrameStreamDemod {
             fs,
             buf: Vec::new(),
             score_threshold: 0.5,
+            cache,
         }
     }
 
@@ -623,6 +671,7 @@ impl OfdmFrameStreamDemod {
             &self.mcs_table,
             body,
             channel_estimate.as_deref(),
+            &self.cache,
         ) {
             Ok((packet, body_samples)) => {
                 let diagnostics = OfdmRxFrame {

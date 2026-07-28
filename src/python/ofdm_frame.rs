@@ -18,8 +18,9 @@ use pyo3::prelude::*;
 use super::ofdm::PyOfdmConfig;
 use crate::demodulate::{OfdmFrameStreamDemod, demodulate_frame};
 use crate::fec::{FrameMetadata, FramePacket, InnerFec, LdpcCode, OuterFec, PunctureRate};
-use crate::modulate::{ConstellationOrder, Mcs, McsTable, OfdmFrameMod};
+use crate::modulate::{CodecCache, ConstellationOrder, Mcs, McsTable, OfdmFrameMod};
 use crate::sync::OfdmPreamble;
+use std::sync::Arc;
 
 // ── FramePacket ─────────────────────────────────────────────────────────────
 
@@ -230,6 +231,33 @@ fn build_preamble(
     OfdmPreamble::new(num_repeats, repeat_len).with_training_symbol(n_fft, cp_len)
 }
 
+// ── CodecCache ──────────────────────────────────────────────────────────────
+
+/// A shared cache of constructed FEC codes (LDPC/BCH/Reed–Solomon).
+///
+/// Building a code — the LDPC parity-check matrix above all — costs
+/// milliseconds and is a pure function of its parameters, so it need only be
+/// done once per link. Pass one `CodecCache` to an `OfdmFrameMod`, an
+/// `OfdmFrameStreamDemod`, and/or `demodulate_frame` (via their `cache=`
+/// argument) to build each code once and reuse it across all of them — e.g. a
+/// transmitter and receiver on the same MCS then share the built codes. Omitting
+/// `cache=` gives each object its own private cache, which still amortizes
+/// across that object's own calls.
+#[pyclass(name = "CodecCache")]
+pub struct PyCodecCache {
+    inner: Arc<CodecCache>,
+}
+
+#[pymethods]
+impl PyCodecCache {
+    #[new]
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(CodecCache::new()),
+        }
+    }
+}
+
 // ── OfdmFrameMod ────────────────────────────────────────────────────────────
 
 /// COFDM frame transmitter: serializes a `FramePacket` to a flat IQ stream
@@ -244,14 +272,16 @@ pub struct PyOfdmFrameMod {
 #[pymethods]
 impl PyOfdmFrameMod {
     /// The preamble is `num_repeats` × `repeat_len` Schmidl & Cox segments
-    /// followed by a training symbol sized to the config's FFT/CP.
+    /// followed by a training symbol sized to the config's FFT/CP. Pass
+    /// `cache=` a `CodecCache` to share built FEC codes with other frame objects.
     #[new]
-    #[pyo3(signature = (cfg, mcs_table, num_repeats = 4, repeat_len = 16))]
+    #[pyo3(signature = (cfg, mcs_table, num_repeats = 4, repeat_len = 16, cache = None))]
     fn new(
         cfg: &PyOfdmConfig,
         mcs_table: &PyMcsTable,
         num_repeats: usize,
         repeat_len: usize,
+        cache: Option<&PyCodecCache>,
     ) -> PyResult<Self> {
         let config = cfg.inner_config();
         let pre = build_preamble(
@@ -260,8 +290,11 @@ impl PyOfdmFrameMod {
             config.carrier_plan.n_fft(),
             config.carrier_plan.cp_len(),
         );
+        let cache = cache
+            .map(|c| Arc::clone(&c.inner))
+            .unwrap_or_else(|| Arc::new(CodecCache::new()));
         Ok(Self {
-            inner: OfdmFrameMod::new(config, mcs_table.to_table()?, pre),
+            inner: OfdmFrameMod::with_cache(config, mcs_table.to_table()?, pre, cache),
         })
     }
 
@@ -292,13 +325,16 @@ pub struct PyOfdmFrameStreamDemod {
 
 #[pymethods]
 impl PyOfdmFrameStreamDemod {
+    /// Pass `cache=` a `CodecCache` to share built FEC codes with other frame
+    /// objects (e.g. the paired `OfdmFrameMod`).
     #[new]
-    #[pyo3(signature = (cfg, mcs_table, num_repeats = 4, repeat_len = 16))]
+    #[pyo3(signature = (cfg, mcs_table, num_repeats = 4, repeat_len = 16, cache = None))]
     fn new(
         cfg: &PyOfdmConfig,
         mcs_table: &PyMcsTable,
         num_repeats: usize,
         repeat_len: usize,
+        cache: Option<&PyCodecCache>,
     ) -> PyResult<Self> {
         let config = cfg.inner_config();
         let pre = build_preamble(
@@ -307,8 +343,11 @@ impl PyOfdmFrameStreamDemod {
             config.carrier_plan.n_fft(),
             config.carrier_plan.cp_len(),
         );
+        let cache = cache
+            .map(|c| Arc::clone(&c.inner))
+            .unwrap_or_else(|| Arc::new(CodecCache::new()));
         Ok(Self {
-            inner: OfdmFrameStreamDemod::new(config, mcs_table.to_table()?, pre),
+            inner: OfdmFrameStreamDemod::with_cache(config, mcs_table.to_table()?, pre, cache),
         })
     }
 
@@ -369,22 +408,30 @@ impl PyOfdmFrameStreamDemod {
 
 /// Batch-demodulates a single frame at a known start (`iq[0]` is the first
 /// sample after the preamble+training, already synchronized). Raises
-/// `ValueError` on a decode failure.
+/// `ValueError` on a decode failure. Pass `cache=` a `CodecCache` to reuse built
+/// FEC codes across a batch of calls (or share them with a modulator).
 #[pyfunction]
-#[pyo3(name = "demodulate_frame")]
+#[pyo3(name = "demodulate_frame", signature = (cfg, mcs_table, iq, cache = None))]
 fn demodulate_frame_py(
     cfg: &PyOfdmConfig,
     mcs_table: &PyMcsTable,
     iq: PyReadonlyArray1<'_, Complex32>,
+    cache: Option<&PyCodecCache>,
 ) -> PyResult<PyFramePacket> {
     let config = cfg.inner_config();
     let table = mcs_table.to_table()?;
-    let frame = demodulate_frame(&config, &table, iq.as_slice()?)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let frame = demodulate_frame(
+        &config,
+        &table,
+        iq.as_slice()?,
+        cache.map(|c| c.inner.as_ref()),
+    )
+    .map_err(|e| PyValueError::new_err(e.to_string()))?;
     Ok(PyFramePacket::from_frame(frame))
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyCodecCache>()?;
     m.add_class::<PyFramePacket>()?;
     m.add_class::<PyMcsTable>()?;
     m.add_class::<PyOfdmFrameMod>()?;
