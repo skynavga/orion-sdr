@@ -25,9 +25,11 @@ use super::{measure_throughput, minsps_from_env};
 use num_complex::Complex32 as C32;
 use orion_sdr::demodulate::demodulate_frame;
 use orion_sdr::fec::{
-    Bch, BlockInterleaver, FrameMetadata, FramePacket, Ldpc, LdpcCode, PnScrambler, PunctureRate,
-    ReedSolomon, conv_encode_punctured, punctured_coded_len, viterbi_decode_soft,
+    Bch, BlockInterleaver, FrameMetadata, FramePacket, InterleaverKind, Ldpc, LdpcCode,
+    PnScrambler, PunctureRate, ReedSolomon, conv_encode_punctured, punctured_coded_len,
+    viterbi_decode_soft,
 };
+use orion_sdr::modulate::ofdm_frame::interleave_bits;
 use orion_sdr::modulate::{CodecCache, ConstellationOrder, McsTable, OfdmConfig, OfdmFrameMod};
 use orion_sdr::multicarrier::CarrierPlan;
 use orion_sdr::sync::OfdmPreamble;
@@ -369,6 +371,33 @@ fn throughput_interleaver_all() {
     throughput_interleaver_u8(true);
     throughput_interleaver_f32(false);
     throughput_interleaver_f32(true);
+}
+
+// The chain-driver `interleave_bits` (fragments into blocks, pads, permutes) —
+// the path R7 hoists per-chunk allocations out of. Unlike the kernel benchmarks
+// above, this exercises the multi-chunk driver a configured link runs; it is the
+// regression guard for that hoist (the default MCS uses no interleaver, so the
+// frame-chain benchmark never reaches this path).
+#[test]
+fn throughput_interleave_bits_chain() {
+    let il = InterleaverKind::Block {
+        rows: IL_ROWS,
+        cols: IL_COLS,
+    };
+    // Several blocks' worth of coded bits, with a partial final block to exercise
+    // padding.
+    let n_bits = IL_ROWS * IL_COLS * 8 + 37;
+    let bits = random_bits(n_bits, 0x171B);
+    let (msps, dt) = measure_throughput(
+        || {
+            let out = interleave_bits(il, &bits);
+            black_box(out[0]);
+            n_bits
+        },
+        n_bits,
+        REPEATS,
+    );
+    report_and_assert("Interleave-Bits chain (8+ blocks)", msps, dt, 1.0);
 }
 
 // ── §1.1 Scrambler (self-inverse; single direction, three widths) ───────────

@@ -404,12 +404,15 @@ pub fn interleave_bits(il: InterleaverKind, bits: &[u8]) -> Vec<u8> {
         InterleaverKind::None => bits.to_vec(),
         InterleaverKind::Block { rows, cols } => {
             let block = rows * cols;
+            let bi = crate::fec::BlockInterleaver::new(rows, cols);
             let mut out = Vec::with_capacity(bits.len().div_ceil(block) * block);
+            // Reused across chunks: the interleaver and both scratch buffers are
+            // built once instead of per chunk.
+            let mut padded = vec![0u8; block];
+            let mut permuted = vec![0u8; block];
             for chunk in bits.chunks(block) {
-                let mut padded = chunk.to_vec();
-                padded.resize(block, 0);
-                let bi = crate::fec::BlockInterleaver::new(rows, cols);
-                let mut permuted = vec![0u8; block];
+                padded[..chunk.len()].copy_from_slice(chunk);
+                padded[chunk.len()..].fill(0);
                 bi.interleave(&padded, &mut permuted);
                 out.extend_from_slice(&permuted);
             }

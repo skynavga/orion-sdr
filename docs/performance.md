@@ -293,16 +293,20 @@ link, unlike the smooth uncoded BER curves.)
 > is folded into the released tables above (and this heading removed) at the end of
 > the branch; until then it reflects the current tip, not v0.0.44.
 
-**Current status:** R5 landed — the LDPC check-node update now caches `tanh(msg/2)`
-per incident edge once per iteration, instead of recomputing `fast_tanh` inside every
-leave-one-out product (an O(deg²)→O(deg) transcendental saving). Bit-exact (the cached
-values are the identical `fast_tanh` results and the products multiply in the same
-order; the LDPC unit/roundtrip tests pass unchanged). This is the real sum-product
-decode lever: on the isolated, error-injected `LDPC-Decode` fixtures — the honest
-decode-kernel measure — it speeds up the densest code (`N512R34`) ~2.3× and the others
-~1.1–1.3×, scaling with the BP work per decode. R4 (edge-index precompute) and R2/R3
-(shared `Gf256`, per-link `CodecCache`) are the prior steps; deltas vs. the R1
-baseline are in the "Since baseline" columns.
+**Current status:** R7 landed — the chain-driver `interleave_bits`/`deinterleave_*`
+build their `BlockInterleaver` and scratch buffers once per call instead of once per
+block, removing per-chunk allocation on the interleaved path. Bit-exact (interleaver
+round-trip and scrambler tests pass unchanged); a small (~5–8%), directional win on
+the new `Interleave-Bits chain` benchmark — the default MCS uses no interleaver, so
+this path is off the frame-chain and needs its own guard. Two R7 candidates were
+investigated and **dropped**: a byte-wise scrambler rewrite (flat within noise — the
+`count_ones` LFSR advance dominates, and the compiler already vectorized the
+original) and R6's Horner syndrome evaluation (a regression — see the R6 note below).
+The real decode lever remains **R5**: the LDPC check-node update caches `tanh(msg/2)`
+per edge once per iteration (O(deg²)→O(deg) transcendentals), speeding the densest
+code `N512R34` ~2.3× and the others ~1.1–1.3× on the isolated error-injected
+`LDPC-Decode` fixtures. R2/R3/R4 are the prior steps; deltas vs. the R1 baseline are
+in the "Since baseline" columns.
 
 ### Per-block, single direction (§1.1)
 
@@ -319,20 +323,21 @@ baseline are in the "Since baseline" columns.
 | BCH | t=8 | 99.6 | 27.1 | baseline |
 | Reed–Solomon | RS(204,188) | 799 | 165 | baseline |
 | Reed–Solomon | RS(60,52) | 1126 | 140 | baseline |
-| Interleaver | u8, 32×32 | 5088 | 6083 | baseline |
-| Interleaver | f32, 32×32 | 4668 | 7042 | baseline |
-| Scrambler | width 7 | 196 | (self-inverse) | baseline |
-| Scrambler | width 15 | 198 | (self-inverse) | baseline |
-| Scrambler | width 32 | 202 | (self-inverse) | baseline |
+| Interleaver | u8, 32×32 (kernel) | 5088 | 6083 | baseline |
+| Interleaver | f32, 32×32 (kernel) | 4668 | 7042 | baseline |
+| Interleave-Bits | chain driver, 8+ blocks | ~1700 | — | R7 ~1.05–1.08× |
+| Scrambler | width 7 | 196 | (self-inverse) | R7 flat (dropped) |
+| Scrambler | width 15 | 198 | (self-inverse) | R7 flat (dropped) |
+| Scrambler | width 32 | 202 | (self-inverse) | R7 flat (dropped) |
 
 Rx (decode) dominates cost across every code, as expected: LDPC sum-product decode
 is 1–2 orders of magnitude slower than its direct staircase encode, and it is the
 single largest term in the COFDM decode path. `LDPC-Decode N512R34` remains the
 slowest block (~8.8 Msps after R5, up from ~3.7 at R1) — the rate-3/4 code's denser
 checks and tighter margin run the most BP work per info bit. The interleaver kernels
-are already near memory-bandwidth-bound (thousands of Msps); their optimization
-target (`R7`) is per-chunk *allocation churn* in the chain driver, not the kernel
-itself.
+are already near memory-bandwidth-bound (thousands of Msps); R7's target was per-chunk
+*allocation churn* in the chain driver (`interleave_bits`), not the kernel — measured
+by the separate `Interleave-Bits chain` row.
 
 **R4 finding (edge-index precompute).** Removing the decoder's per-iteration
 `position()` scans left `LDPC-Decode` flat within run-to-run noise: the check-node
@@ -350,6 +355,18 @@ error-injected fixture) gains ~2.3× (~3.8→~8.8 Msps); `N576R23` ~1.3× and `N
 ~1.1×. Warm-run steady-state numbers; the first run of each fixture is a cold-cache
 outlier discarded. Bit-exact — the cached values equal the previous inline
 `fast_tanh` calls and the leave-one-out products multiply in the same order.
+
+**R6/R7 findings (dropped candidates).** Two bit-exact changes were implemented,
+measured against the immediately-preceding commit, and reverted because the perf
+tests are the gate: **R6** rewrote the BCH/RS syndrome loops with Horner's method
+(fewer operations) but *regressed* decode ~2–4× — the original `if c != 0 { … pow }`
+form both skips zero positions and keeps its per-position terms independent, which a
+superscalar CPU pipelines, whereas Horner serializes everything through its
+`acc = acc·x + c` dependency chain; op-count fell but dependency-chain length rose,
+and here the latter dominates. **R7's scrambler** rewrite (assemble the PN byte, then
+one XOR) came out flat — the `count_ones` LFSR advance dominates and the compiler
+already handled the original. Only R7's interleaver allocation-hoist survived, as a
+small measured win.
 
 ### Paired forward→inverse roundtrip (§1.2, correctness asserted each pass)
 
