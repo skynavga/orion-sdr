@@ -25,7 +25,7 @@ use super::{measure_throughput, minsps_from_env};
 use num_complex::Complex32 as C32;
 use orion_sdr::demodulate::demodulate_frame;
 use orion_sdr::fec::{
-    Bch, BlockInterleaver, FrameMetadata, FramePacket, InterleaverKind, Ldpc, LdpcCode,
+    Bch, BlockInterleaver, DecodeRule, FrameMetadata, FramePacket, InterleaverKind, Ldpc, LdpcCode,
     PnScrambler, PunctureRate, ReedSolomon, conv_encode_punctured, punctured_coded_len,
     viterbi_decode_soft,
 };
@@ -142,6 +142,43 @@ fn throughput_ldpc_encode_all() {
 fn throughput_ldpc_decode_all() {
     for (code, name) in LDPC_CODES {
         throughput_ldpc_decode(code, name);
+    }
+}
+
+// §1.4 speed axis: decode throughput per `DecodeRule`, so the min-sum
+// investigation can weigh its speed gain against the coding-gain loss measured
+// by the `snr::ldpc_decode_rule` sweep. Same error-injected fixture as
+// `throughput_ldpc_decode` above.
+#[test]
+fn throughput_ldpc_decode_rules() {
+    let rules = [
+        (DecodeRule::SumProduct, "sum-product"),
+        (DecodeRule::MinSum, "min-sum"),
+        (DecodeRule::ScaledMinSum(0.75), "scaled-min-sum(0.75)"),
+    ];
+    for (code, name) in LDPC_CODES {
+        let ldpc = Ldpc::new(code);
+        let msg = random_bits(ldpc.k(), 0xDEC0 ^ code.n() as u64);
+        let cw = ldpc.encode(&msg);
+        let mut llr = bits_to_llrs(&cw, 6.0);
+        let mut e = xorshift(0xE770 ^ code.n() as u64);
+        for _ in 0..4 {
+            let pos = (e() as usize) % ldpc.n();
+            llr[pos] = -llr[pos] * 0.5;
+        }
+        let info_bits = ldpc.k();
+        for (rule, rule_name) in rules {
+            let (msps, dt) = measure_throughput(
+                || {
+                    let (decoded, _unsat) = ldpc.decode_soft_with(&llr, 50, rule);
+                    black_box(decoded[0]);
+                    info_bits
+                },
+                info_bits,
+                REPEATS,
+            );
+            report_and_assert(&format!("LDPC-Decode {name} [{rule_name}]"), msps, dt, 0.05);
+        }
     }
 }
 

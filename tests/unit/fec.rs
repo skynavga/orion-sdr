@@ -3,8 +3,8 @@
 
 use orion_sdr::codec::{crc16, crc32};
 use orion_sdr::fec::{
-    Bch, BchError, BlockInterleaver, Gf256, Ldpc, LdpcCode, PnScrambler, PunctureRate, ReedSolomon,
-    RsError, conv_encode_punctured, punctured_coded_len, viterbi_decode_soft,
+    Bch, BchError, BlockInterleaver, DecodeRule, Gf256, Ldpc, LdpcCode, PnScrambler, PunctureRate,
+    ReedSolomon, RsError, conv_encode_punctured, punctured_coded_len, viterbi_decode_soft,
 };
 
 // Small deterministic xorshift for reproducible test messages/errors.
@@ -415,6 +415,53 @@ fn ldpc_corrects_bit_errors_from_soft_llrs() {
             "{code:?}: BP should converge with {n_err} soft errors"
         );
         assert_eq!(decoded, msg, "{code:?}: message recovered");
+    }
+}
+
+#[test]
+fn ldpc_decode_rule_default_matches_sum_product() {
+    // `decode_soft` must be exactly `decode_soft_with(.., SumProduct)`.
+    let ldpc = Ldpc::new(LdpcCode::N512R12);
+    let mut r = xorshift(0x5A11);
+    let msg: Vec<u8> = (0..ldpc.k()).map(|_| (r() & 1) as u8).collect();
+    let cw = ldpc.encode(&msg);
+    let mut llr: Vec<f32> = cw
+        .iter()
+        .map(|&b| if b == 0 { 6.0 } else { -6.0 })
+        .collect();
+    let mut e = xorshift(0x5A12);
+    for _ in 0..5 {
+        let pos = (e() as usize) % ldpc.n();
+        llr[pos] = -llr[pos] * 0.5;
+    }
+    let (a, ua) = ldpc.decode_soft(&llr, 50);
+    let (b, ub) = ldpc.decode_soft_with(&llr, 50, DecodeRule::SumProduct);
+    assert_eq!((a, ua), (b, ub), "default decode == explicit SumProduct");
+}
+
+#[test]
+fn ldpc_min_sum_rules_decode() {
+    // Both min-sum variants must correct a modest error load (the scaffold is a
+    // real decoder, not a stub). Scaled min-sum (0.75) is the near-recovery point.
+    for rule in [DecodeRule::MinSum, DecodeRule::ScaledMinSum(0.75)] {
+        for (code, n_err) in [(LdpcCode::N512R12, 5usize), (LdpcCode::N512R34, 3)] {
+            let ldpc = Ldpc::new(code);
+            let mut r = xorshift(0x3E00 ^ code.n() as u64);
+            let msg: Vec<u8> = (0..ldpc.k()).map(|_| (r() & 1) as u8).collect();
+            let cw = ldpc.encode(&msg);
+            let mut llr: Vec<f32> = cw
+                .iter()
+                .map(|&b| if b == 0 { 6.0 } else { -6.0 })
+                .collect();
+            let mut e = xorshift(0x3E01 ^ code.n() as u64);
+            for _ in 0..n_err {
+                let pos = (e() as usize) % ldpc.n();
+                llr[pos] = -llr[pos] * 0.5;
+            }
+            let (decoded, unsat) = ldpc.decode_soft_with(&llr, 50, rule);
+            assert_eq!(unsat, 0, "{rule:?} {code:?}: should converge");
+            assert_eq!(decoded, msg, "{rule:?} {code:?}: message recovered");
+        }
     }
 }
 

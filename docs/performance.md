@@ -293,20 +293,16 @@ link, unlike the smooth uncoded BER curves.)
 > is folded into the released tables above (and this heading removed) at the end of
 > the branch; until then it reflects the current tip, not v0.0.44.
 
-**Current status:** R7 landed — the chain-driver `interleave_bits`/`deinterleave_*`
-build their `BlockInterleaver` and scratch buffers once per call instead of once per
-block, removing per-chunk allocation on the interleaved path. Bit-exact (interleaver
-round-trip and scrambler tests pass unchanged); a small (~5–8%), directional win on
-the new `Interleave-Bits chain` benchmark — the default MCS uses no interleaver, so
-this path is off the frame-chain and needs its own guard. Two R7 candidates were
-investigated and **dropped**: a byte-wise scrambler rewrite (flat within noise — the
-`count_ones` LFSR advance dominates, and the compiler already vectorized the
-original) and R6's Horner syndrome evaluation (a regression — see the R6 note below).
-The real decode lever remains **R5**: the LDPC check-node update caches `tanh(msg/2)`
-per edge once per iteration (O(deg²)→O(deg) transcendentals), speeding the densest
-code `N512R34` ~2.3× and the others ~1.1–1.3× on the isolated error-injected
-`LDPC-Decode` fixtures. R2/R3/R4 are the prior steps; deltas vs. the R1 baseline are
-in the "Since baseline" columns.
+**Current status:** R8a landed — a *measurement* commit adding a selectable LDPC
+check-node `DecodeRule` (`SumProduct` default / `MinSum` / `ScaledMinSum(α)`) so the
+min-sum trade can be characterized on both axes. On-air decode is unchanged
+(`decode_soft` = `decode_soft_with(…, SumProduct)`, bit-exact — a unit test pins it).
+The results are below in "LDPC decode rule: sum-product vs. min-sum". Prior steps: R5
+(the real sum-product lever — tanh caching, `N512R34` ~2.3×), R7 (interleaver
+allocation hoist, small), R2/R3/R4 (GF/code caching, edge-index precompute). Two
+candidates were investigated and **dropped**: R7's byte-wise scrambler (flat) and R6's
+Horner syndromes (a regression — see the R6/R7 note below). Deltas vs. the R1 baseline
+are in the "Since baseline" columns.
 
 ### Per-block, single direction (§1.1)
 
@@ -367,6 +363,42 @@ and here the latter dominates. **R7's scrambler** rewrite (assemble the PN byte,
 one XOR) came out flat — the `count_ones` LFSR advance dominates and the compiler
 already handled the original. Only R7's interleaver allocation-hoist survived, as a
 small measured win.
+
+### LDPC decode rule: sum-product vs. min-sum (§1.4, R8a investigation)
+
+R8a adds a selectable check-node `DecodeRule` purely to *measure* the min-sum trade;
+`SumProduct` stays the on-air default. **Speed axis** (`throughput::fec`
+`throughput_ldpc_decode_rules`, error-injected fixture, warm steady-state Msps):
+
+| Code | sum-product | min-sum | scaled-min-sum(0.75) |
+| --- | ---: | ---: | ---: |
+| N512R12 | ~8.4 | ~14.9 (**1.8×**) | ~12.6 (1.5×) |
+| N576R23 | ~12.3 | ~21.3 (1.7×) | ~21.7 (1.8×) |
+| N512R34 | ~7.4 | ~17.8 (2.4×) | ~19.0 (**2.6×**) |
+
+Min-sum drops the transcendentals entirely (`∏sign · min|msg|`), giving ~1.7–2.6×
+decode throughput; the densest/most-iterating code (`N512R34`) gains most. (This is
+also where R4's edge-index precompute finally earns its keep — with the tanh/atanh
+gone, the old `position()` scans would dominate.)
+
+**Coding-gain axis** (`snr::ldpc_decode_rule`, BPSK-over-AWGN on the codeword, 200
+trials/point, mean post-decode BER; all rules see the identical noise realization):
+
+| Es/N0 (dB) | N512R12 SP | MS | SMS(0.75) | N512R34 SP | MS | SMS(0.75) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| −2.5 | 0.070 | 0.086 | 0.074 | 0.143 | 0.160 | 0.152 |
+| −2.0 | 0.033 | 0.041 | 0.040 | 0.128 | 0.145 | 0.137 |
+| −1.5 | 0.015 | 0.019 | 0.020 | 0.114 | 0.130 | 0.123 |
+| −1.0 | 0.0036 | 0.0043 | 0.0061 | 0.100 | 0.114 | 0.108 |
+| 0.0 | 0.0002 | 0.0001 | 0.0002 | 0.060 | 0.073 | 0.065 |
+
+Reading the waterfall's horizontal (dB) shift at matched BER: plain **min-sum costs
+~0.3–0.5 dB** of coding gain vs. sum-product, and **scaled-min-sum(0.75) recovers most
+of it — within ~0.15–0.3 dB** across the slope, tracking sum-product closely
+(especially on the denser `N512R34`). So scaled-min-sum buys ~2× decode speed for a
+sub-0.3-dB penalty — the "essentially free" regime. Whether to expose it as an opt-in
+mode is R8b's call; the on-air default stays sum-product regardless (flipping it would
+need its own CI SNR-threshold update).
 
 ### Paired forward→inverse roundtrip (§1.2, correctness asserted each pass)
 
@@ -490,6 +522,12 @@ To run just the OFDM SNR/acquisition sweeps:
 
 ```bash
 cargo test --release --features throughput "snr::ofdm" -- --nocapture --test-threads=1
+```
+
+To run the LDPC decode-rule (min-sum) coding-gain sweep:
+
+```bash
+cargo test --release --features throughput "snr::ldpc_decode_rule" -- --nocapture --test-threads=1
 ```
 
 To run the CI SNR regression tests (fixed thresholds, part of the default
