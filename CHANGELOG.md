@@ -9,6 +9,48 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.45] - 2026-07-28
+
+COFDM FEC performance pass: the concatenated-FEC decode path is substantially
+faster, with no change to decoded output (bit-exact) or the on-air default
+coding. Adds an opt-in min-sum LDPC decode rule.
+
+### Added
+
+- Selectable LDPC check-node decode rule (`DecodeRule::SumProduct` (default) /
+  `MinSum` / `ScaledMinSum(α)`), chosen per link via
+  `OfdmConfig::with_ldpc_decode_rule` (Python: `with_ldpc_decode_rule`). Applies
+  to the payload decode only (the header always uses sum-product); scaled
+  min-sum runs ~2× faster for a ≲0.3 dB coding-gain cost.
+- `CodecCache`: a per-link cache of constructed FEC codes, shareable across a
+  modulator/demodulator pair (`OfdmFrameMod::with_cache`,
+  `OfdmFrameStreamDemod::with_cache`, and an optional `cache` argument to the
+  batch `demodulate_frame`); exposed to Python as `CodecCache`.
+- `Gf256::shared()`: a process-wide GF(2^8) table singleton.
+- COFDM FEC/interleave/scrambler throughput and LDPC decode-rule SNR benchmarks
+  (`throughput::fec`, `snr::ldpc_decode_rule`).
+
+### Changed
+
+- The COFDM frame layer builds each FEC code once per link instead of once per
+  frame (`Ldpc`/`Bch`/`ReedSolomon` are cached, and `Bch`/`ReedSolomon` share
+  one `Gf256`), removing the dominant per-frame construction cost — the LDPC
+  parity-check matrix build alone was milliseconds per frame.
+- The LDPC sum-product decoder stores its per-edge messages in a flat
+  compressed-sparse-row layout, caches `tanh(msg/2)` per edge, and precomputes
+  its Tanner-graph edge indices — a bit-exact ~2–3× decode-throughput
+  improvement on the fixed-family codes.
+- `demodulate_frame` takes an additional optional `cache` argument
+  (`None` preserves the previous per-call behavior).
+- Documentation: acronym glossary moved to `docs/acronyms.md`; all
+  OFDM/COFDM performance tables refreshed; new COFDM modulator/demodulator and
+  Python usage guides, including non-default FEC/interleave/scramble configs.
+
+### Tests
+
+- 292 default (`cargo test --release`) and 360 with `--features throughput`;
+  new min-sum roundtrip and decode-rule-equivalence unit tests.
+
 ## [0.0.44] - 2026-07-27
 
 COFDM: a concatenated-FEC, framed (MAC-layer) link built on the OFDM physical
