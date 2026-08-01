@@ -34,4 +34,4 @@ pub mod reed_solomon;
 pub use reed_solomon::{ReedSolomon, RsError};
 
 pub mod scrambler;
-pub use scrambler::PnScrambler;
+pub use scrambler::{PnScrambler, PnScramblerStream};

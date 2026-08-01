@@ -4,8 +4,8 @@
 use orion_sdr::codec::{crc16, crc32};
 use orion_sdr::fec::{
     Bch, BchError, BlockInterleaver, ConvDeinterleaver, ConvInterleaver, DecodeRule, Gf256, Ldpc,
-    LdpcCode, PnScrambler, PunctureRate, ReedSolomon, RsError, conv_encode_punctured,
-    conv_roundtrip_delay, punctured_coded_len, viterbi_decode_soft,
+    LdpcCode, PnScrambler, PnScramblerStream, PunctureRate, ReedSolomon, RsError,
+    conv_encode_punctured, conv_roundtrip_delay, punctured_coded_len, viterbi_decode_soft,
 };
 
 // Small deterministic xorshift for reproducible test messages/errors.
@@ -317,6 +317,78 @@ fn scrambler_deterministic() {
     sc.scramble(&mut a);
     sc.scramble(&mut b);
     assert_eq!(a, b, "same seed/params → same PN sequence");
+}
+
+// ── Streaming PN scrambler ─────────────────────────────────────────────────
+
+#[test]
+fn scrambler_stream_matches_oneshot() {
+    // A single stream `feed` over the whole buffer must equal the stateless
+    // `scramble` over the same buffer (identical PN advance).
+    let original: Vec<u8> = (0..128).map(|i| (i * 13 + 5) as u8).collect();
+    for sc in scramblers() {
+        let mut oneshot = original.clone();
+        sc.scramble(&mut oneshot);
+
+        let streamed = sc.into_stream().feed(&original);
+        assert_eq!(streamed, oneshot, "stream feed == stateless scramble");
+    }
+}
+
+#[test]
+fn scrambler_stream_carries_across_chunks() {
+    // reset + chunked feeds must equal one scramble over the concatenation —
+    // the register state carries across `feed` calls.
+    let original: Vec<u8> = (0..200).map(|i| (i * 37 + 11) as u8).collect();
+    let sc = PnScrambler::new(0b11 << 13, 15, 0b100_1010_1000_0000); // DVB LFSR
+    let mut oneshot = original.clone();
+    sc.scramble(&mut oneshot);
+
+    let mut stream = sc.into_stream();
+    let mut acc = Vec::new();
+    for chunk in original.chunks(23) {
+        acc.extend_from_slice(&stream.feed(chunk));
+    }
+    assert_eq!(acc, oneshot, "chunked stream feeds == one-shot scramble");
+}
+
+#[test]
+fn scrambler_stream_self_inverse_continuous() {
+    // Feeding a continuous stream through a scrambler, then through a freshly
+    // reset descrambler with the same params, recovers the original — even when
+    // fed in different chunkings on each side.
+    let original: Vec<u8> = (0..300).map(|i| (i * 7 + 1) as u8).collect();
+    let mut enc = PnScramblerStream::new(0b11 << 13, 15, 0b100_1010_1000_0000);
+    let scrambled: Vec<u8> = original.chunks(50).flat_map(|c| enc.feed(c)).collect();
+    assert_ne!(scrambled, original);
+
+    let mut dec = PnScramblerStream::new(0b11 << 13, 15, 0b100_1010_1000_0000);
+    let recovered: Vec<u8> = scrambled.chunks(17).flat_map(|c| dec.feed(c)).collect();
+    assert_eq!(
+        recovered, original,
+        "continuous descramble recovers the stream"
+    );
+}
+
+#[test]
+fn scrambler_stream_reset_restarts() {
+    let mut stream = PnScramblerStream::new(0b1001, 7, 0x7F);
+    let data: Vec<u8> = (0..40).map(|i| (i * 3) as u8).collect();
+    let first = stream.feed(&data);
+    stream.reset();
+    let second = stream.feed(&data);
+    assert_eq!(first, second, "reset returns the stream to its seed state");
+}
+
+#[test]
+fn scrambler_stream_feed_in_place_matches_feed() {
+    let data: Vec<u8> = (0..64).map(|i| (i * 5 + 2) as u8).collect();
+    let mut a = PnScramblerStream::new(0x8020_0003, 32, 0x1234_5678);
+    let out = a.feed(&data);
+    let mut b = PnScramblerStream::new(0x8020_0003, 32, 0x1234_5678);
+    let mut in_place = data.clone();
+    b.feed_in_place(&mut in_place);
+    assert_eq!(out, in_place, "feed and feed_in_place agree");
 }
 
 // ── Generic CRCs ───────────────────────────────────────────────────────────
