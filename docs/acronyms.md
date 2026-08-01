@@ -28,23 +28,30 @@ the OFDM/COFDM conventions.
 | CRC | Cyclic Redundancy Check | CRC-14 (0x2757) for FT8/FT4; generic CRC-16/CRC-32 (`fec`) for COFDM frames |
 | CSR | Compressed Sparse Row | Flat contiguous edge-message storage (buffer + offset table) in the LDPC decoder (`fec/ldpc_codes.rs`) |
 | CW | Continuous Wave | Morse-code keyed carrier |
-| DBPSK | Differential Binary Phase-Shift Keying | PSK31's BPSK31 modulation (differential detection, no absolute-phase reference) |
+| DATV | Digital Amateur Television | Amateur digital TV; NB-DVB-T is the DVB-T-over-ham-bands variant |
+| DBPSK | Differential Binary Phase-Shift Keying | PSK31's BPSK31 modulation; also DVB-T TPS-carrier signalling (differential along the symbol axis) |
 | DC | Direct Current | Zero-frequency component; blocked by `DcBlocker`; implicitly null in OFDM carrier plans |
 | DQPSK | Differential Quadrature Phase-Shift Keying | PSK31's QPSK31 modulation, decoded via soft Viterbi |
 | DSB | Double-Sideband | Both sidebands transmitted; see AM |
 | DSP | Digital Signal Processing | — |
+| DVB-H | Digital Video Broadcasting – Handheld | Mobile DVB variant; reuses DVB-T's TPS signalling verbatim (extra bits) |
+| DVB-T | Digital Video Broadcasting – Terrestrial | Terrestrial digital-TV standard (ETSI EN 300 744); RS(204,188)+conv FEC, OFDM 2K/8K |
+| DVB-T2 | Digital Video Broadcasting – Terrestrial 2nd gen | Successor to DVB-T; replaces TPS with P1/P2 preamble L1 signalling (context only) |
 | EHF | Extremely High Frequency | 30–300 GHz; upper end of the OFDM target-band range |
 | EVM | Error Vector Magnitude | Soft-vs-ideal constellation distance, in dB; `OfdmRxFrame::evm_db` |
 | FEC | Forward Error Correction | LDPC in FT8/FT4; COFDM concatenates an inner (LDPC/convolutional) and outer (BCH/RS) code (`fec/`) |
+| FFT | Fast Fourier Transform | `FftBlock` (unity-gain forward) in `multicarrier/fft.rs`; the OFDM demod's frequency-domain transform |
 | FIR | Finite Impulse Response | `FirLowpass`, `FirDecimator` in `dsp/` |
-| GF | Galois Field | `Gf256` = GF(2^8) arithmetic (`fec/gf.rs`), foundation for BCH/RS |
 | FM | Frequency Modulation | Quadrature (discriminator) demod |
 | FMA | Fused Multiply-Add | `f32::mul_add`; used throughout inner loops |
 | FSK | Frequency-Shift Keying | Base modulation for FT8 (8-FSK) and FT4 (4-FSK) |
 | FT4 | Fast Telegraphy 4-FSK | 4-FSK weak-signal mode; 6-second transmit period |
 | FT8 | Fast Telegraphy 8-FSK | 8-FSK weak-signal mode; 15-second transmit period |
+| GF | Galois Field | `Gf256` = GF(2^8) arithmetic (`fec/gf.rs`), foundation for BCH/RS; DVB-T TPS BCH uses GF(2^7) |
+| GI | Guard Interval | The OFDM cyclic prefix as a fraction of the useful symbol (DVB-T: 1/32, 1/16, 1/8, 1/4); `cp_len = n_fft · GI` |
 | HF | High Frequency | 3–30 MHz; primary target band for FT8/FT4 |
 | IF | Intermediate Frequency | `rf_hz` parameter in modulators |
+| IFFT | Inverse Fast Fourier Transform | `IfftBlock` (1/N-scaled) in `multicarrier/fft.rs`; the OFDM modulator's time-domain synthesis |
 | IIR | Infinite Impulse Response | `Biquad`, `LpCascade` in `dsp/` |
 | IQ | In-phase / Quadrature | Complex baseband representation; `Complex32` throughout |
 | ISI | Inter-Symbol Interference | Multipath delay spread exceeding `cp_len` spills energy between OFDM symbols |
@@ -58,6 +65,8 @@ the OFDM/COFDM conventions.
 | MCS | Modulation and Coding Scheme | `McsTable` maps a per-frame index to (constellation, inner/outer FEC) |
 | MLSE | Maximum-Likelihood Sequence Estimation | `viterbi_decode_coherent` in `codec/psk31.rs` |
 | MMSE | Minimum Mean-Square Error | Noise-aware equalizer; a candidate remedy for high-order-QAM multipath (not yet implemented) |
+| MPEG-TS | MPEG Transport Stream | The 188-byte-packet payload DVB-T carries; the RS(204,188) code protects one TS packet |
+| NB-DVB-T | Narrowband DVB-T | DVB-T on amateur bands (DATV), fs-scaled to 333 kHz/1 MHz/2 MHz; same 2K structure |
 | NBFM | Narrowband FM | Voice FM with a small deviation-to-audio-bandwidth ratio |
 | NCO | Numerically Controlled Oscillator | `Nco` in `dsp/nco.rs`; phasor recurrence |
 | OFDM | Orthogonal Frequency-Division Multiplexing | `multicarrier/` + `modulate`/`demodulate`/`sync::ofdm*`; VHF–EHF target bands |
@@ -65,6 +74,7 @@ the OFDM/COFDM conventions.
 | PLL | Phase-Locked Loop | PSK31's AFC loop is a first-order decision-directed PLL |
 | PM | Phase Modulation | Quadrature (dφ) demod |
 | PN | Pseudo-Noise | Deterministic pseudo-random sequence; the `PnScrambler` whitener and S&C preamble base sequence |
+| PRBS | Pseudo-Random Binary Sequence | DVB-T's w_k generator (X^11+X^2+1) for pilot values and the TPS DBPSK reference |
 | QAM | Quadrature Amplitude Modulation | 16/64/256-QAM implemented |
 | QPSK | Quadrature Phase-Shift Keying | 2 bits/symbol |
 | RF | Radio Frequency | Upconverted (non-baseband) signal |
@@ -77,6 +87,7 @@ the OFDM/COFDM conventions.
 | SNR | Signal-to-Noise Ratio | Expressed in dB throughout |
 | SSB | Single-Sideband | Phasing (Weaver) modulator; product demodulator |
 | TDF-II | Transposed Direct Form II | Biquad filter state-variable structure |
+| TPS | Transmission Parameter Signalling | DVB-T/DVB-H signalling on 17 dedicated carriers (2K mode), DBPSK over a 68-symbol frame; `HeaderFormat::DvbTps` |
 | TX | Transmit / Transmitter | — |
 | UHF | Ultra High Frequency | 300 MHz–3 GHz; secondary target band |
 | VHF | Very High Frequency | 30–300 MHz; lower end of the OFDM target-band range |
