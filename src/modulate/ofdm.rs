@@ -187,10 +187,16 @@ impl OfdmConfig {
             return Err(FrameConfigError::PerFrameSeedNeedsHeader);
         }
         for il in [self.outer_interleaver, self.inner_interleaver] {
-            if let InterleaverKind::Block { rows, cols } = il
-                && (rows == 0 || cols == 0)
-            {
-                return Err(FrameConfigError::ZeroInterleaverDim);
+            match il {
+                InterleaverKind::Block { rows, cols } if rows == 0 || cols == 0 => {
+                    return Err(FrameConfigError::ZeroInterleaverDim);
+                }
+                InterleaverKind::Convolutional { branches, depth }
+                    if branches == 0 || depth == 0 =>
+                {
+                    return Err(FrameConfigError::ZeroInterleaverDim);
+                }
+                _ => {}
             }
         }
         if let OuterFec::Bch { t } = self.outer_fec
