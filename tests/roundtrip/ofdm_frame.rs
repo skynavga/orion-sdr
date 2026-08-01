@@ -225,6 +225,43 @@ fn roundtrip_frame_forney_outer_interleaver() {
 }
 
 #[test]
+fn roundtrip_frame_dvbt_payload_fec_chain() {
+    // The full DVB-T-conformant *payload* FEC chain composed end to end:
+    // Reed–Solomon(204,188) outer + Forney (I=12, M=17) outer interleaver +
+    // K=7 (0o171,0o133) punctured convolutional inner, over QPSK. Proves the
+    // Phase-0 streaming Forney interleaver and the K=7 inner code integrate
+    // through the frame layer. (Pilots/TPS and the 2K carrier map come later;
+    // this covers the coding chain.)
+    use orion_sdr::fec::{ConvCode, PunctureRate};
+    use orion_sdr::modulate::Mcs;
+
+    let cfg = plan_config().with_outer_interleaver(InterleaverKind::Convolutional {
+        branches: 12,
+        depth: 17,
+    });
+    let pre = preamble(&cfg);
+    let table = McsTable::new(vec![Mcs::new(
+        ConstellationOrder::Qpsk,
+        InnerFec::Convolutional {
+            rate: PunctureRate::R1_2,
+            code: ConvCode::DvbK7,
+        },
+        OuterFec::ReedSolomon {
+            n: 204,
+            n_parity: 16,
+        },
+    )]);
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+    // One RS(204,188) codeword's worth of info (188 − 4 CRC-32 bytes = 184).
+    let payload = sample_payload(184);
+    let frame = FramePacket::new(FrameMetadata::new(8, 0), payload.clone());
+    let iq = modu.modulate_frame(&frame, 0);
+    let body = strip_preamble(&cfg, modu.preamble(), &iq);
+    let got = demodulate_frame(&cfg, &table, &body, None).expect("DVB-T payload FEC chain decode");
+    assert_eq!(got.payload, payload);
+}
+
+#[test]
 fn roundtrip_frame_no_fec_no_crc() {
     // Bare frame: no FEC, no CRC on payload — still round-trips noiselessly.
     let cfg = plan_config().with_payload_crc(CrcKind::None);
