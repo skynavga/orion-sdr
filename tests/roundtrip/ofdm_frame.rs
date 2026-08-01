@@ -424,7 +424,7 @@ fn stream_corrupted_payload_reports_error() {
 
 #[test]
 fn roundtrip_frame_rs_convolutional() {
-    use orion_sdr::fec::PunctureRate;
+    use orion_sdr::fec::{ConvCode, PunctureRate};
     use orion_sdr::modulate::Mcs;
 
     let cfg = plan_config();
@@ -436,6 +436,7 @@ fn roundtrip_frame_rs_convolutional() {
             ConstellationOrder::Qpsk,
             InnerFec::Convolutional {
                 rate: PunctureRate::R1_2,
+                code: ConvCode::K5,
             },
             OuterFec::ReedSolomon { n: 60, n_parity: 8 },
         ),
@@ -443,6 +444,7 @@ fn roundtrip_frame_rs_convolutional() {
             ConstellationOrder::Qpsk,
             InnerFec::Convolutional {
                 rate: PunctureRate::R3_4,
+                code: ConvCode::K5,
             },
             OuterFec::ReedSolomon { n: 60, n_parity: 8 },
         ),
@@ -464,7 +466,7 @@ fn roundtrip_frame_rs_convolutional() {
 
 #[test]
 fn roundtrip_frame_rs_convolutional_awgn() {
-    use orion_sdr::fec::PunctureRate;
+    use orion_sdr::fec::{ConvCode, PunctureRate};
     use orion_sdr::modulate::Mcs;
 
     let cfg = plan_config();
@@ -473,6 +475,7 @@ fn roundtrip_frame_rs_convolutional_awgn() {
         ConstellationOrder::Qpsk,
         InnerFec::Convolutional {
             rate: PunctureRate::R1_2,
+            code: ConvCode::K5,
         },
         OuterFec::ReedSolomon { n: 60, n_parity: 8 },
     )]);
@@ -499,12 +502,13 @@ fn roundtrip_frame_rs_convolutional_awgn() {
 // multipath test below uses a channel within that bound.
 
 fn qam_rs_conv_table() -> McsTable {
-    use orion_sdr::fec::PunctureRate;
+    use orion_sdr::fec::{ConvCode, PunctureRate};
     use orion_sdr::modulate::Mcs;
     McsTable::new(vec![Mcs::new(
         ConstellationOrder::Qam16,
         InnerFec::Convolutional {
             rate: PunctureRate::R1_2,
+            code: ConvCode::K5,
         },
         OuterFec::ReedSolomon { n: 60, n_parity: 8 },
     )])

@@ -17,7 +17,9 @@ use pyo3::prelude::*;
 
 use super::ofdm::PyOfdmConfig;
 use crate::demodulate::{OfdmFrameStreamDemod, demodulate_frame};
-use crate::fec::{FrameMetadata, FramePacket, InnerFec, LdpcCode, OuterFec, PunctureRate};
+use crate::fec::{
+    ConvCode, FrameMetadata, FramePacket, InnerFec, LdpcCode, OuterFec, PunctureRate,
+};
 use crate::modulate::{CodecCache, ConstellationOrder, Mcs, McsTable, OfdmFrameMod};
 use crate::sync::OfdmPreamble;
 use std::sync::Arc;
@@ -157,6 +159,11 @@ impl PyMcsTable {
             "ldpc" => InnerFec::Ldpc(parse_ldpc(inner_code)?),
             "convolutional" | "conv" => InnerFec::Convolutional {
                 rate: parse_rate(inner_code)?,
+                code: ConvCode::K5,
+            },
+            "convolutional_k7" | "conv_k7" | "dvbt" => InnerFec::Convolutional {
+                rate: parse_rate(inner_code)?,
+                code: ConvCode::DvbK7,
             },
             other => {
                 return Err(PyValueError::new_err(format!(

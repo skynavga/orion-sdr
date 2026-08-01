@@ -26,8 +26,8 @@ use super::ofdm::{ConstellationOrder, OfdmConfig, OfdmMod};
 use crate::codec::{crc16, crc32};
 use crate::fec::{
     Bch, CrcKind, FramePacket, HeaderFormat, InnerFec, InterleaverKind, Ldpc, LdpcCode, OuterFec,
-    PnScrambler, ReedSolomon, ScramblerKind, ScramblerPos, SeedMode, conv_encode_punctured,
-    punctured_coded_len,
+    PnScrambler, ReedSolomon, ScramblerKind, ScramblerPos, SeedMode, conv_encode_punctured_with,
+    punctured_coded_len_with,
 };
 use crate::multicarrier::CarrierPlan;
 use crate::sync::{OfdmPreamble, generate_ofdm_preamble};
@@ -365,7 +365,9 @@ pub fn block_plan(
             let n_blocks = outer_il_bits.div_ceil(ldpc.k());
             n_blocks * ldpc.n()
         }
-        InnerFec::Convolutional { rate } => punctured_coded_len(outer_il_bits, rate),
+        InnerFec::Convolutional { rate, code } => {
+            punctured_coded_len_with(code, outer_il_bits, rate)
+        }
     };
 
     let coded_bits = match inner_il {
@@ -480,7 +482,7 @@ pub fn inner_encode(inner: InnerFec, info_bits: &[u8], cache: &CodecCache) -> Ve
         }
         // The convolutional code terminates once per block (whole info stream +
         // tail bits), not per fixed-size fragment.
-        InnerFec::Convolutional { rate } => conv_encode_punctured(info_bits, rate),
+        InnerFec::Convolutional { rate, code } => conv_encode_punctured_with(code, info_bits, rate),
     }
 }
 

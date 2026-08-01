@@ -13,7 +13,10 @@ pub mod bch;
 pub use bch::{Bch, BchError};
 
 pub mod conv;
-pub use conv::{PunctureRate, conv_encode_punctured, punctured_coded_len, viterbi_decode_soft};
+pub use conv::{
+    ConvCode, PunctureRate, conv_encode_punctured, conv_encode_punctured_with, punctured_coded_len,
+    punctured_coded_len_with, viterbi_decode_soft, viterbi_decode_soft_with,
+};
 
 pub mod frame;
 pub use frame::{

@@ -17,8 +17,8 @@ use pyo3::types::{PyDict, PyList};
 use crate::core::Block;
 use crate::demodulate::{EqualizerMethod, OfdmDecider, OfdmEqualizer};
 use crate::fec::{
-    CrcKind, DecodeRule, HeaderFormat, InnerFec, InterleaverKind, LdpcCode, OuterFec, PunctureRate,
-    ScramblerKind, ScramblerPos, SeedMode,
+    ConvCode, CrcKind, DecodeRule, HeaderFormat, InnerFec, InterleaverKind, LdpcCode, OuterFec,
+    PunctureRate, ScramblerKind, ScramblerPos, SeedMode,
 };
 use crate::modulate::{ConstellationOrder, OfdmConfig, OfdmMod};
 use crate::multicarrier::{CarrierGrid, CarrierPlan, CyclicPrefixRemove, FftBlock, GridExtract};
@@ -127,10 +127,11 @@ impl PyOfdmConfig {
         Ok(Self(cfg))
     }
 
-    /// Sets the inner FEC. `kind` is `"none"`, `"ldpc"`, or `"convolutional"`.
-    /// For `"ldpc"`, `code` is `"n512r12"`, `"n576r23"`, or `"n512r34"`. For
-    /// `"convolutional"`, `code` is a puncture rate `"1/2"`, `"2/3"`, `"3/4"`,
-    /// `"5/6"`, or `"7/8"`.
+    /// Sets the inner FEC. `kind` is `"none"`, `"ldpc"`, `"convolutional"`
+    /// (K=5), or `"convolutional_k7"` (DVB-T's K=7 code). For `"ldpc"`, `code`
+    /// is `"n512r12"`, `"n576r23"`, or `"n512r34"`. For the convolutional
+    /// kinds, `code` is a puncture rate `"1/2"`, `"2/3"`, `"3/4"`, `"5/6"`, or
+    /// `"7/8"`.
     #[pyo3(signature = (kind, code = ""))]
     fn with_inner_fec(&self, kind: &str, code: &str) -> PyResult<Self> {
         let inner = match kind {
@@ -138,10 +139,15 @@ impl PyOfdmConfig {
             "ldpc" => InnerFec::Ldpc(parse_ldpc_code(code)?),
             "convolutional" | "conv" => InnerFec::Convolutional {
                 rate: parse_puncture_rate(code)?,
+                code: ConvCode::K5,
+            },
+            "convolutional_k7" | "conv_k7" | "dvbt" => InnerFec::Convolutional {
+                rate: parse_puncture_rate(code)?,
+                code: ConvCode::DvbK7,
             },
             other => {
                 return Err(PyValueError::new_err(format!(
-                    "with_inner_fec: unknown kind {other:?} (expected none|ldpc|convolutional)"
+                    "with_inner_fec: unknown kind {other:?} (expected none|ldpc|convolutional|convolutional_k7)"
                 )));
             }
         };
