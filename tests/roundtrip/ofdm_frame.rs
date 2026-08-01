@@ -193,6 +193,37 @@ fn roundtrip_frame_with_interleavers() {
 }
 
 #[test]
+fn roundtrip_frame_forney_outer_interleaver() {
+    // The streaming Forney convolutional interleaver as the outer (byte-domain)
+    // interleaver, driven in reset-per-frame mode by the frame layer. Pair it
+    // with a Reed–Solomon outer + convolutional inner (the DVB-style
+    // concatenation it belongs to). Use small DVB-like dims so the round-trip
+    // delay stays modest for the tiny test plan.
+    use orion_sdr::fec::PunctureRate;
+    use orion_sdr::modulate::Mcs;
+
+    let cfg = plan_config().with_outer_interleaver(InterleaverKind::Convolutional {
+        branches: 4,
+        depth: 3,
+    });
+    let pre = preamble(&cfg);
+    let table = McsTable::new(vec![Mcs::new(
+        ConstellationOrder::Qpsk,
+        InnerFec::Convolutional {
+            rate: PunctureRate::R1_2,
+        },
+        OuterFec::ReedSolomon { n: 60, n_parity: 8 },
+    )]);
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+    let payload = sample_payload(40);
+    let frame = FramePacket::new(FrameMetadata::new(6, 0), payload.clone());
+    let iq = modu.modulate_frame(&frame, 0);
+    let body = strip_preamble(&cfg, modu.preamble(), &iq);
+    let got = demodulate_frame(&cfg, &table, &body, None).expect("decode with Forney interleaver");
+    assert_eq!(got.payload, payload);
+}
+
+#[test]
 fn roundtrip_frame_no_fec_no_crc() {
     // Bare frame: no FEC, no CRC on payload — still round-trips noiselessly.
     let cfg = plan_config().with_payload_crc(CrcKind::None);

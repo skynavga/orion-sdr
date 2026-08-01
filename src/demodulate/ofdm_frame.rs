@@ -21,8 +21,9 @@ use crate::demodulate::ofdm::{
 };
 use crate::dsp::Rotator;
 use crate::fec::{
-    BlockInterleaver, CrcKind, DecodeRule, FrameMetadata, FramePacket, HeaderFormat, InnerFec,
-    InterleaverKind, OuterFec, RxError, ScramblerKind, ScramblerPos, viterbi_decode_soft,
+    BlockInterleaver, ConvDeinterleaver, ConvInterleaver, CrcKind, DecodeRule, FrameMetadata,
+    FramePacket, HeaderFormat, InnerFec, InterleaverKind, OuterFec, RxError, ScramblerKind,
+    ScramblerPos, viterbi_decode_soft,
 };
 use crate::modulate::ofdm::{ConstellationOrder, OfdmConfig};
 use crate::modulate::ofdm_frame::{
@@ -118,7 +119,7 @@ fn soft_demap(
     Some(llrs)
 }
 
-/// Inverse of the block interleaver, in the LLR (`f32`) domain.
+/// Inverse of the interleaver, in the LLR (`f32`) domain.
 fn deinterleave_llrs(il: InterleaverKind, llrs: &[f32]) -> Vec<f32> {
     match il {
         InterleaverKind::None => llrs.to_vec(),
@@ -137,10 +138,18 @@ fn deinterleave_llrs(il: InterleaverKind, llrs: &[f32]) -> Vec<f32> {
             }
             out
         }
+        // The Forney interleaver is byte-domain (DVB-T's *outer* interleaver); it
+        // is never configured as the inner (LLR-domain) interleaver. Pass through
+        // so a mis-configuration degrades gracefully; the TX side likewise only
+        // applies it byte-domain.
+        InterleaverKind::Convolutional { .. } => {
+            debug_assert!(false, "Convolutional interleaver is byte-domain only");
+            llrs.to_vec()
+        }
     }
 }
 
-/// Inverse of the block interleaver, in the hard-bit (`u8`) domain.
+/// Inverse of the outer interleaver, in the hard-bit (`u8`) domain.
 fn deinterleave_bits(il: InterleaverKind, bits: &[u8]) -> Vec<u8> {
     match il {
         InterleaverKind::None => bits.to_vec(),
@@ -158,6 +167,23 @@ fn deinterleave_bits(il: InterleaverKind, bits: &[u8]) -> Vec<u8> {
                 out.extend_from_slice(&restored);
             }
             out
+        }
+        InterleaverKind::Convolutional { branches, depth } => {
+            // Frame-mode inverse of `interleave_bits`'s Convolutional arm. The
+            // interleaved bit stream is `(n_padded + D)` whole bytes, `D` =
+            // round-trip delay. Deinterleave the whole thing; the recovered
+            // original bytes start at output offset `D` (the deinterleaver's
+            // startup delay) and run for `n_padded`.
+            let d = ConvInterleaver::new(branches, depth).roundtrip_delay();
+            let total = bits.len() / 8;
+            if total <= d {
+                return Vec::new();
+            }
+            let n_padded = total - d;
+            let bytes = bits_to_bytes(&bits[..total * 8]);
+            let mut di = ConvDeinterleaver::new(branches, depth);
+            let deint = di.feed(&bytes);
+            bytes_to_bits(&deint[d..d + n_padded])
         }
     }
 }

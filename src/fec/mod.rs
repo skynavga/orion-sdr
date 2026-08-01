@@ -25,7 +25,7 @@ pub mod gf;
 pub use gf::Gf256;
 
 pub mod interleaver;
-pub use interleaver::BlockInterleaver;
+pub use interleaver::{BlockInterleaver, ConvDeinterleaver, ConvInterleaver, conv_roundtrip_delay};
 
 pub mod ldpc_codes;
 pub use ldpc_codes::{DecodeRule, Ldpc, LdpcCode};
