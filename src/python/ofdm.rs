@@ -181,17 +181,20 @@ impl PyOfdmConfig {
         } else {
             InterleaverKind::Block { rows, cols }
         };
-        let mut cfg = self.0.clone();
-        match stage {
-            "inner" => cfg.inner_interleaver = il,
-            "outer" => cfg.outer_interleaver = il,
-            other => {
-                return Err(PyValueError::new_err(format!(
-                    "with_interleaver: unknown stage {other:?} (expected inner|outer)"
-                )));
-            }
-        }
-        Ok(Self(cfg))
+        self.set_interleaver(stage, il)
+    }
+
+    /// Sets a DVB-T Forney convolutional interleaver on the given stage
+    /// (`"inner"` or `"outer"`; DVB-T uses it on `"outer"`). `branches` (`I`) and
+    /// `depth` (`M`) default to DVB-T's 12/17. `branches` = 0 disables it.
+    #[pyo3(signature = (stage, branches = 12, depth = 17))]
+    fn with_conv_interleaver(&self, stage: &str, branches: usize, depth: usize) -> PyResult<Self> {
+        let il = if branches == 0 || depth == 0 {
+            InterleaverKind::None
+        } else {
+            InterleaverKind::Convolutional { branches, depth }
+        };
+        self.set_interleaver(stage, il)
     }
 
     /// Sets the payload CRC: `"none"`, `"crc16"`, or `"crc32"`.
@@ -279,6 +282,22 @@ impl PyOfdmConfig {
     /// Clones the wrapped `OfdmConfig` for the frame-layer bindings.
     pub(crate) fn inner_config(&self) -> OfdmConfig {
         self.0.clone()
+    }
+
+    /// Installs `il` on the named stage (`"inner"`/`"outer"`), shared by the
+    /// block and convolutional interleaver bindings.
+    fn set_interleaver(&self, stage: &str, il: InterleaverKind) -> PyResult<Self> {
+        let mut cfg = self.0.clone();
+        match stage {
+            "inner" => cfg.inner_interleaver = il,
+            "outer" => cfg.outer_interleaver = il,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown interleaver stage {other:?} (expected inner|outer)"
+                )));
+            }
+        }
+        Ok(Self(cfg))
     }
 }
 

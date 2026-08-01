@@ -9,6 +9,35 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.46] - 2026-08-01
+
+Dual-mode (stream/frame) FEC primitives — the first step toward NB-DVB-T
+(narrowband DVB-T) support. Adds stateful, resettable channel-coding blocks that
+work in both the existing frame-oriented COFDM link and a continuous-stream
+pipeline, so a DVB-T stream chain can be built on them without per-frame
+interleaver-flush overhead. No change to existing frame-layer output (byte-
+identical).
+
+### Added
+
+- Streaming Forney convolutional byte interleaver (`ConvInterleaver` /
+  `ConvDeinterleaver` in `fec/interleaver.rs`): per-branch delay-line FIFOs with a
+  `feed`/`flush`/`reset` interface, `conv_roundtrip_delay`, and a `dvbt()`
+  (`I=12`, `M=17`) helper. Stream mode carries delay-line state across the whole
+  stream (zero per-frame overhead); frame mode is `reset`+`feed`+`flush` per unit.
+- `InterleaverKind::Convolutional { branches, depth }`, wired through the frame
+  layer's interleave/deinterleave and block-size accounting in reset-per-frame
+  mode; exposed to Python as `OfdmConfig.with_conv_interleaver`.
+- Streaming additive PN scrambler (`PnScramblerStream` in `fec/scrambler.rs`) that
+  carries the LFSR register across `feed` calls for continuous energy dispersal,
+  with `reset`. Bit-identical to `PnScrambler` (`feed(&whole) == scramble(&whole)`;
+  chunked feeds == one-shot).
+
+### Changed
+
+- `PnScrambler::scramble` refactored to share a per-byte `scramble_byte` helper
+  with the new streaming variant — output unchanged.
+
 ## [0.0.45] - 2026-07-28
 
 COFDM FEC performance pass: the concatenated-FEC decode path is substantially

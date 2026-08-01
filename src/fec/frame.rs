@@ -115,7 +115,13 @@ pub enum InterleaverKind {
     None,
     /// Rectangular block interleaver over `rows × cols` elements.
     Block { rows: usize, cols: usize },
-    // A DVB-style convolutional (Forney) interleaver is a later addition.
+    /// DVB-T Forney convolutional interleaver, `branches` (`I`) branches each a
+    /// `depth` (`M`)-cell delay line, driven as a streaming block (see
+    /// [`crate::fec::ConvInterleaver`]). DVB-T's outer interleaver is
+    /// `Convolutional { branches: 12, depth: 17 }`. Frame orchestrators drive it
+    /// in reset-per-frame mode; a stream orchestrator carries its state across
+    /// the whole stream.
+    Convolutional { branches: usize, depth: usize },
 }
 
 /// Cyclic-redundancy-check selection (presence and width), used independently

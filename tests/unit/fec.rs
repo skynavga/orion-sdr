@@ -3,8 +3,9 @@
 
 use orion_sdr::codec::{crc16, crc32};
 use orion_sdr::fec::{
-    Bch, BchError, BlockInterleaver, DecodeRule, Gf256, Ldpc, LdpcCode, PnScrambler, PunctureRate,
-    ReedSolomon, RsError, conv_encode_punctured, punctured_coded_len, viterbi_decode_soft,
+    Bch, BchError, BlockInterleaver, ConvDeinterleaver, ConvInterleaver, DecodeRule, Gf256, Ldpc,
+    LdpcCode, PnScrambler, PnScramblerStream, PunctureRate, ReedSolomon, RsError,
+    conv_encode_punctured, conv_roundtrip_delay, punctured_coded_len, viterbi_decode_soft,
 };
 
 // Small deterministic xorshift for reproducible test messages/errors.
@@ -170,6 +171,103 @@ fn interleaver_actually_permutes_across_rows() {
     assert_eq!(ones, vec![0, 4, 8, 12]);
 }
 
+// ── Forney convolutional interleaver (streaming) ───────────────────────────
+
+#[test]
+fn conv_interleaver_dvbt_dimensions() {
+    let ci = ConvInterleaver::dvbt();
+    assert_eq!((ci.branches(), ci.depth()), (12, 17));
+    assert_eq!(204, ci.branches() * ci.depth()); // one RS(204,188) codeword
+    assert_eq!(ci.roundtrip_delay(), conv_roundtrip_delay(12, 17));
+    assert_eq!(ci.roundtrip_delay(), 12 * 11 * 17);
+}
+
+/// Frame-mode round-trip: reset, feed the payload, flush; then deinterleave the
+/// whole stream and recover the payload at output offset `roundtrip_delay`.
+fn conv_frame_round_trip(branches: usize, depth: usize, payload: &[u8]) {
+    let d = conv_roundtrip_delay(branches, depth);
+    let mut il = ConvInterleaver::new(branches, depth);
+    let mut interleaved = il.feed(payload);
+    interleaved.extend_from_slice(&il.flush());
+    assert_eq!(interleaved.len(), payload.len() + d);
+
+    let mut di = ConvDeinterleaver::new(branches, depth);
+    let deint = di.feed(&interleaved);
+    assert_eq!(&deint[d..d + payload.len()], payload, "frame-mode recovery");
+}
+
+#[test]
+fn conv_interleaver_frame_round_trip_dvbt() {
+    for &n in &[204usize, 408, 2040] {
+        let mut r = xorshift(0xF0 ^ n as u64);
+        let payload: Vec<u8> = (0..n).map(|_| (r() & 0xff) as u8).collect();
+        conv_frame_round_trip(12, 17, &payload);
+    }
+}
+
+#[test]
+fn conv_interleaver_frame_round_trip_custom_dims() {
+    let payload: Vec<u8> = (0..96).map(|i| (i * 5 + 1) as u8).collect();
+    conv_frame_round_trip(4, 3, &payload);
+}
+
+#[test]
+fn conv_interleaver_stream_equals_chunked() {
+    // Stream mode: feeding a byte stream in one call vs. across arbitrary chunk
+    // boundaries must produce identical interleaver output (state carries).
+    let mut r = xorshift(0x5EED);
+    let data: Vec<u8> = (0..500).map(|_| (r() & 0xff) as u8).collect();
+
+    let mut one_shot = ConvInterleaver::dvbt();
+    let full = one_shot.feed(&data);
+
+    let mut chunked = ConvInterleaver::dvbt();
+    let mut acc = Vec::new();
+    for chunk in data.chunks(37) {
+        acc.extend_from_slice(&chunked.feed(chunk));
+    }
+    assert_eq!(full, acc, "streaming feed is chunk-boundary-invariant");
+}
+
+#[test]
+fn conv_interleaver_reset_restarts() {
+    let data: Vec<u8> = (1..=204).collect();
+    let mut ci = ConvInterleaver::dvbt();
+    let first = ci.feed(&data);
+    ci.reset();
+    let second = ci.feed(&data);
+    assert_eq!(
+        first, second,
+        "reset returns the interleaver to its initial state"
+    );
+}
+
+#[test]
+fn conv_interleaver_spreads_a_burst() {
+    // A contiguous input burst must be dispersed across the interleaver depth.
+    let d = conv_roundtrip_delay(12, 17);
+    let mut data = vec![0u8; 204];
+    for slot in data.iter_mut().skip(24).take(12) {
+        *slot = 1; // a 12-byte burst, one per branch
+    }
+    let mut il = ConvInterleaver::dvbt();
+    let mut out = il.feed(&data);
+    out.extend_from_slice(&il.flush());
+    let ones: Vec<usize> = out
+        .iter()
+        .enumerate()
+        .filter(|&(_, &v)| v == 1)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(ones.len(), 12, "burst bytes preserved");
+    let span = ones.last().unwrap() - ones.first().unwrap();
+    assert!(
+        span > 12,
+        "burst must spread beyond its original 12-byte span, got {span}"
+    );
+    let _ = d;
+}
+
 // ── PN scrambler ───────────────────────────────────────────────────────────
 
 // A few representative additive LFSR parameterizations.
@@ -219,6 +317,78 @@ fn scrambler_deterministic() {
     sc.scramble(&mut a);
     sc.scramble(&mut b);
     assert_eq!(a, b, "same seed/params → same PN sequence");
+}
+
+// ── Streaming PN scrambler ─────────────────────────────────────────────────
+
+#[test]
+fn scrambler_stream_matches_oneshot() {
+    // A single stream `feed` over the whole buffer must equal the stateless
+    // `scramble` over the same buffer (identical PN advance).
+    let original: Vec<u8> = (0..128).map(|i| (i * 13 + 5) as u8).collect();
+    for sc in scramblers() {
+        let mut oneshot = original.clone();
+        sc.scramble(&mut oneshot);
+
+        let streamed = sc.into_stream().feed(&original);
+        assert_eq!(streamed, oneshot, "stream feed == stateless scramble");
+    }
+}
+
+#[test]
+fn scrambler_stream_carries_across_chunks() {
+    // reset + chunked feeds must equal one scramble over the concatenation —
+    // the register state carries across `feed` calls.
+    let original: Vec<u8> = (0..200).map(|i| (i * 37 + 11) as u8).collect();
+    let sc = PnScrambler::new(0b11 << 13, 15, 0b100_1010_1000_0000); // DVB LFSR
+    let mut oneshot = original.clone();
+    sc.scramble(&mut oneshot);
+
+    let mut stream = sc.into_stream();
+    let mut acc = Vec::new();
+    for chunk in original.chunks(23) {
+        acc.extend_from_slice(&stream.feed(chunk));
+    }
+    assert_eq!(acc, oneshot, "chunked stream feeds == one-shot scramble");
+}
+
+#[test]
+fn scrambler_stream_self_inverse_continuous() {
+    // Feeding a continuous stream through a scrambler, then through a freshly
+    // reset descrambler with the same params, recovers the original — even when
+    // fed in different chunkings on each side.
+    let original: Vec<u8> = (0..300).map(|i| (i * 7 + 1) as u8).collect();
+    let mut enc = PnScramblerStream::new(0b11 << 13, 15, 0b100_1010_1000_0000);
+    let scrambled: Vec<u8> = original.chunks(50).flat_map(|c| enc.feed(c)).collect();
+    assert_ne!(scrambled, original);
+
+    let mut dec = PnScramblerStream::new(0b11 << 13, 15, 0b100_1010_1000_0000);
+    let recovered: Vec<u8> = scrambled.chunks(17).flat_map(|c| dec.feed(c)).collect();
+    assert_eq!(
+        recovered, original,
+        "continuous descramble recovers the stream"
+    );
+}
+
+#[test]
+fn scrambler_stream_reset_restarts() {
+    let mut stream = PnScramblerStream::new(0b1001, 7, 0x7F);
+    let data: Vec<u8> = (0..40).map(|i| (i * 3) as u8).collect();
+    let first = stream.feed(&data);
+    stream.reset();
+    let second = stream.feed(&data);
+    assert_eq!(first, second, "reset returns the stream to its seed state");
+}
+
+#[test]
+fn scrambler_stream_feed_in_place_matches_feed() {
+    let data: Vec<u8> = (0..64).map(|i| (i * 5 + 2) as u8).collect();
+    let mut a = PnScramblerStream::new(0x8020_0003, 32, 0x1234_5678);
+    let out = a.feed(&data);
+    let mut b = PnScramblerStream::new(0x8020_0003, 32, 0x1234_5678);
+    let mut in_place = data.clone();
+    b.feed_in_place(&mut in_place);
+    assert_eq!(out, in_place, "feed and feed_in_place agree");
 }
 
 // ── Generic CRCs ───────────────────────────────────────────────────────────

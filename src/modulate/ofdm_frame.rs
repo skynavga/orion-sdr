@@ -320,6 +320,18 @@ fn round_up(n: usize, block: usize) -> usize {
     }
 }
 
+/// Bit count after the frame-mode streaming Forney interleaver: pack `n_bits`
+/// to whole bytes, round the byte count up to a multiple of `branches` (the
+/// feed alignment), add the round-trip delay `branches·(branches−1)·depth`
+/// (the flush drain), then back to bits. Mirrors the length growth in
+/// [`interleave_bits`]'s `Convolutional` arm so the deinterleaver sees the exact
+/// length and can trim the delay offset.
+fn conv_il_bits(n_bits: usize, branches: usize, depth: usize) -> usize {
+    let bytes =
+        round_up(n_bits.div_ceil(8), branches) + crate::fec::conv_roundtrip_delay(branches, depth);
+    bytes * 8
+}
+
 /// Computes the [`BlockPlan`] for `info_bytes` under the given coding chain,
 /// reusing constructed code objects from `cache` (their dimensions are all this
 /// needs, but sharing the cache avoids rebuilding them here and in the
@@ -354,6 +366,9 @@ pub fn block_plan(
     let outer_il_bits = match outer_il {
         InterleaverKind::None => outer_coded_bits,
         InterleaverKind::Block { rows, cols } => round_up(outer_coded_bits, rows * cols),
+        InterleaverKind::Convolutional { branches, depth } => {
+            conv_il_bits(outer_coded_bits, branches, depth)
+        }
     };
 
     let inner_coded_bits = match inner {
@@ -371,6 +386,9 @@ pub fn block_plan(
     let coded_bits = match inner_il {
         InterleaverKind::None => inner_coded_bits,
         InterleaverKind::Block { rows, cols } => round_up(inner_coded_bits, rows * cols),
+        InterleaverKind::Convolutional { branches, depth } => {
+            conv_il_bits(inner_coded_bits, branches, depth)
+        }
     };
 
     BlockPlan {
@@ -417,6 +435,21 @@ pub fn interleave_bits(il: InterleaverKind, bits: &[u8]) -> Vec<u8> {
                 out.extend_from_slice(&permuted);
             }
             out
+        }
+        InterleaverKind::Convolutional { branches, depth } => {
+            // Byte-domain streaming Forney interleaver, driven in FRAME mode:
+            // reset, feed the (byte-packed, `branches`-aligned) payload, then
+            // flush the delay lines. The output grows by the round-trip delay
+            // `branches·(branches−1)·depth`, which `block_plan`'s `conv_il_bits`
+            // mirrors so the deinterleaver knows the length and trims it.
+            let mut ci = crate::fec::ConvInterleaver::new(branches, depth);
+            let bytes = pack_bits_padded(bits);
+            let n = round_up(bytes.len(), branches);
+            let mut padded = bytes;
+            padded.resize(n, 0);
+            let mut out_bytes = ci.feed(&padded);
+            out_bytes.extend_from_slice(&ci.flush());
+            bytes_to_bits(&out_bytes)
         }
     }
 }
