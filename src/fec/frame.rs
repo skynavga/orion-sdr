@@ -16,7 +16,7 @@
 // (reversed on receive), with the scrambler position selected by
 // [`ScramblerPos`]. See the OFDM frame modulator/demodulator for the wiring.
 
-use super::{LdpcCode, PunctureRate};
+use super::{ConvCode, LdpcCode, PunctureRate};
 
 /// A high-level transport unit (MAC-layer view): metadata plus an opaque byte
 /// payload. The frame modulator serializes this to IQ; the frame demodulator
@@ -102,9 +102,11 @@ pub enum InnerFec {
     None,
     /// One of the fixed-family LDPC codes.
     Ldpc(LdpcCode),
-    /// Zero-tail-terminated, punctured rate-1/2 K=5 convolutional code,
-    /// soft-Viterbi-decoded, at the given puncture rate.
-    Convolutional { rate: PunctureRate },
+    /// Zero-tail-terminated, punctured, soft-Viterbi-decoded convolutional code
+    /// at the given puncture rate. `code` selects the mother code
+    /// ([`ConvCode::K5`], the crate default, or [`ConvCode::DvbK7`], DVB-T's
+    /// constraint-length-7 inner code).
+    Convolutional { rate: PunctureRate, code: ConvCode },
 }
 
 /// Interleaver selection for either the inner (LLR-domain) or outer

@@ -23,7 +23,7 @@ use crate::dsp::Rotator;
 use crate::fec::{
     BlockInterleaver, ConvDeinterleaver, ConvInterleaver, CrcKind, DecodeRule, FrameMetadata,
     FramePacket, HeaderFormat, InnerFec, InterleaverKind, OuterFec, RxError, ScramblerKind,
-    ScramblerPos, viterbi_decode_soft,
+    ScramblerPos, viterbi_decode_soft_with,
 };
 use crate::modulate::ofdm::{ConstellationOrder, OfdmConfig};
 use crate::modulate::ofdm_frame::{
@@ -225,10 +225,10 @@ fn inner_decode(
             }
             (info, all_ok)
         }
-        InnerFec::Convolutional { rate } => {
+        InnerFec::Convolutional { rate, code } => {
             // Soft Viterbi over the whole block; the outer code / CRC below
             // decides success, so no per-block convergence flag here.
-            let info = viterbi_decode_soft(coded_llrs, info_len, rate);
+            let info = viterbi_decode_soft_with(code, coded_llrs, info_len, rate);
             (info, true)
         }
     }

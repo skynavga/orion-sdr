@@ -25,9 +25,9 @@ use super::{measure_throughput, minsps_from_env};
 use num_complex::Complex32 as C32;
 use orion_sdr::demodulate::demodulate_frame;
 use orion_sdr::fec::{
-    Bch, BlockInterleaver, DecodeRule, FrameMetadata, FramePacket, InnerFec, InterleaverKind, Ldpc,
-    LdpcCode, OuterFec, PnScrambler, PunctureRate, ReedSolomon, conv_encode_punctured,
-    punctured_coded_len, viterbi_decode_soft,
+    Bch, BlockInterleaver, ConvCode, DecodeRule, FrameMetadata, FramePacket, InnerFec,
+    InterleaverKind, Ldpc, LdpcCode, OuterFec, PnScrambler, PunctureRate, ReedSolomon,
+    conv_encode_punctured, punctured_coded_len, viterbi_decode_soft,
 };
 use orion_sdr::modulate::ofdm_frame::interleave_bits;
 use orion_sdr::modulate::{
@@ -853,6 +853,7 @@ fn throughput_frame_chain_conv_rs() {
         ConstellationOrder::Qpsk,
         InnerFec::Convolutional {
             rate: PunctureRate::R1_2,
+            code: ConvCode::K5,
         },
         OuterFec::ReedSolomon { n: 60, n_parity: 8 },
     )]);
