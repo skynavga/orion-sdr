@@ -9,6 +9,6 @@
 //! submodule encodes one concrete standard's parameters (carrier maps, FEC
 //! chains, scramblers) and produces ready-to-use configs.
 //!
-//! Currently: `dvbt` (DVB-T / narrowband DVB-T for amateur DATV).
+//! Currently: `dvb_t` (DVB-T / narrowband DVB-T for amateur DATV).
 
-pub mod dvbt;
+pub mod dvb_t;

@@ -172,6 +172,11 @@ pub enum ScramblerKind {
         width: u8,
         seed: SeedMode,
     },
+    /// DVB-T energy dispersal: the exact standard PRBS (1 + X^14 + X^15, init
+    /// `100101010000000`, MSB-first — `waveform::dvb_t::DvbTEnergyDispersal`),
+    /// applied byte-domain. Distinct from `Additive` because DVB-T's whitener is
+    /// MSB-first with fixed parameters, not a generic LSB-first LFSR.
+    DvbTEnergyDispersal,
     // A self-synchronizing multiplicative scrambler is a later addition.
 }
 

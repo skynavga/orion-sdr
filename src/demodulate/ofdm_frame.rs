@@ -29,7 +29,7 @@ use crate::modulate::ofdm::{ConstellationOrder, OfdmConfig};
 use crate::modulate::ofdm_frame::{
     BCH_INFO_BITS, BlockPlan, CodecCache, HEADER_CONSTELLATION, HEADER_FIELD_BYTES, HEADER_LDPC,
     McsTable, bits_to_bytes, block_plan, build_scrambler, bytes_to_bits, check_and_strip_crc,
-    symbol_config, symbols_for_coded_bits,
+    scramble_bytes, symbol_config, symbols_for_coded_bits,
 };
 use crate::multicarrier::{CarrierGrid, CyclicPrefixRemove, FftBlock, GridExtract};
 use crate::sync::{OfdmPreamble, ofdm_sync};
@@ -336,11 +336,11 @@ fn decode_chain(
     }
     let mut framed = bits_to_bytes(&framed_bits);
 
-    // 4. Invert the before-outer scramble (byte domain).
-    if scrambler_pos == ScramblerPos::BeforeOuterFec
-        && let Some(ref s) = sc
-    {
-        s.scramble(&mut framed);
+    // 4. Invert the before-outer scramble (byte domain — the whitener is
+    //    self-inverse, so the same call descrambles; handles DVB-T energy
+    //    dispersal and the generic additive LFSR).
+    if scrambler_pos == ScramblerPos::BeforeOuterFec {
+        scramble_bytes(scrambler, per_frame_seed, &mut framed);
     }
 
     // 5. Strip and check the CRC.

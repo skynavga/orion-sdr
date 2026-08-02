@@ -264,7 +264,10 @@ pub fn check_and_strip_crc(crc: CrcKind, data: &[u8]) -> Option<(Vec<u8>, bool)>
 /// for [`ScramblerKind::None`].
 pub fn build_scrambler(kind: ScramblerKind, per_frame_seed: u32) -> Option<PnScrambler> {
     match kind {
-        ScramblerKind::None => None,
+        // `None` and DVB-T energy dispersal produce no generic `PnScrambler`:
+        // DVB-T's whitener is a distinct byte-domain routine applied separately
+        // (see `scramble_bytes`), not a parameterized additive LFSR.
+        ScramblerKind::None | ScramblerKind::DvbTEnergyDispersal => None,
         ScramblerKind::Additive { poly, width, seed } => {
             let raw = match seed {
                 SeedMode::Fixed(v) => v,
@@ -284,6 +287,25 @@ pub fn build_scrambler(kind: ScramblerKind, per_frame_seed: u32) -> Option<PnScr
                 if m == 0 { 1 } else { m }
             };
             Some(PnScrambler::new(poly, width as u32, s))
+        }
+    }
+}
+
+/// Applies the byte-domain whitener for `kind` to `bytes` in place (self-inverse,
+/// so the same call scrambles and descrambles). Handles both the generic
+/// `Additive` LFSR and DVB-T energy dispersal; a no-op for `None`. The
+/// after-inner-FEC bit-domain scramble position uses the `PnScrambler` directly
+/// (DVB-T energy dispersal is byte-domain / before-FEC only).
+pub fn scramble_bytes(kind: ScramblerKind, per_frame_seed: u32, bytes: &mut [u8]) {
+    match kind {
+        ScramblerKind::None => {}
+        ScramblerKind::DvbTEnergyDispersal => {
+            crate::waveform::dvb_t::DvbTEnergyDispersal::new().feed_in_place(bytes);
+        }
+        ScramblerKind::Additive { .. } => {
+            if let Some(s) = build_scrambler(kind, per_frame_seed) {
+                s.scramble(bytes);
+            }
         }
     }
 }
@@ -547,12 +569,11 @@ pub fn encode_chain(
     // 1. CRC over the raw bytes.
     let mut framed = append_crc(crc, bytes);
 
-    // 2. Optional scramble before the outer code.
+    // 2. Optional scramble before the outer code (byte domain — handles both the
+    //    generic additive LFSR and DVB-T energy dispersal).
     let sc = build_scrambler(scrambler, per_frame_seed);
-    if scrambler_pos == ScramblerPos::BeforeOuterFec
-        && let Some(ref s) = sc
-    {
-        s.scramble(&mut framed);
+    if scrambler_pos == ScramblerPos::BeforeOuterFec {
+        scramble_bytes(scrambler, per_frame_seed, &mut framed);
     }
 
     // 3. Outer FEC (byte → coded bits), then outer interleave (byte-domain,

@@ -4,11 +4,11 @@
 use num_complex::Complex32 as C32;
 use orion_sdr::fec::{ConvCode, InnerFec, OuterFec};
 use orion_sdr::modulate::ConstellationOrder;
-use orion_sdr::waveform::dvbt::{
-    DVBT_ACTIVE_CARRIERS, DVBT_CONTINUAL_PILOTS_2K, DVBT_DATA_CARRIERS, DVBT_FS_1MHZ, DVBT_FS_2MHZ,
-    DVBT_FS_333KHZ, DVBT_KMAX, DVBT_N_FFT, DVBT_PRBS_INIT, DvbtEnergyDispersal, GuardInterval,
-    active_to_signed, boosted_pilot_value, dvbt_2k_plan, dvbt_demap_symbol, dvbt_fs_for_bandwidth,
-    dvbt_map_symbol, dvbt_mcs_table, dvbt_occupied_bw, wk_prbs,
+use orion_sdr::waveform::dvb_t::{
+    DVB_T_ACTIVE_CARRIERS, DVB_T_CONTINUAL_PILOTS_2K, DVB_T_DATA_CARRIERS, DVB_T_FS_1MHZ,
+    DVB_T_FS_2MHZ, DVB_T_FS_333KHZ, DVB_T_KMAX, DVB_T_N_FFT, DVB_T_PRBS_INIT, DvbTEnergyDispersal,
+    GuardInterval, active_to_signed, boosted_pilot_value, dvb_t_2k_plan, dvb_t_demap_symbol,
+    dvb_t_fs_for_bandwidth, dvb_t_map_symbol, dvb_t_mcs_table, dvb_t_occupied_bw, wk_prbs,
 };
 
 // ── DVB-T energy dispersal (whitener) ──────────────────────────────────────
@@ -20,7 +20,7 @@ fn energy_dispersal_prbs_known_answer() {
     // (MSB-first) and the next PRBS bits follow. This pins the polynomial
     // (1 + X^14 + X^15), the init (100101010000000), the output tap, and the
     // MSB-first byte order all at once.
-    let mut ed = DvbtEnergyDispersal::new();
+    let mut ed = DvbTEnergyDispersal::new();
     let out = ed.feed(&[0u8; 4]);
     assert_eq!(out[0], 0x03, "first PRBS byte (0000_0011) per EN 300 744");
     // Full 4-byte reference from the standard PRBS (independently reproduced):
@@ -30,8 +30,8 @@ fn energy_dispersal_prbs_known_answer() {
 #[test]
 fn energy_dispersal_init_constant() {
     // The documented init word 100101010000000 over the low 15 bits.
-    assert_eq!(DVBT_PRBS_INIT, 0b100_1010_1000_0000);
-    assert_eq!(DVBT_PRBS_INIT & 0x8000, 0, "init fits in 15 bits");
+    assert_eq!(DVB_T_PRBS_INIT, 0b100_1010_1000_0000);
+    assert_eq!(DVB_T_PRBS_INIT & 0x8000, 0, "init fits in 15 bits");
 }
 
 #[test]
@@ -40,11 +40,11 @@ fn energy_dispersal_self_inverse() {
     // recovers the original — the descrambler is identical to the scrambler.
     let original: Vec<u8> = (0..200).map(|i| (i * 31 + 7) as u8).collect();
 
-    let mut enc = DvbtEnergyDispersal::new();
+    let mut enc = DvbTEnergyDispersal::new();
     let scrambled = enc.feed(&original);
     assert_ne!(scrambled, original, "whitening must change the data");
 
-    let mut dec = DvbtEnergyDispersal::new();
+    let mut dec = DvbTEnergyDispersal::new();
     let recovered = dec.feed(&scrambled);
     assert_eq!(
         recovered, original,
@@ -57,10 +57,10 @@ fn energy_dispersal_streams_across_chunks() {
     // The register carries across feed() calls: chunked feeding equals one-shot.
     let data: Vec<u8> = (0..300).map(|i| (i * 13 + 5) as u8).collect();
 
-    let mut one_shot = DvbtEnergyDispersal::new();
+    let mut one_shot = DvbTEnergyDispersal::new();
     let full = one_shot.feed(&data);
 
-    let mut chunked = DvbtEnergyDispersal::new();
+    let mut chunked = DvbTEnergyDispersal::new();
     let mut acc = Vec::new();
     for c in data.chunks(29) {
         acc.extend_from_slice(&chunked.feed(c));
@@ -71,7 +71,7 @@ fn energy_dispersal_streams_across_chunks() {
 #[test]
 fn energy_dispersal_reset_restarts() {
     let data: Vec<u8> = (0..64).map(|i| (i * 3) as u8).collect();
-    let mut ed = DvbtEnergyDispersal::new();
+    let mut ed = DvbTEnergyDispersal::new();
     let first = ed.feed(&data);
     ed.reset();
     let second = ed.feed(&data);
@@ -81,9 +81,9 @@ fn energy_dispersal_reset_restarts() {
 #[test]
 fn energy_dispersal_feed_in_place_matches_feed() {
     let data: Vec<u8> = (0..80).map(|i| (i * 5 + 2) as u8).collect();
-    let mut a = DvbtEnergyDispersal::new();
+    let mut a = DvbTEnergyDispersal::new();
     let out = a.feed(&data);
-    let mut b = DvbtEnergyDispersal::new();
+    let mut b = DvbTEnergyDispersal::new();
     let mut in_place = data.clone();
     b.feed_in_place(&mut in_place);
     assert_eq!(out, in_place, "feed and feed_in_place agree");
@@ -102,24 +102,27 @@ fn qam_mapping_known_points_fig9a() {
     let s64 = 1.0 / 42f32.sqrt(); // 64-QAM scale 1/√42
 
     // QPSK: y0y1 = 00 → (Re=+1, Im=+1) per Fig 9a.
-    assert!(close(dvbt_map_symbol(&[0, 0]).unwrap(), C32::new(s2, s2)));
+    assert!(close(dvb_t_map_symbol(&[0, 0]).unwrap(), C32::new(s2, s2)));
     // QPSK 11 → (−1, −1).
-    assert!(close(dvbt_map_symbol(&[1, 1]).unwrap(), C32::new(-s2, -s2)));
+    assert!(close(
+        dvb_t_map_symbol(&[1, 1]).unwrap(),
+        C32::new(-s2, -s2)
+    ));
 
     // 16-QAM: y0y1y2y3 = 0000 → top-right (Re=+3, Im=+3).
     assert!(close(
-        dvbt_map_symbol(&[0, 0, 0, 0]).unwrap(),
+        dvb_t_map_symbol(&[0, 0, 0, 0]).unwrap(),
         C32::new(3.0 * s16, 3.0 * s16)
     ));
     // 16-QAM 1101 → (Re=−3, Im=−1): I=(y0,y2)=(1,0), Q=(y1,y3)=(1,1).
     assert!(close(
-        dvbt_map_symbol(&[1, 1, 0, 1]).unwrap(),
+        dvb_t_map_symbol(&[1, 1, 0, 1]).unwrap(),
         C32::new(-3.0 * s16, -s16)
     ));
 
     // 64-QAM: all-zero → (Re=+7, Im=+7).
     assert!(close(
-        dvbt_map_symbol(&[0, 0, 0, 0, 0, 0]).unwrap(),
+        dvb_t_map_symbol(&[0, 0, 0, 0, 0, 0]).unwrap(),
         C32::new(7.0 * s64, 7.0 * s64)
     ));
 }
@@ -130,7 +133,7 @@ fn qam_even_odd_axis_assignment() {
     // odd bits must leave Re at its all-even-zero value and move only Im.
     let s16 = 1.0 / 10f32.sqrt();
     // 16-QAM y0y1y2y3 = 0101: I=(y0,y2)=(0,0)→+3, Q=(y1,y3)=(1,1)→−1.
-    let sym = dvbt_map_symbol(&[0, 1, 0, 1]).unwrap();
+    let sym = dvb_t_map_symbol(&[0, 1, 0, 1]).unwrap();
     assert!(close(sym, C32::new(3.0 * s16, -s16)));
 }
 
@@ -140,8 +143,8 @@ fn qam_map_demap_round_trip_all_points() {
     for &v in &[2usize, 4, 6] {
         for code in 0u32..(1 << v) {
             let bits: Vec<u8> = (0..v).rev().map(|b| ((code >> b) & 1) as u8).collect();
-            let sym = dvbt_map_symbol(&bits).unwrap();
-            let back = dvbt_demap_symbol(sym, v).unwrap();
+            let sym = dvb_t_map_symbol(&bits).unwrap();
+            let back = dvb_t_demap_symbol(sym, v).unwrap();
             assert_eq!(back, bits, "v={v} code={code:0width$b}", width = v);
         }
     }
@@ -156,7 +159,7 @@ fn qam_unit_average_energy() {
         let mut e = 0.0f32;
         for code in 0..n {
             let bits: Vec<u8> = (0..v).rev().map(|b| ((code >> b) & 1) as u8).collect();
-            e += dvbt_map_symbol(&bits).unwrap().norm_sqr();
+            e += dvb_t_map_symbol(&bits).unwrap().norm_sqr();
         }
         e /= n as f32;
         assert!((e - 1.0).abs() < 1e-4, "v={v}: avg energy {e} != 1");
@@ -165,18 +168,18 @@ fn qam_unit_average_energy() {
 
 #[test]
 fn qam_unsupported_order_is_none() {
-    assert!(dvbt_map_symbol(&[0, 0, 0]).is_none()); // v=3 unsupported
-    assert!(dvbt_demap_symbol(C32::new(0.0, 0.0), 8).is_none()); // 256-QAM not in DVB-T
+    assert!(dvb_t_map_symbol(&[0, 0, 0]).is_none()); // v=3 unsupported
+    assert!(dvb_t_demap_symbol(C32::new(0.0, 0.0), 8).is_none()); // 256-QAM not in DVB-T
 }
 
 // ── 2K numerology and carrier map ──────────────────────────────────────────
 
 #[test]
 fn numerology_constants() {
-    assert_eq!(DVBT_N_FFT, 2048);
-    assert_eq!(DVBT_KMAX, 1704);
-    assert_eq!(DVBT_ACTIVE_CARRIERS, 1705);
-    assert_eq!(DVBT_DATA_CARRIERS, 1512);
+    assert_eq!(DVB_T_N_FFT, 2048);
+    assert_eq!(DVB_T_KMAX, 1704);
+    assert_eq!(DVB_T_ACTIVE_CARRIERS, 1705);
+    assert_eq!(DVB_T_DATA_CARRIERS, 1512);
 }
 
 #[test]
@@ -190,18 +193,18 @@ fn guard_interval_cp_lengths() {
 #[test]
 fn continual_pilots_table_valid() {
     // 45 continual pilots (EN 300 744 Table 7), in range, monotonic, unique.
-    assert_eq!(DVBT_CONTINUAL_PILOTS_2K.len(), 45);
+    assert_eq!(DVB_T_CONTINUAL_PILOTS_2K.len(), 45);
     let mut prev = None;
-    for &k in &DVBT_CONTINUAL_PILOTS_2K {
-        assert!(k <= DVBT_KMAX, "pilot {k} out of range");
+    for &k in &DVB_T_CONTINUAL_PILOTS_2K {
+        assert!(k <= DVB_T_KMAX, "pilot {k} out of range");
         if let Some(p) = prev {
             assert!(k > p, "pilots must be strictly increasing");
         }
         prev = Some(k);
     }
     // First and last per the table.
-    assert_eq!(DVBT_CONTINUAL_PILOTS_2K[0], 0);
-    assert_eq!(*DVBT_CONTINUAL_PILOTS_2K.last().unwrap(), 1704);
+    assert_eq!(DVB_T_CONTINUAL_PILOTS_2K[0], 0);
+    assert_eq!(*DVB_T_CONTINUAL_PILOTS_2K.last().unwrap(), 1704);
 }
 
 #[test]
@@ -229,8 +232,8 @@ fn active_to_signed_centering() {
 }
 
 #[test]
-fn dvbt_2k_plan_is_valid() {
-    let plan = dvbt_2k_plan(GuardInterval::G1_32);
+fn dvb_t_2k_plan_is_valid() {
+    let plan = dvb_t_2k_plan(GuardInterval::G1_32);
     assert_eq!(plan.n_fft(), 2048);
     assert_eq!(plan.cp_len(), 64);
     assert_eq!(plan.pilot_carriers().len(), 45);
@@ -244,17 +247,17 @@ fn dvbt_2k_plan_is_valid() {
 #[test]
 fn fs_bandwidth_scaling() {
     // fs = BW · 2048/1705 ; round-trips with the inverse.
-    let fs_1m = dvbt_fs_for_bandwidth(1_000_000.0);
-    assert!((fs_1m - DVBT_FS_1MHZ).abs() < 1.0);
-    assert!((dvbt_occupied_bw(fs_1m) - 1_000_000.0).abs() < 1.0);
+    let fs_1m = dvb_t_fs_for_bandwidth(1_000_000.0);
+    assert!((fs_1m - DVB_T_FS_1MHZ).abs() < 1.0);
+    assert!((dvb_t_occupied_bw(fs_1m) - 1_000_000.0).abs() < 1.0);
     // The three mode constants scale linearly.
-    assert!((DVBT_FS_2MHZ - 2.0 * DVBT_FS_1MHZ).abs() < 1.0);
+    assert!((DVB_T_FS_2MHZ - 2.0 * DVB_T_FS_1MHZ).abs() < 1.0);
     // ~1 MHz mode is ~1.2012 MS/s (1e6 · 2048/1705).
-    assert!((DVBT_FS_1MHZ - 1_201_173.0).abs() < 100.0);
+    assert!((DVB_T_FS_1MHZ - 1_201_173.0).abs() < 100.0);
     // 333 kHz is below Pluto's ~521 kS/s floor (documented, still valid). Route
     // through the runtime helper so this is a real check, not a const compare.
-    let fs_333k = dvbt_fs_for_bandwidth(333_000.0);
-    assert!((DVBT_FS_333KHZ - fs_333k).abs() < 1.0);
+    let fs_333k = dvb_t_fs_for_bandwidth(333_000.0);
+    assert!((DVB_T_FS_333KHZ - fs_333k).abs() < 1.0);
     assert!(
         fs_333k < 521_000.0,
         "333 kHz mode fs {fs_333k} below Pluto floor"
@@ -262,8 +265,8 @@ fn fs_bandwidth_scaling() {
 }
 
 #[test]
-fn mcs_table_dvbt() {
-    let t = dvbt_mcs_table();
+fn mcs_table_dvb_t() {
+    let t = dvb_t_mcs_table();
     assert_eq!(t.len(), 3);
     // Every entry uses the K=7 conv inner + RS(204,188) outer.
     let m0 = t.get(0).unwrap();

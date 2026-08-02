@@ -141,7 +141,7 @@ impl PyOfdmConfig {
                 rate: parse_puncture_rate(code)?,
                 code: ConvCode::K5,
             },
-            "convolutional_k7" | "conv_k7" | "dvbt" => InnerFec::Convolutional {
+            "convolutional_k7" | "conv_k7" | "dvb_t" => InnerFec::Convolutional {
                 rate: parse_puncture_rate(code)?,
                 code: ConvCode::DvbK7,
             },
@@ -273,6 +273,15 @@ impl PyOfdmConfig {
         cfg.scrambler = scrambler;
         cfg.scrambler_pos = pos;
         Ok(Self(cfg))
+    }
+
+    /// Selects DVB-T energy dispersal (the exact standard PRBS whitener,
+    /// byte-domain, before the outer FEC) as the scrambler.
+    fn with_dvb_t_scrambler(&self) -> Self {
+        let mut cfg = self.0.clone();
+        cfg.scrambler = ScramblerKind::DvbTEnergyDispersal;
+        cfg.scrambler_pos = ScramblerPos::BeforeOuterFec;
+        Self(cfg)
     }
 
     /// Validates the frame-layer configuration, raising `ValueError` on an

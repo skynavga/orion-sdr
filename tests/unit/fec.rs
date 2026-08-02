@@ -175,8 +175,8 @@ fn interleaver_actually_permutes_across_rows() {
 // ── Forney convolutional interleaver (streaming) ───────────────────────────
 
 #[test]
-fn conv_interleaver_dvbt_dimensions() {
-    let ci = ConvInterleaver::dvbt();
+fn conv_interleaver_dvb_t_dimensions() {
+    let ci = ConvInterleaver::dvb_t();
     assert_eq!((ci.branches(), ci.depth()), (12, 17));
     assert_eq!(204, ci.branches() * ci.depth()); // one RS(204,188) codeword
     assert_eq!(ci.roundtrip_delay(), conv_roundtrip_delay(12, 17));
@@ -198,7 +198,7 @@ fn conv_frame_round_trip(branches: usize, depth: usize, payload: &[u8]) {
 }
 
 #[test]
-fn conv_interleaver_frame_round_trip_dvbt() {
+fn conv_interleaver_frame_round_trip_dvb_t() {
     for &n in &[204usize, 408, 2040] {
         let mut r = xorshift(0xF0 ^ n as u64);
         let payload: Vec<u8> = (0..n).map(|_| (r() & 0xff) as u8).collect();
@@ -219,10 +219,10 @@ fn conv_interleaver_stream_equals_chunked() {
     let mut r = xorshift(0x5EED);
     let data: Vec<u8> = (0..500).map(|_| (r() & 0xff) as u8).collect();
 
-    let mut one_shot = ConvInterleaver::dvbt();
+    let mut one_shot = ConvInterleaver::dvb_t();
     let full = one_shot.feed(&data);
 
-    let mut chunked = ConvInterleaver::dvbt();
+    let mut chunked = ConvInterleaver::dvb_t();
     let mut acc = Vec::new();
     for chunk in data.chunks(37) {
         acc.extend_from_slice(&chunked.feed(chunk));
@@ -233,7 +233,7 @@ fn conv_interleaver_stream_equals_chunked() {
 #[test]
 fn conv_interleaver_reset_restarts() {
     let data: Vec<u8> = (1..=204).collect();
-    let mut ci = ConvInterleaver::dvbt();
+    let mut ci = ConvInterleaver::dvb_t();
     let first = ci.feed(&data);
     ci.reset();
     let second = ci.feed(&data);
@@ -251,7 +251,7 @@ fn conv_interleaver_spreads_a_burst() {
     for slot in data.iter_mut().skip(24).take(12) {
         *slot = 1; // a 12-byte burst, one per branch
     }
-    let mut il = ConvInterleaver::dvbt();
+    let mut il = ConvInterleaver::dvb_t();
     let mut out = il.feed(&data);
     out.extend_from_slice(&il.flush());
     let ones: Vec<usize> = out

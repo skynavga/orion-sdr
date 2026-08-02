@@ -161,7 +161,7 @@ impl PyMcsTable {
                 rate: parse_rate(inner_code)?,
                 code: ConvCode::K5,
             },
-            "convolutional_k7" | "conv_k7" | "dvbt" => InnerFec::Convolutional {
+            "convolutional_k7" | "conv_k7" | "dvb_t" => InnerFec::Convolutional {
                 rate: parse_rate(inner_code)?,
                 code: ConvCode::DvbK7,
             },

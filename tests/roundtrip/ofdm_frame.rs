@@ -225,7 +225,7 @@ fn roundtrip_frame_forney_outer_interleaver() {
 }
 
 #[test]
-fn roundtrip_frame_dvbt_payload_fec_chain() {
+fn roundtrip_frame_dvb_t_payload_fec_chain() {
     // The full DVB-T-conformant *payload* FEC chain composed end to end:
     // Reed–Solomon(204,188) outer + Forney (I=12, M=17) outer interleaver +
     // K=7 (0o171,0o133) punctured convolutional inner, over QPSK. Proves the
