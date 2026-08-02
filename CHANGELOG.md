@@ -9,6 +9,64 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.49] - 2026-08-02
+
+NB-DVB-T (narrowband DVB-T for amateur DATV) Phase 3: the fully conformant,
+preamble-less DVB-T on-air frame (ETSI EN 300 744), closing the last fidelity
+gaps. A frame now carries an MPEG-2 transport-stream payload with TPS signalling
+on the 17 reserved carriers, four-phase scattered pilots, DVB-T-exact
+soft-decision, and guard-interval acquisition — no Schmidl & Cox preamble and no
+`OrionSdr` header. Every stage is bit-exact to the standard where a known answer
+exists, decoded end-to-end by orion-sdr's own RX. Also adds the narrowband
+bandwidth-mode API and DVB-T benchmarks/documentation.
+
+### Added
+
+- TPS signalling (`waveform::dvb_t_tps`): a standalone GF(2^7) BCH(67,53) t=2
+  code (generator `h(x)=0x4377`, primitive poly `x^7+x^3+1`; kept separate from
+  the hot GF(2^8) `Gf256`/`Bch`), the 68-bit `TpsWord` pack/unpack with the
+  standard signalling tables and sync words, and `TpsEncoder`/`TpsDecoder` for
+  DBPSK along the symbol axis (the decoder averages the 17 carriers, needing no
+  absolute phase reference).
+- Guard-interval acquisition (`sync::dvb_t_gi_sync`, `GiSyncConfig`): the van de
+  Beek ML cyclic-prefix timing/CFO estimator (`|γ| − ρ·Φ`) for preamble-less
+  OFDM, tunable via the energy weight `ρ` and a coherent-accumulation bound.
+- DVB-T soft-decision: `dvb_t_soft_llr` (Figure-9a max-log LLRs) wired into the
+  scattered frame path, giving the DVB-T link real soft-decision coding gain.
+- MPEG-TS payload layer (`waveform::dvb_t_ts`): 188-byte packet adaptation +
+  energy dispersal (8-packet PRBS re-init, first-sync-byte inversion
+  0x47→0xB8, sync-bytes skipped-but-clocked; first randomized byte 0x03).
+- `HeaderFormat::DvbTps` + `HeaderFormat::has_header_block()`; the two hardcoded
+  `== OrionSdr` dispatch sites become a semantic check. `OfdmConfig::validate`
+  and the Python `with_header_format` gain the variant.
+- Conformant frame assemblers, direction-split: `modulate::dvb_t_frame`
+  (`dvb_t_frame_modulate`, `DvbTFrame`) and `demodulate::dvb_t_frame`
+  (`dvb_t_frame_demodulate`, `DvbTRxFrame`, `DvbTRxError`), sharing
+  `DvbTFrameParams` from `waveform::dvb_t`. `decode_chain` is now `pub` for reuse.
+- Narrowband bandwidth-mode API: `NbBandwidth {Bw333kHz, Bw1MHz, Bw2MHz}` with
+  `occupied_hz()`/`fs()`/`is_pluto_continuous_tx()`, composed via a new generic
+  `OfdmConfig::with_fs()` builder.
+- Benchmarks: DVB-T 2K throughput swept over the three bandwidth modes, a
+  conformant-frame end-to-end throughput bench, and a `snr/dvb_t.rs` BER /
+  frame-decode-vs-SNR sweep. New `docs/dvb.md`; DVB-T results and examples added
+  to `docs/performance.md` / `modulate.md` / `demodulate.md` / `python.md`.
+
+### Changed
+
+- The frame layer routes payload symbols through the DVB-T-exact constellation
+  (map + soft-LLR) on a DVB-T constellation; BPSK header blocks keep the generic
+  path. Non-DVB-T links are unaffected.
+
+### Known limitations
+
+- The conformant frame's decode-vs-SNR is erratic and not ordered by nominal
+  robustness: a small payload is padded to a full 68-symbol frame, so the real
+  coded data occupies only ~5–13 of 68 symbols and the per-symbol scattered-pilot
+  equalizer's band-edge residual dominates. Acquisition and TPS are unaffected
+  (verified). Candidate fixes (multi-codeword frame packing, MMSE equalizer) are
+  deferred to a later optimization pass. The conformant `dvb_t_frame` path is not
+  yet exposed through the Python bindings.
+
 ## [0.0.48] - 2026-08-01
 
 NB-DVB-T (narrowband DVB-T for amateur DATV) Phase 2: DVB-T's four-phase
