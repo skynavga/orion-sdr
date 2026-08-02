@@ -147,8 +147,12 @@ fn soft_demap_scattered(
     let n_fft = cfg.carrier_plan.n_fft();
     let cp_len = cfg.carrier_plan.cp_len();
     let n_data = extractor.num_data_carriers();
-    let bps = n_data * constellation.bits_per_symbol();
+    let vbits = constellation.bits_per_symbol();
+    let bps = n_data * vbits;
 
+    // Payload symbols on a DVB-T constellation get the DVB-T-exact soft LLRs
+    // (Figure-9a bit assignment); a BPSK header block uses the generic demapper.
+    let dvb_t_llr = crate::waveform::dvb_t::is_dvb_t_constellation(constellation);
     let mut soft = OfdmSoftDemod::new(&cfg);
     // A per-symbol-interpolating equalizer; its pilot set is re-installed for
     // each symbol's phase before `process`.
@@ -179,9 +183,17 @@ fn soft_demap_scattered(
             return None;
         }
         extractor.extract_symbol(&equalized, &mut symbols);
-        let sw = soft.process(&symbols, &mut llrs[out_off..out_off + bps]);
-        if sw.out_written != bps {
-            return None;
+        let sym_llrs = &mut llrs[out_off..out_off + bps];
+        if dvb_t_llr {
+            for (c, &sym) in symbols.iter().enumerate() {
+                let l = crate::waveform::dvb_t::dvb_t_soft_llr(sym, vbits).expect("DVB-T order");
+                sym_llrs[c * vbits..(c + 1) * vbits].copy_from_slice(&l);
+            }
+        } else {
+            let sw = soft.process(&symbols, sym_llrs);
+            if sw.out_written != bps {
+                return None;
+            }
         }
         in_off += sps;
         out_off += bps;

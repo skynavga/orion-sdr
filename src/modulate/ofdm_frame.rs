@@ -653,16 +653,23 @@ fn map_bits_to_iq(base: &OfdmConfig, constellation: ConstellationOrder, bits: &[
 /// swaps the static [`GridMap`] for the rotating grid. Baseband only
 /// (`rf_hz == 0.0`, which every DVB-T config uses); zero-pads a final partial
 /// symbol like `OfdmMod::modulate`.
+///
+/// Payload symbols on a DVB-T constellation (QPSK/16-QAM/64-QAM) are mapped with
+/// the DVB-T-exact Figure-9a mapping (`dvb_t_map_symbol`); a BPSK block (the
+/// `OrionSdr` header, not a DVB-T order) falls back to the generic mapper.
 fn map_bits_to_iq_scattered(
     base: &OfdmConfig,
     constellation: ConstellationOrder,
     bits: &[u8],
     mapper: &mut crate::waveform::dvb_t::ScatteredPilotMapper,
 ) -> Vec<C32> {
+    use crate::waveform::dvb_t::{dvb_t_map_symbol, is_dvb_t_constellation};
+
     let n_data = mapper.num_data_carriers();
     let n_fft = mapper.n_fft();
     let cp_len = base.carrier_plan.cp_len();
-    let bps = n_data * constellation.bits_per_symbol();
+    let vbits = constellation.bits_per_symbol();
+    let bps = n_data * vbits;
     if bps == 0 {
         return Vec::new();
     }
@@ -670,6 +677,7 @@ fn map_bits_to_iq_scattered(
     let mut padded = bits.to_vec();
     padded.resize(n_symbols * bps, 0);
 
+    let dvb_t_map = is_dvb_t_constellation(constellation);
     let mut sym_mapper = crate::modulate::ofdm::ideal_symbol_mapper(constellation);
     let mut ifft = crate::multicarrier::IfftBlock::new(n_fft);
     let mut cp_insert = crate::multicarrier::CyclicPrefixInsert::new(n_fft, cp_len);
@@ -682,7 +690,15 @@ fn map_bits_to_iq_scattered(
     let g = base.gain;
     for s in 0..n_symbols {
         let bit_off = s * bps;
-        sym_mapper.process(&padded[bit_off..bit_off + bps], &mut symbols);
+        let sym_bits = &padded[bit_off..bit_off + bps];
+        if dvb_t_map {
+            // DVB-T Figure-9a constellation, carrier by carrier.
+            for (c, chunk) in sym_bits.chunks(vbits).enumerate() {
+                symbols[c] = dvb_t_map_symbol(chunk).expect("DVB-T order");
+            }
+        } else {
+            sym_mapper.process(sym_bits, &mut symbols);
+        }
         mapper.map_symbol(&symbols, &mut freq);
         ifft.process(&freq, &mut time);
         let cp_out = &mut out[s * sps..(s + 1) * sps];

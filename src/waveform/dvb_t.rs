@@ -196,6 +196,66 @@ pub fn dvb_t_demap_symbol(sym: num_complex::Complex32, v: usize) -> Option<Vec<u
     Some(out)
 }
 
+/// Max-log soft LLRs for one received DVB-T symbol `sym` at order `v` bits,
+/// returned in the same `y0..y(v-1)` order as [`dvb_t_map_symbol`] (even bits on
+/// the I axis, odd on Q). `LLR > 0 ⇒ bit more likely 0`, matching the crate-wide
+/// convention (see `demodulate::ofdm`). Returns `None` for an unsupported order.
+///
+/// This is the DVB-T counterpart to the generic `qam_soft_llr`: the generic
+/// mapper groups the first half of the bits on I and the second on Q with its own
+/// Gray labels, whereas DVB-T interleaves even/odd bits across the axes and uses
+/// the Figure-9a per-axis tables — so DVB-T soft-decision needs this dedicated
+/// LLR extraction rather than the generic one.
+pub fn dvb_t_soft_llr(sym: num_complex::Complex32, v: usize) -> Option<Vec<f32>> {
+    let table = dvb_t_axis_table(v)?;
+    let scale = crate::modulate::qam::axis_scale(v);
+    let k = v / 2; // bits per axis
+
+    // Per-axis LLRs for the k axis bits (MSB-first, matching `axis_index`).
+    let axis_llrs = |coord: f32| -> Vec<f32> {
+        let mut out = vec![0.0f32; k];
+        for (b, slot) in out.iter_mut().enumerate() {
+            // Axis index bit `b` is at shift (k-1-b): MSB is bit 0 of the label.
+            let shift = k - 1 - b;
+            let mut d0 = f32::INFINITY;
+            let mut d1 = f32::INFINITY;
+            for (idx, &lvl) in table.iter().enumerate() {
+                let d = coord - lvl as f32 * scale;
+                let d_sq = d * d;
+                if (idx >> shift) & 1 == 0 {
+                    d0 = d0.min(d_sq);
+                } else {
+                    d1 = d1.min(d_sq);
+                }
+            }
+            // Positive ⇒ bit 0 (closer to a 0-labelled level than any 1-labelled).
+            *slot = d1 - d0;
+        }
+        out
+    };
+
+    let il = axis_llrs(sym.re);
+    let ql = axis_llrs(sym.im);
+    // Re-interleave to y-order: even bits from I, odd from Q.
+    let mut out = vec![0.0f32; v];
+    for j in 0..k {
+        out[2 * j] = il[j];
+        out[2 * j + 1] = ql[j];
+    }
+    Some(out)
+}
+
+/// Whether `order` is one of the three DVB-T constellations (QPSK/16-QAM/64-QAM)
+/// that [`dvb_t_map_symbol`]/[`dvb_t_soft_llr`] handle. BPSK/256-QAM are crate
+/// extensions outside DVB-T, so a link carrying them (e.g. an `OrionSdr`-header
+/// BPSK block) must fall back to the generic mapper for those symbols.
+pub fn is_dvb_t_constellation(order: ConstellationOrder) -> bool {
+    matches!(
+        order,
+        ConstellationOrder::Qpsk | ConstellationOrder::Qam16 | ConstellationOrder::Qam64
+    )
+}
+
 // ── 2K-mode numerology and carrier map (ETSI EN 300 744 §4.4–4.5) ───────────
 //
 // DVB-T 2K mode: an n_fft = 2048 IFFT with Kmax = 1704 active carriers (indices

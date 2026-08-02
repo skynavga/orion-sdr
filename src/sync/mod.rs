@@ -13,6 +13,7 @@
 //   - `Candidate` — sync candidate (time_sym, freq_bin, score)
 
 pub mod costas;
+pub mod dvb_t_gi_sync;
 pub mod ft4_sync;
 pub mod ft8_sync;
 pub mod ofdm_sync;
@@ -20,6 +21,10 @@ pub mod psk31_sync;
 pub mod waterfall;
 
 pub use costas::Candidate;
+pub use dvb_t_gi_sync::{
+    GiSyncConfig, GiSyncResult, dvb_t_gi_refine, dvb_t_gi_refine_with, dvb_t_gi_sync,
+    dvb_t_gi_sync_with,
+};
 pub use ft4_sync::{Ft4SyncResult, ft4_sync};
 pub use ft8_sync::{Ft8SyncResult, ft8_sync};
 pub use ofdm_sync::{
