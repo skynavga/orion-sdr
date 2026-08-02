@@ -11,7 +11,7 @@ FT8/FT4, PSK31, OFDM, and a coded, framed COFDM link.
 
 ## Status
 
-Pre-alpha (v0.0.47). See [CHANGELOG.md](CHANGELOG.md) for release history.
+Pre-alpha (v0.0.48). See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Next Milestones
 
