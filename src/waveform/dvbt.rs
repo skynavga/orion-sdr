@@ -195,3 +195,162 @@ pub fn dvbt_demap_symbol(sym: num_complex::Complex32, v: usize) -> Option<Vec<u8
     }
     Some(out)
 }
+
+// ── 2K-mode numerology and carrier map (ETSI EN 300 744 §4.4–4.5) ───────────
+//
+// DVB-T 2K mode: an n_fft = 2048 IFFT with Kmax = 1704 active carriers (indices
+// 0..=1704, so 1705 carriers), of which 1512 carry data, 45 are continual
+// pilots, plus scattered pilots and 17 TPS carriers. Narrowband DVB-T scales
+// only the sample rate `fs` (occupied_BW = fs·1705/2048); the carrier map is
+// unchanged. This phase places the 45 continual pilots and treats the scattered/
+// TPS positions as data (tightened to the conformant 1512 when scattered pilots
+// and TPS land); channel estimation uses the preamble training symbol.
+
+use crate::fec::{ConvCode, InnerFec, OuterFec, PunctureRate};
+use crate::modulate::{ConstellationOrder, Mcs, McsTable};
+use crate::multicarrier::CarrierPlan;
+use num_complex::Complex32 as C32;
+
+/// DVB-T 2K-mode FFT size.
+pub const DVBT_N_FFT: usize = 2048;
+/// Highest active carrier index (Kmax) in 2K mode; carriers span `0..=DVBT_KMAX`.
+pub const DVBT_KMAX: usize = 1704;
+/// Number of active (used) carriers in 2K mode, `DVBT_KMAX + 1`.
+pub const DVBT_ACTIVE_CARRIERS: usize = DVBT_KMAX + 1; // 1705
+/// Number of data-carrying carriers per symbol in 2K mode (constant).
+pub const DVBT_DATA_CARRIERS: usize = 1512;
+/// DC-centering offset: DVB active index `a` maps to signed carrier `a − OFFSET`.
+const DVBT_CENTER: i32 = (DVBT_KMAX / 2) as i32; // 852
+
+/// The 45 continual-pilot carrier indices for 2K mode (EN 300 744 Table 7,
+/// 2K column). "Continual" = present on every symbol.
+pub const DVBT_CONTINUAL_PILOTS_2K: [usize; 45] = [
+    0, 48, 54, 87, 141, 156, 192, 201, 255, 279, 282, 333, 432, 450, 483, 525, 531, 618, 636, 714,
+    759, 765, 780, 804, 873, 888, 918, 939, 942, 969, 984, 1050, 1101, 1107, 1110, 1137, 1140,
+    1146, 1206, 1269, 1323, 1377, 1491, 1683, 1704,
+];
+
+/// DVB-T guard interval as a fraction of the useful symbol part `Tu`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuardInterval {
+    G1_32,
+    G1_16,
+    G1_8,
+    G1_4,
+}
+
+impl GuardInterval {
+    /// Cyclic-prefix length in samples for 2K mode (`Tu = 2048`).
+    pub const fn cp_len_2k(self) -> usize {
+        match self {
+            GuardInterval::G1_32 => DVBT_N_FFT / 32, // 64
+            GuardInterval::G1_16 => DVBT_N_FFT / 16, // 128
+            GuardInterval::G1_8 => DVBT_N_FFT / 8,   // 256
+            GuardInterval::G1_4 => DVBT_N_FFT / 4,   // 512
+        }
+    }
+}
+
+/// Maps a DVB active-carrier index `a` (0..=Kmax) to the crate's signed,
+/// DC-centered carrier index (`a − Kmax/2`), so the band spans
+/// `−852..=+852` around DC.
+#[inline]
+pub const fn active_to_signed(a: usize) -> i32 {
+    a as i32 - DVBT_CENTER
+}
+
+/// The reference-sequence PRBS `w_k` (EN 300 744 §4.5.2): polynomial
+/// X^11 + X^2 + 1, register all-ones, one bit per active carrier. Returns the
+/// first `len` bits; the sequence begins `1111111111100…`.
+pub fn wk_prbs(len: usize) -> Vec<u8> {
+    // 11-bit register x1..x11 in bits 0..10; output = x11 (bit 10), feedback =
+    // x11 XOR x2 (bits 10 and 1), shifted into x1 (bit 0).
+    let mut reg: u16 = 0x7FF; // 11 ones
+    let mut out = Vec::with_capacity(len);
+    for _ in 0..len {
+        let bit = ((reg >> 10) & 1) as u8;
+        out.push(bit);
+        let fb = ((reg >> 10) ^ (reg >> 1)) & 1;
+        reg = ((reg << 1) | fb) & 0x7FF;
+    }
+    out
+}
+
+/// The boosted continual/scattered-pilot value for a PRBS bit `w_k`:
+/// `Re = 4/3·2·(1/2 − w_k)` (= ±4/3), `Im = 0` (EN 300 744 §4.5.3/4.5.4). The
+/// 4/3 factor is the boosted amplitude giving `E[c·c*] = 16/9`.
+#[inline]
+pub fn boosted_pilot_value(wk: u8) -> C32 {
+    C32::new((4.0 / 3.0) * 2.0 * (0.5 - wk as f32), 0.0)
+}
+
+/// Builds the 2K-mode carrier plan for the given guard interval: n_fft = 2048,
+/// the 45 continual pilots (boosted, PRBS-valued) as pilot carriers, and every
+/// other active carrier as data. (Phase 1: scattered-pilot and TPS positions are
+/// still data — 1660 data carriers — tightened to 1512 when those land.)
+pub fn dvbt_2k_plan(guard: GuardInterval) -> CarrierPlan {
+    let wk = wk_prbs(DVBT_ACTIVE_CARRIERS);
+    let pilots: Vec<(i32, C32)> = DVBT_CONTINUAL_PILOTS_2K
+        .iter()
+        .map(|&a| (active_to_signed(a), boosted_pilot_value(wk[a])))
+        .collect();
+    let pilot_set: std::collections::HashSet<usize> =
+        DVBT_CONTINUAL_PILOTS_2K.iter().copied().collect();
+    let data: Vec<i32> = (0..=DVBT_KMAX)
+        .filter(|a| !pilot_set.contains(a))
+        .map(active_to_signed)
+        .collect();
+    CarrierPlan::new(DVBT_N_FFT, guard.cp_len_2k())
+        .with_data_carriers(data)
+        .with_pilot_carriers(pilots)
+}
+
+// ── Bandwidth / sample-rate scaling (narrowband DVB-T) ──────────────────────
+//
+// occupied_BW = fs · (active/n_fft) = fs · 1705/2048, so fs = BW · 2048/1705.
+
+/// Sample rate (S/s) for a target occupied RF bandwidth (Hz):
+/// `fs = occupied_hz · 2048 / 1705`.
+pub fn dvbt_fs_for_bandwidth(occupied_hz: f32) -> f32 {
+    occupied_hz * DVBT_N_FFT as f32 / DVBT_ACTIVE_CARRIERS as f32
+}
+
+/// Occupied RF bandwidth (Hz) for a sample rate: the inverse of
+/// [`dvbt_fs_for_bandwidth`].
+pub fn dvbt_occupied_bw(fs: f32) -> f32 {
+    fs * DVBT_ACTIVE_CARRIERS as f32 / DVBT_N_FFT as f32
+}
+
+/// fs for the ~333 kHz narrowband mode (robust 70 cm config). Below PlutoSDR's
+/// ~521 kS/s continuous-TX floor — valid for the library, not for continuous
+/// Pluto TX.
+pub const DVBT_FS_333KHZ: f32 = 333_000.0 * DVBT_N_FFT as f32 / DVBT_ACTIVE_CARRIERS as f32;
+/// fs for the ~1 MHz narrowband mode (common general-purpose amateur DATV).
+pub const DVBT_FS_1MHZ: f32 = 1_000_000.0 * DVBT_N_FFT as f32 / DVBT_ACTIVE_CARRIERS as f32;
+/// fs for the ~2 MHz narrowband mode (wider repeater config).
+pub const DVBT_FS_2MHZ: f32 = 2_000_000.0 * DVBT_N_FFT as f32 / DVBT_ACTIVE_CARRIERS as f32;
+
+// ── DVB-T MCS table (concatenated FEC) ──────────────────────────────────────
+
+/// A DVB-T MCS table: QPSK and 16-QAM, each with the K=7 punctured convolutional
+/// inner code (rates 1/2, 2/3, 3/4) and the RS(204,188) outer code — the DVB-T
+/// concatenation. The scrambler (energy dispersal) and the Forney outer
+/// interleaver are link-wide settings on the config, not per-MCS.
+pub fn dvbt_mcs_table() -> McsTable {
+    let rs = OuterFec::ReedSolomon {
+        n: 204,
+        n_parity: 16,
+    };
+    let conv = |rate| InnerFec::Convolutional {
+        rate,
+        code: ConvCode::DvbK7,
+    };
+    McsTable::new(vec![
+        // Robust: QPSK rate 1/2 (333 kHz-class).
+        Mcs::new(ConstellationOrder::Qpsk, conv(PunctureRate::R1_2), rs),
+        // General-purpose: QPSK rate 2/3 (1 MHz-class).
+        Mcs::new(ConstellationOrder::Qpsk, conv(PunctureRate::R2_3), rs),
+        // Wider: 16-QAM rate 3/4 (2 MHz-class).
+        Mcs::new(ConstellationOrder::Qam16, conv(PunctureRate::R3_4), rs),
+    ])
+}

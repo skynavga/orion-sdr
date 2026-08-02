@@ -2,8 +2,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use num_complex::Complex32 as C32;
+use orion_sdr::fec::{ConvCode, InnerFec, OuterFec};
+use orion_sdr::modulate::ConstellationOrder;
 use orion_sdr::waveform::dvbt::{
-    DVBT_PRBS_INIT, DvbtEnergyDispersal, dvbt_demap_symbol, dvbt_map_symbol,
+    DVBT_ACTIVE_CARRIERS, DVBT_CONTINUAL_PILOTS_2K, DVBT_DATA_CARRIERS, DVBT_FS_1MHZ, DVBT_FS_2MHZ,
+    DVBT_FS_333KHZ, DVBT_KMAX, DVBT_N_FFT, DVBT_PRBS_INIT, DvbtEnergyDispersal, GuardInterval,
+    active_to_signed, boosted_pilot_value, dvbt_2k_plan, dvbt_demap_symbol, dvbt_fs_for_bandwidth,
+    dvbt_map_symbol, dvbt_mcs_table, dvbt_occupied_bw, wk_prbs,
 };
 
 // ── DVB-T energy dispersal (whitener) ──────────────────────────────────────
@@ -162,4 +167,120 @@ fn qam_unit_average_energy() {
 fn qam_unsupported_order_is_none() {
     assert!(dvbt_map_symbol(&[0, 0, 0]).is_none()); // v=3 unsupported
     assert!(dvbt_demap_symbol(C32::new(0.0, 0.0), 8).is_none()); // 256-QAM not in DVB-T
+}
+
+// ── 2K numerology and carrier map ──────────────────────────────────────────
+
+#[test]
+fn numerology_constants() {
+    assert_eq!(DVBT_N_FFT, 2048);
+    assert_eq!(DVBT_KMAX, 1704);
+    assert_eq!(DVBT_ACTIVE_CARRIERS, 1705);
+    assert_eq!(DVBT_DATA_CARRIERS, 1512);
+}
+
+#[test]
+fn guard_interval_cp_lengths() {
+    assert_eq!(GuardInterval::G1_32.cp_len_2k(), 64);
+    assert_eq!(GuardInterval::G1_16.cp_len_2k(), 128);
+    assert_eq!(GuardInterval::G1_8.cp_len_2k(), 256);
+    assert_eq!(GuardInterval::G1_4.cp_len_2k(), 512);
+}
+
+#[test]
+fn continual_pilots_table_valid() {
+    // 45 continual pilots (EN 300 744 Table 7), in range, monotonic, unique.
+    assert_eq!(DVBT_CONTINUAL_PILOTS_2K.len(), 45);
+    let mut prev = None;
+    for &k in &DVBT_CONTINUAL_PILOTS_2K {
+        assert!(k <= DVBT_KMAX, "pilot {k} out of range");
+        if let Some(p) = prev {
+            assert!(k > p, "pilots must be strictly increasing");
+        }
+        prev = Some(k);
+    }
+    // First and last per the table.
+    assert_eq!(DVBT_CONTINUAL_PILOTS_2K[0], 0);
+    assert_eq!(*DVBT_CONTINUAL_PILOTS_2K.last().unwrap(), 1704);
+}
+
+#[test]
+fn wk_prbs_known_start() {
+    // EN 300 744 §4.5.2 / figure 10: "PRBS sequence starts: 1111111111100...".
+    let bits = wk_prbs(13);
+    assert_eq!(&bits[..13], &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0]);
+}
+
+#[test]
+fn boosted_pilot_amplitude() {
+    // w_k=0 → +4/3, w_k=1 → −4/3; boosted so |c|² = 16/9.
+    let p0 = boosted_pilot_value(0);
+    let p1 = boosted_pilot_value(1);
+    assert!((p0.re - 4.0 / 3.0).abs() < 1e-6);
+    assert!((p1.re + 4.0 / 3.0).abs() < 1e-6);
+    assert!((p0.norm_sqr() - 16.0 / 9.0).abs() < 1e-5);
+}
+
+#[test]
+fn active_to_signed_centering() {
+    assert_eq!(active_to_signed(0), -852);
+    assert_eq!(active_to_signed(852), 0); // active 852 → DC
+    assert_eq!(active_to_signed(1704), 852);
+}
+
+#[test]
+fn dvbt_2k_plan_is_valid() {
+    let plan = dvbt_2k_plan(GuardInterval::G1_32);
+    assert_eq!(plan.n_fft(), 2048);
+    assert_eq!(plan.cp_len(), 64);
+    assert_eq!(plan.pilot_carriers().len(), 45);
+    // Phase 1: scattered/TPS positions carry data → 1705 − 45 = 1660 data.
+    assert_eq!(plan.data_carriers().len(), 1660);
+    // No data/pilot overlap, all indices in range.
+    plan.validate()
+        .expect("2K plan must be a valid CarrierPlan");
+}
+
+#[test]
+fn fs_bandwidth_scaling() {
+    // fs = BW · 2048/1705 ; round-trips with the inverse.
+    let fs_1m = dvbt_fs_for_bandwidth(1_000_000.0);
+    assert!((fs_1m - DVBT_FS_1MHZ).abs() < 1.0);
+    assert!((dvbt_occupied_bw(fs_1m) - 1_000_000.0).abs() < 1.0);
+    // The three mode constants scale linearly.
+    assert!((DVBT_FS_2MHZ - 2.0 * DVBT_FS_1MHZ).abs() < 1.0);
+    // ~1 MHz mode is ~1.2012 MS/s (1e6 · 2048/1705).
+    assert!((DVBT_FS_1MHZ - 1_201_173.0).abs() < 100.0);
+    // 333 kHz is below Pluto's ~521 kS/s floor (documented, still valid). Route
+    // through the runtime helper so this is a real check, not a const compare.
+    let fs_333k = dvbt_fs_for_bandwidth(333_000.0);
+    assert!((DVBT_FS_333KHZ - fs_333k).abs() < 1.0);
+    assert!(
+        fs_333k < 521_000.0,
+        "333 kHz mode fs {fs_333k} below Pluto floor"
+    );
+}
+
+#[test]
+fn mcs_table_dvbt() {
+    let t = dvbt_mcs_table();
+    assert_eq!(t.len(), 3);
+    // Every entry uses the K=7 conv inner + RS(204,188) outer.
+    let m0 = t.get(0).unwrap();
+    assert_eq!(m0.constellation, ConstellationOrder::Qpsk);
+    assert!(matches!(
+        m0.inner_fec,
+        InnerFec::Convolutional {
+            code: ConvCode::DvbK7,
+            ..
+        }
+    ));
+    assert!(matches!(
+        m0.outer_fec,
+        OuterFec::ReedSolomon {
+            n: 204,
+            n_parity: 16
+        }
+    ));
+    assert_eq!(t.get(2).unwrap().constellation, ConstellationOrder::Qam16);
 }
