@@ -131,6 +131,14 @@ impl OfdmConfig {
         }
     }
 
+    /// Sets the sample rate (S/s). A generic builder — e.g. a DVB-T caller
+    /// selects a narrowband bandwidth mode with
+    /// `cfg.with_fs(NbBandwidth::Bw1MHz.fs())`.
+    pub fn with_fs(mut self, fs: f32) -> Self {
+        self.fs = fs;
+        self
+    }
+
     pub fn with_outer_fec(mut self, outer_fec: OuterFec) -> Self {
         self.outer_fec = outer_fec;
         self

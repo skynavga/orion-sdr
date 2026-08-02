@@ -669,6 +669,45 @@ pub const DVB_T_FS_1MHZ: f32 = 1_000_000.0 * DVB_T_N_FFT as f32 / DVB_T_ACTIVE_C
 /// fs for the ~2 MHz narrowband mode (wider repeater config).
 pub const DVB_T_FS_2MHZ: f32 = 2_000_000.0 * DVB_T_N_FFT as f32 / DVB_T_ACTIVE_CARRIERS as f32;
 
+/// The standard narrowband DVB-T (amateur DATV) channel bandwidths. NB-DVB-T is
+/// a pure fs-scaling of the fixed 2K structure, so a mode is just a target
+/// occupied bandwidth; this enum is a convenience so callers pick a named mode
+/// instead of a raw `occupied_hz`. Compose with the config builders, e.g.
+/// `dvb_t_scattered_config(guard, NbBandwidth::Bw1MHz.occupied_hz())` or
+/// `cfg.with_fs(NbBandwidth::Bw1MHz.fs())`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NbBandwidth {
+    /// ~333 kHz — robust 70 cm config. Below PlutoSDR's ~521 kS/s continuous-TX
+    /// floor (a hardware limit, not a waveform one); valid as a library mode.
+    Bw333kHz,
+    /// ~1 MHz — the common general-purpose amateur DATV channel.
+    Bw1MHz,
+    /// ~2 MHz — a wider repeater/high-rate config.
+    Bw2MHz,
+}
+
+impl NbBandwidth {
+    /// The nominal occupied RF bandwidth (Hz) for this mode.
+    pub const fn occupied_hz(self) -> f32 {
+        match self {
+            NbBandwidth::Bw333kHz => 333_000.0,
+            NbBandwidth::Bw1MHz => 1_000_000.0,
+            NbBandwidth::Bw2MHz => 2_000_000.0,
+        }
+    }
+
+    /// The sample rate (S/s) for this mode: `occupied_hz · 2048/1705`.
+    pub fn fs(self) -> f32 {
+        dvb_t_fs_for_bandwidth(self.occupied_hz())
+    }
+
+    /// Whether this mode's `fs` is representable for continuous PlutoSDR TX
+    /// (≥ ~521 kS/s). `Bw333kHz` is below the floor (a valid library/test mode).
+    pub fn is_pluto_continuous_tx(self) -> bool {
+        self.fs() >= 521_000.0
+    }
+}
+
 // ── DVB-T MCS table (concatenated FEC) ──────────────────────────────────────
 
 /// A DVB-T MCS table: QPSK and 16-QAM, each with the K=7 punctured convolutional

@@ -569,3 +569,44 @@ The receiver's LDPC inner decoder uses the check-node rule selected by
 min-sum / scaled-min-sum for ~2× decode at a sub-0.3 dB coding-gain cost on the
 payload — the header always uses sum-product). See
 [performance.md](performance.md) for the measured trade.
+
+## DVB-T Frame Demodulation (conformant, preamble-less)
+
+`dvb_t_frame_demodulate` is the exact inverse of `modulate::dvb_t_frame_modulate`:
+it acquires the symbol grid from the guard interval (no preamble), equalizes each
+symbol from the scattered/continual pilots, soft-demaps the Figure-9a
+constellation, recovers the TPS word from the 17 TPS carriers, runs the payload
+FEC decode, and undoes the TS energy dispersal — returning both the payload and
+the TPS-signalled parameters. The `params` supply the cold-start MCS (as real
+receivers acquire on assumptions), which the recovered TPS then verifies. See
+[dvb.md](dvb.md).
+
+```rust
+use orion_sdr::demodulate::dvb_t_frame_demodulate;
+# use orion_sdr::modulate::dvb_t_frame_modulate;
+# use orion_sdr::fec::PunctureRate;
+# use orion_sdr::modulate::ConstellationOrder;
+# use orion_sdr::waveform::dvb_t::{DvbTFrameParams, GuardInterval};
+# let params = DvbTFrameParams { guard: GuardInterval::G1_8,
+#     constellation: ConstellationOrder::Qpsk, code_rate: PunctureRate::R1_2,
+#     frame_number: 0, cell_id: 0 };
+# let payload: Vec<u8> = (0..184).map(|i| (i * 37 + 11) as u8).collect();
+# let frame = dvb_t_frame_modulate(params, &payload);
+# let iq = &frame.iq;   // in practice: captured/received samples
+
+// `params` is the assumed MCS; `frame.n_symbols` the frame length; the last
+// argument is the expected payload byte count (for trimming the TS padding).
+let rx = dvb_t_frame_demodulate(params, iq, frame.n_symbols, payload.len())
+    .expect("conformant DVB-T frame decode");
+
+// The recovered TS payload, plus the parameters read off the TPS carriers —
+// which a receiver can check against its acquisition assumptions.
+assert_eq!(rx.payload, payload);
+assert_eq!(rx.tps.constellation, params.constellation);
+assert_eq!(rx.tps.code_rate_hp, params.code_rate);
+assert_eq!(rx.tps.guard, params.guard);
+```
+
+This is a batch, single-frame entry point (the buffer holds one whole frame plus
+enough lead-in for the guard-interval search). Multi-frame/super-frame streaming
+and integer-CFO recovery are not yet provided.

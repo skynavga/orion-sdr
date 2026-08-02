@@ -433,3 +433,42 @@ let cfg = cfg.with_scrambler(ScramblerKind::Additive {
 let per_frame_seed = 0xABCD_1234;               // draw a fresh one per frame
 let iq = modu.modulate_frame(&frame, per_frame_seed);
 ```
+
+## DVB-T Frame Modulator (conformant, preamble-less)
+
+`dvb_t_frame_modulate` emits a fully conformant DVB-T on-air frame (ETSI
+EN 300 744): no Schmidl & Cox preamble and no `OrionSdr` header — the
+transmission parameters ride on the TPS carriers, and the receiver acquires from
+the guard interval. It is a dedicated per-standard assembler (not `OfdmFrameMod`,
+which is preamble + header oriented); the RX is `demodulate::dvb_t_frame_demodulate`.
+See [dvb.md](dvb.md) for the waveform design.
+
+```rust
+use orion_sdr::{
+    fec::PunctureRate,
+    modulate::{ConstellationOrder, dvb_t_frame_modulate},
+    waveform::dvb_t::{DvbTFrameParams, GuardInterval, NbBandwidth},
+};
+
+// The transmission parameters — everything the TPS word signals. NB-DVB-T is a
+// pure fs-scaling of the fixed 2K structure, so the bandwidth mode
+// (NbBandwidth::Bw333kHz / Bw1MHz / Bw2MHz) only sets the sample rate for RF
+// upconversion; the baseband frame is identical.
+let params = DvbTFrameParams {
+    guard: GuardInterval::G1_8,
+    constellation: ConstellationOrder::Qpsk,   // QPSK / 16-QAM / 64-QAM
+    code_rate: PunctureRate::R1_2,             // K=7 punctured conv rate
+    frame_number: 0,                            // 0..=3 within the super-frame
+    cell_id: 0,
+};
+
+// `payload` is treated as the MPEG-TS payload bytes (packetized + energy-
+// dispersed inside). One frame spans at least 68 symbols (a full TPS block).
+let payload: Vec<u8> = (0..184).map(|i| (i * 37 + 11) as u8).collect();
+let frame = dvb_t_frame_modulate(params, &payload);
+
+// `frame.iq` is baseband time-domain IQ; `frame.n_symbols` / `samples_per_symbol`
+// describe its layout. To place it on air at a bandwidth mode's sample rate, use
+// `NbBandwidth::Bw1MHz.fs()` as the DAC/resampler rate.
+let _fs = NbBandwidth::Bw1MHz.fs();
+```

@@ -318,6 +318,39 @@ fn fs_bandwidth_scaling() {
 }
 
 #[test]
+fn nb_bandwidth_modes() {
+    use orion_sdr::waveform::dvb_t::NbBandwidth;
+    // occupied_hz() matches the nominal channel widths.
+    assert_eq!(NbBandwidth::Bw333kHz.occupied_hz(), 333_000.0);
+    assert_eq!(NbBandwidth::Bw1MHz.occupied_hz(), 1_000_000.0);
+    assert_eq!(NbBandwidth::Bw2MHz.occupied_hz(), 2_000_000.0);
+    // fs() equals the corresponding constant (fs = BW · 2048/1705).
+    assert!((NbBandwidth::Bw333kHz.fs() - DVB_T_FS_333KHZ).abs() < 1.0);
+    assert!((NbBandwidth::Bw1MHz.fs() - DVB_T_FS_1MHZ).abs() < 1.0);
+    assert!((NbBandwidth::Bw2MHz.fs() - DVB_T_FS_2MHZ).abs() < 1.0);
+    // Pluto continuous-TX floor: 333 kHz is below, 1/2 MHz are above.
+    assert!(!NbBandwidth::Bw333kHz.is_pluto_continuous_tx());
+    assert!(NbBandwidth::Bw1MHz.is_pluto_continuous_tx());
+    assert!(NbBandwidth::Bw2MHz.is_pluto_continuous_tx());
+}
+
+#[test]
+fn nb_bandwidth_composes_with_config_builders() {
+    use orion_sdr::waveform::dvb_t::{NbBandwidth, dvb_t_config, dvb_t_scattered_config};
+    // A named mode composes with the existing config builders via occupied_hz().
+    let a = dvb_t_config(GuardInterval::G1_32, NbBandwidth::Bw1MHz.occupied_hz());
+    let b = dvb_t_config(GuardInterval::G1_32, 1_000_000.0);
+    assert_eq!(a.fs, b.fs);
+    assert_eq!(a.carrier_plan, b.carrier_plan);
+
+    // Or set fs directly with the generic with_fs() builder.
+    let c =
+        dvb_t_scattered_config(GuardInterval::G1_8, 1_000_000.0).with_fs(NbBandwidth::Bw2MHz.fs());
+    assert!((c.fs - NbBandwidth::Bw2MHz.fs()).abs() < 1.0);
+    assert!(c.dvb_t_scattered);
+}
+
+#[test]
 fn mcs_table_dvb_t() {
     let t = dvb_t_mcs_table();
     assert_eq!(t.len(), 3);

@@ -720,6 +720,32 @@ cfg = cfg.with_scrambler(0b1001, 7, per_frame_random=True)
 iq = sdr.OfdmFrameMod(cfg, table).modulate_frame(frame, 0xABCD_1234)
 ```
 
+### DVB-T (narrowband, via the COFDM frame layer)
+
+The Python bindings expose DVB-T's *building blocks* through the generic
+`OfdmConfig`/`OfdmFrameMod` — the K=7 convolutional inner code, the DVB-T energy
+dispersal, and the `dvb_tps` header format — so a DVB-T-style link is
+configurable from Python:
+
+```python
+# A DVB-T-style link over the generic frame layer: K=7 conv inner + RS(204,188)
+# outer, DVB-T energy dispersal, on a 2K carrier plan.
+cfg = (
+    sdr.OfdmConfig(N_FFT, CP_LEN, data,
+                   fs=1_201_173.0,          # 1 MHz NB mode: 1e6 * 2048/1705
+                   constellation="qpsk")
+    .with_inner_fec("dvb_t")               # K=7 conv (alias: "convolutional_k7")
+    .with_outer_fec("rs", 204, 16)          # RS(204,188), t=8
+    .with_dvb_t_scrambler()                 # DVB-T energy dispersal
+    .with_header_format("dvb_tps")          # TPS signalling (or "orion_sdr"/"none")
+)
+```
+
+The fully **conformant preamble-less DVB-T frame** (TS payload, TPS-on-carriers,
+scattered pilots, guard-interval acquisition) is provided by the Rust
+`modulate::dvb_t_frame` / `demodulate::dvb_t_frame` assemblers
+(see [dvb.md](dvb.md)); it is **not yet exposed through the Python bindings**.
+
 ## Notes
 
 - All `process()` calls are synchronous and hold the GIL. For high-throughput pipelines,
