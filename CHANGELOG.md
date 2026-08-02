@@ -9,6 +9,41 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.47] - 2026-08-01
+
+NB-DVB-T (narrowband DVB-T for amateur DATV) Phase 1: a conformant DVB-T payload
+FEC chain and 2K-mode carrier map, assembled into an end-to-end fs-scaled link.
+The payload coding is bit-exact to ETSI EN 300 744 V1.6.2 where verified;
+acquisition still uses the crate's Schmidl & Cox preamble + `OrionSdr` header
+(DVB-T's guard-interval/TPS acquisition, full soft-decision, and the 188-byte
+TS-packet layer are later phases).
+
+### Added
+
+- DVB-T K=7 punctured convolutional inner code (G0=0o171, G1=0o133, 64-state
+  soft Viterbi), selected via `ConvCode::DvbK7` on `InnerFec::Convolutional`; the
+  K=5 code (shared with PSK31) is unchanged.
+- `src/waveform/dvb_t.rs` (new `waveform` module): DVB-T energy-dispersal PRBS
+  whitener (`DvbTEnergyDispersal`; 1+X^14+X^15, MSB-first, first byte 0x03
+  known-answer), the Figure-9a constellation mapping
+  (`dvb_t_map_symbol`/`dvb_t_demap_symbol`, QPSK/16-QAM/64-QAM), 2K numerology
+  (n_fft=2048, 1512 data carriers), the 45 continual-pilot indices with the w_k
+  PRBS (X^11+X^2+1), `GuardInterval`, narrowband fs-scaling
+  (`fs = BW·2048/1705`; 333 kHz/1 MHz/2 MHz constants), `dvb_t_mcs_table`
+  (QPSK/16-QAM × K=7 conv × RS(204,188)), and `dvb_t_config` assembling the full
+  2K `OfdmConfig`.
+- `ScramblerKind::DvbTEnergyDispersal` wired into the frame scramble path
+  (byte-domain, before the outer FEC); Python `OfdmConfig.with_dvb_t_scrambler`
+  and a `"dvb_t"`/`"convolutional_k7"` inner-FEC selector.
+- End-to-end DVB-T frame roundtrip tests (333 kHz/1 MHz/2 MHz + AWGN), a
+  DVB-T-exact-constellation-through-OFDM hard-decision test, and a DVB-T 2K
+  throughput benchmark (`frame_chain` generalized to take a cfg/preamble).
+
+### Changed
+
+- `InnerFec::Convolutional` gains a `code` field selecting the mother code
+  (K=5 or DvbK7); the convolutional coder is generalized over `ConvCode`.
+
 ## [0.0.46] - 2026-08-01
 
 Dual-mode (stream/frame) FEC primitives — the first step toward NB-DVB-T
