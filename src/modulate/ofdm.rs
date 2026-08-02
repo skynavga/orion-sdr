@@ -195,11 +195,14 @@ impl OfdmConfig {
     /// Validates the frame-layer configuration. Returns `Ok(())` for the bare
     /// (no-FEC, no-frame) defaults.
     pub fn validate(&self) -> Result<(), FrameConfigError> {
+        // A per-frame-random seed needs a header block to carry it to the RX.
+        // Only OrionSdr has one; NoHeader and DvbTps do not (DvbTps signals via
+        // TPS, which does not carry a scrambler seed).
         if let ScramblerKind::Additive {
             seed: SeedMode::PerFrameRandom,
             ..
         } = self.scrambler
-            && self.header_format == HeaderFormat::NoHeader
+            && !self.header_format.has_header_block()
         {
             return Err(FrameConfigError::PerFrameSeedNeedsHeader);
         }

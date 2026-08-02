@@ -29,6 +29,9 @@ pub mod ofdm_frame;
 pub use crate::modulate::CodecCache;
 pub use ofdm_frame::{OfdmFrameStreamDemod, RxFrame, demodulate_frame};
 
+pub mod dvb_t_frame;
+pub use dvb_t_frame::{DvbTRxError, DvbTRxFrame, dvb_t_frame_demodulate};
+
 pub mod pm;
 pub use pm::PmQuadratureDemod;
 

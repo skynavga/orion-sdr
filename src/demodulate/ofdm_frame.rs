@@ -22,8 +22,8 @@ use crate::demodulate::ofdm::{
 use crate::dsp::Rotator;
 use crate::fec::{
     BlockInterleaver, ConvDeinterleaver, ConvInterleaver, CrcKind, DecodeRule, FrameMetadata,
-    FramePacket, HeaderFormat, InnerFec, InterleaverKind, OuterFec, RxError, ScramblerKind,
-    ScramblerPos, viterbi_decode_soft_with,
+    FramePacket, InnerFec, InterleaverKind, OuterFec, RxError, ScramblerKind, ScramblerPos,
+    viterbi_decode_soft_with,
 };
 use crate::modulate::ofdm::{ConstellationOrder, OfdmConfig};
 use crate::modulate::ofdm_frame::{
@@ -370,8 +370,13 @@ fn outer_decode(outer: OuterFec, coded_bits: &[u8], cache: &CodecCache) -> (Vec<
 
 /// Decodes one logical block's coded LLRs back to its info bytes, checking the
 /// CRC. Returns `Ok((bytes, crc_ok))` or an error if the structure is invalid.
+/// Decodes one logical block's coded LLRs back to its info bytes, checking the
+/// CRC — the exact inverse of `modulate::ofdm_frame::encode_chain`. Public so
+/// per-standard frame assemblers (e.g. `waveform::dvb_t_frame`) reuse the shared
+/// FEC decode rather than duplicating it. Returns `(bytes, all_ok)` where
+/// `all_ok` folds in the CRC and every FEC block's convergence.
 #[allow(clippy::too_many_arguments)]
-fn decode_chain(
+pub fn decode_chain(
     coded_llrs: &[f32],
     plan: &BlockPlan,
     crc: CrcKind,
@@ -509,8 +514,8 @@ fn decode_frame_body(
         }
     };
 
-    // 1. Header (unless NoHeader).
-    let (metadata, per_frame_seed, payload_len) = if cfg.header_format == HeaderFormat::OrionSdr {
+    // 1. Header (only OrionSdr prepends a decodable header block here).
+    let (metadata, per_frame_seed, payload_len) = if cfg.header_format.has_header_block() {
         let hplan = block_plan(
             HEADER_FIELD_BYTES,
             cfg.header_crc,
@@ -567,8 +572,10 @@ fn decode_frame_body(
             payload_len,
         )
     } else {
-        // NoHeader: the caller must convey MCS/length out-of-band. Not
-        // supported by this entry point yet.
+        // NoHeader / DvbTps: this generic entry point has no in-band header to
+        // read the MCS/length from. DvbTps frames are decoded by the dedicated
+        // `waveform::dvb_t_frame` assembler (TPS-signalled, preamble-less); a
+        // NoHeader caller must convey MCS/length out-of-band. Not supported here.
         return Err(BodyError::Failed(RxError::MalformedHeader));
     };
 

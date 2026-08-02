@@ -26,8 +26,8 @@ use super::ofdm::{ConstellationOrder, OfdmConfig, OfdmMod};
 use crate::codec::{crc16, crc32};
 use crate::core::Block;
 use crate::fec::{
-    Bch, CrcKind, FramePacket, HeaderFormat, InnerFec, InterleaverKind, Ldpc, LdpcCode, OuterFec,
-    PnScrambler, ReedSolomon, ScramblerKind, ScramblerPos, SeedMode, conv_encode_punctured_with,
+    Bch, CrcKind, FramePacket, InnerFec, InterleaverKind, Ldpc, LdpcCode, OuterFec, PnScrambler,
+    ReedSolomon, ScramblerKind, ScramblerPos, SeedMode, conv_encode_punctured_with,
     punctured_coded_len_with,
 };
 use crate::multicarrier::CarrierPlan;
@@ -804,8 +804,10 @@ impl OfdmFrameMod {
         // 1. Preamble + training symbol.
         out.extend_from_slice(&generate_ofdm_preamble(&self.preamble, &self.cfg));
 
-        // 2. Header (present unless NoHeader).
-        if self.cfg.header_format == HeaderFormat::OrionSdr {
+        // 2. Header (only OrionSdr prepends a dedicated header block; NoHeader
+        //    and DvbTps carry no separate header — DvbTps signals in-band on the
+        //    TPS carriers, handled by the dedicated DVB-T frame assembler).
+        if self.cfg.header_format.has_header_block() {
             let fields = pack_header_fields(
                 frame.metadata.mcs_index,
                 frame.payload.len() as u32,

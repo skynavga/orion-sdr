@@ -25,6 +25,9 @@ pub use ofdm::{ConstellationOrder, FrameConfigError, OfdmConfig, OfdmMod};
 pub mod ofdm_frame;
 pub use ofdm_frame::{CodecCache, Mcs, McsTable, OfdmFrameMod};
 
+pub mod dvb_t_frame;
+pub use dvb_t_frame::{DvbTFrame, dvb_t_frame_modulate};
+
 pub mod pm;
 pub use pm::PmDirectPhaseMod;
 

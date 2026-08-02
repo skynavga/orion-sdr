@@ -13,6 +13,7 @@ mod unit {
     pub mod dvb_t;
     pub mod dvb_t_gi_sync;
     pub mod dvb_t_tps;
+    pub mod dvb_t_ts;
     pub mod fec;
     pub mod fm;
     pub mod ft4;

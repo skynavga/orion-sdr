@@ -8,14 +8,15 @@
 // amateur fs-scaled bandwidths (333 kHz / 1 MHz / 2 MHz). See
 // `waveform::dvb_t::dvb_t_config`.
 //
-// NOT yet conformant in these Phase-1 tests (scaffolding via the existing COFDM
-// frame layer): acquisition uses the crate's Schmidl & Cox **preamble** rather
-// than DVB-T's guard-interval + scattered-pilot/TPS correlation (no preamble),
-// and the frame carries the `OrionSdr` header rather than TPS. Those — and full
-// DVB-T soft-decision through the shared demapper — land in Phase 3, which drops
-// the preamble/header for the conformant on-air frame. A separate test below
-// proves the DVB-T-*exact* constellation decodes end to end through an OFDM
-// channel via hard-decision.
+// The tests progress from Phase-1 scaffolding to the Phase-3 conformant frame:
+//   • the `roundtrip_dvb_t_2k_*` tests exercise the payload FEC + carrier map via
+//     the generic COFDM frame layer (S&C preamble + `OrionSdr` header) — useful
+//     coverage of the FEC chain, but not the conformant on-air frame;
+//   • the `dvb_t_scattered_*` tests add the four-phase scattered-pilot rotation;
+//   • the capstone `roundtrip_dvb_t_2k_tps_end_to_end` / `dvb_t_tps_frame_*` tests
+//     use the fully conformant preamble-less frame (guard-interval acquisition,
+//     TPS signalling, MPEG-TS payload, DVB-T soft-decision) via
+//     `{modulate,demodulate}::dvb_t_frame`.
 
 use crate::common::add_awgn;
 use num_complex::Complex32 as C32;
@@ -260,4 +261,71 @@ fn dvb_t_scattered_needed_for_multipath() {
         got.is_err() || got.as_ref().unwrap().payload != payload,
         "continual-pilots-only decode must not recover the multipath frame"
     );
+}
+
+// ── Conformant preamble-less DVB-T frame (Phase 3 capstone) ─────────────────
+//
+// The full DVB-T on-air frame: MPEG-TS payload + energy dispersal + payload FEC,
+// Figure-9a soft-decision through the four-phase scattered-pilot grid, TPS on the
+// 17 carriers, and guard-interval acquisition — NO preamble, NO OrionSdr header.
+// TX: `modulate::dvb_t_frame_modulate`; RX: `demodulate::dvb_t_frame_demodulate`.
+
+use orion_sdr::demodulate::dvb_t_frame_demodulate;
+use orion_sdr::fec::PunctureRate;
+use orion_sdr::modulate::{ConstellationOrder, dvb_t_frame_modulate};
+use orion_sdr::waveform::dvb_t::DvbTFrameParams;
+
+fn capstone_params() -> DvbTFrameParams {
+    DvbTFrameParams {
+        guard: GuardInterval::G1_32,
+        constellation: ConstellationOrder::Qpsk,
+        code_rate: PunctureRate::R1_2,
+        frame_number: 2,
+        cell_id: 0x5A,
+    }
+}
+
+#[test]
+fn roundtrip_dvb_t_2k_tps_end_to_end() {
+    // The capstone: modulate a TS payload into a conformant preamble-less frame,
+    // place it at an unknown offset with trailing silence, GI-acquire it, and
+    // recover BOTH the payload AND the TPS-signalled parameters.
+    let params = capstone_params();
+    let payload = sample_payload(184); // one RS(204,188) information block worth
+    let frame = dvb_t_frame_modulate(params, &payload);
+
+    let lead = 200usize;
+    let mut buf = vec![C32::default(); lead];
+    buf.extend_from_slice(&frame.iq);
+    buf.extend(vec![C32::default(); frame.samples_per_symbol]);
+
+    let got = dvb_t_frame_demodulate(params, &buf, frame.n_symbols, payload.len())
+        .expect("conformant DVB-T frame decode");
+    assert_eq!(got.payload, payload, "recovered TS payload");
+    assert_eq!(got.tps.frame_number, params.frame_number);
+    assert_eq!(got.tps.constellation, params.constellation);
+    assert_eq!(got.tps.code_rate_hp, params.code_rate);
+    assert_eq!(got.tps.guard, params.guard);
+    assert_eq!(got.tps.cell_id, params.cell_id);
+}
+
+#[test]
+fn dvb_t_tps_frame_survives_awgn() {
+    // The same conformant frame through modest AWGN: the DBPSK TPS (17-carrier
+    // averaged, BCH-protected) and the soft-decision payload FEC both hold.
+    let params = capstone_params();
+    let payload = sample_payload(184);
+    let frame = dvb_t_frame_modulate(params, &payload);
+
+    let lead = 128usize;
+    let mut buf = vec![C32::default(); lead];
+    buf.extend_from_slice(&frame.iq);
+    buf.extend(vec![C32::default(); frame.samples_per_symbol]);
+    let sig_power: f32 = frame.iq.iter().map(|s| s.norm_sqr()).sum::<f32>() / frame.iq.len() as f32;
+    add_awgn(&mut buf, sig_power * 0.03, 0x0DB7_0777);
+
+    let got = dvb_t_frame_demodulate(params, &buf, frame.n_symbols, payload.len())
+        .expect("DVB-T frame AWGN decode");
+    assert_eq!(got.payload, payload);
+    assert_eq!(got.tps.constellation, params.constellation);
 }

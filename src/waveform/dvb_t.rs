@@ -96,6 +96,17 @@ impl DvbTEnergyDispersal {
         self.feed_in_place(&mut out);
         out
     }
+
+    /// Advances the PRBS by one byte (8 steps) WITHOUT applying its output — the
+    /// "PRBS generation continues but output disabled" behaviour the standard
+    /// specifies over the MPEG-2 sync bytes of the seven trailing packets in a
+    /// group (§4.3.1). Keeps the register phase aligned with a run that skips
+    /// those bytes for output but still clocks the generator.
+    pub fn advance_byte(&mut self) {
+        for _ in 0..8 {
+            self.next_bit();
+        }
+    }
 }
 
 // ── DVB-T constellation mapping (ETSI EN 300 744 §4.3.5, Figure 9a) ─────────
@@ -411,6 +422,16 @@ pub fn tps_carrier_indices() -> &'static [usize] {
     &DVB_T_TPS_CARRIERS_2K
 }
 
+/// The rustfft bin index for each TPS carrier in the 2K plan, in the order of
+/// [`DVB_T_TPS_CARRIERS_2K`]: `bin = (active − 852).rem_euclid(2048)`. The DVB-T
+/// frame assembler overwrites these bins with the DBPSK TPS cells after the
+/// scattered-grid mapper has placed data + pilots.
+pub fn tps_carrier_bins() -> [usize; DVB_T_TPS_CARRIERS_2K.len()] {
+    core::array::from_fn(|i| {
+        active_to_signed(DVB_T_TPS_CARRIERS_2K[i]).rem_euclid(DVB_T_N_FFT as i32) as usize
+    })
+}
+
 /// Builds the four symbol-phase carrier plans for the conformant 2K frame
 /// structure (EN 300 744 §4.5). Plan `p` (for symbols with `l mod 4 == p`)
 /// reserves the following as boosted, `w_k`-valued pilots:
@@ -724,4 +745,69 @@ fn dvb_t_config_with_plan(plan: CarrierPlan, occupied_hz: f32) -> OfdmConfig {
             branches: 12,
             depth: 17,
         })
+}
+
+// ── Conformant DVB-T frame: shared parameters (TX/RX common) ────────────────
+//
+// `DvbTFrameParams` and the FEC constants below are shared by the conformant
+// DVB-T frame modulator (`modulate::dvb_t_frame`) and demodulator
+// (`demodulate::dvb_t_frame`) — the direction-split assemblers that build/parse
+// the preamble-less, TPS-signalled on-air frame. They live here, with the rest
+// of the DVB-T waveform definitions, the same way `Mcs`/`BlockPlan` are shared
+// frame-layer types (not duplicated per direction).
+
+/// The DVB-T outer FEC: RS(204,188), t = 8 (§4.3.2).
+pub const DVB_T_FRAME_OUTER: OuterFec = OuterFec::ReedSolomon {
+    n: 204,
+    n_parity: 16,
+};
+/// The DVB-T outer interleaver: Forney convolutional, I = 12 branches, M = 17.
+pub const DVB_T_FRAME_OUTER_IL: InterleaverKind = InterleaverKind::Convolutional {
+    branches: 12,
+    depth: 17,
+};
+
+/// The transmission parameters of one conformant DVB-T frame — everything the
+/// TPS word signals, plus enough to drive the FEC. A cold receiver is given this
+/// (real receivers acquire on assumptions) and TPS verifies it. Shared by the
+/// modulator and demodulator.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DvbTFrameParams {
+    pub guard: GuardInterval,
+    pub constellation: ConstellationOrder,
+    pub code_rate: PunctureRate,
+    pub frame_number: u8,
+    pub cell_id: u8,
+}
+
+impl DvbTFrameParams {
+    /// The inner FEC (K=7 punctured convolutional at the frame's code rate).
+    pub fn inner(self) -> InnerFec {
+        InnerFec::Convolutional {
+            rate: self.code_rate,
+            code: ConvCode::DvbK7,
+        }
+    }
+
+    /// The TPS word this frame signals on the 17 TPS carriers.
+    pub fn tps_word(self) -> crate::waveform::dvb_t_tps::TpsWord {
+        crate::waveform::dvb_t_tps::TpsWord {
+            frame_number: self.frame_number,
+            constellation: self.constellation,
+            code_rate_hp: self.code_rate,
+            guard: self.guard,
+            cell_id: self.cell_id,
+        }
+    }
+
+    /// The representative (phase-0) [`OfdmConfig`] for this frame: the 1512-data
+    /// phase-0 plan at the frame's constellation, scattered-pilot mode enabled.
+    /// `fs` is set from the 1 MHz scaling — it only affects timing/CFO units in
+    /// the batch assemblers (no RF upconversion), so the exact value is not
+    /// load-bearing for a baseband frame.
+    pub fn config(self) -> OfdmConfig {
+        let plan0 = dvb_t_2k_plans(self.guard)[0].clone();
+        let fs = dvb_t_fs_for_bandwidth(1_000_000.0);
+        OfdmConfig::new(plan0, fs, 0.0, 1.0, self.constellation).with_dvb_t_scattered(true)
+    }
 }
