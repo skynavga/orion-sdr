@@ -74,6 +74,14 @@ pub struct OfdmConfig {
     /// decode throughput (see the R8a investigation in `docs/performance.md`).
     /// TX-only paths ignore this.
     pub ldpc_decode_rule: DecodeRule,
+    /// When set, the frame layer maps/demaps payload symbols through DVB-T's
+    /// four-phase **scattered-pilot** grid rotation instead of the single static
+    /// grid in `carrier_plan` (see `waveform::dvb_t`). The `carrier_plan` still
+    /// describes the representative phase-0 grid (its 1512 data carriers drive
+    /// all the count-based bookkeeping); the physical pilot/data bins rotate per
+    /// symbol underneath. Only valid for a 2K DVB-T plan. Defaults to `false`,
+    /// so every non-DVB-T link is unaffected.
+    pub dvb_t_scattered: bool,
 }
 
 /// Rejects an [`OfdmConfig`] whose frame-layer settings are mutually
@@ -119,6 +127,7 @@ impl OfdmConfig {
             scrambler: ScramblerKind::None,
             scrambler_pos: ScramblerPos::BeforeOuterFec,
             ldpc_decode_rule: DecodeRule::SumProduct,
+            dvb_t_scattered: false,
         }
     }
 
@@ -172,6 +181,14 @@ impl OfdmConfig {
     /// 0.75) for ~2× decode throughput at a ≲0.3 dB coding-gain cost.
     pub fn with_ldpc_decode_rule(mut self, rule: DecodeRule) -> Self {
         self.ldpc_decode_rule = rule;
+        self
+    }
+
+    /// Enables DVB-T four-phase scattered-pilot grid rotation in the frame layer
+    /// (see [`dvb_t_scattered`](Self::dvb_t_scattered)). The `carrier_plan` must
+    /// be a 2K DVB-T phase-0 plan (1512 data carriers).
+    pub fn with_dvb_t_scattered(mut self, scattered: bool) -> Self {
+        self.dvb_t_scattered = scattered;
         self
     }
 

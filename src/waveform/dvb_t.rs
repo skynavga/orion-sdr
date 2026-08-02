@@ -210,7 +210,7 @@ use crate::fec::{
     ConvCode, InnerFec, InterleaverKind, OuterFec, PunctureRate, ScramblerKind, ScramblerPos,
 };
 use crate::modulate::{ConstellationOrder, Mcs, McsTable, OfdmConfig};
-use crate::multicarrier::CarrierPlan;
+use crate::multicarrier::{CarrierGrid, CarrierPlan};
 use num_complex::Complex32 as C32;
 
 /// DVB-T 2K-mode FFT size.
@@ -232,6 +232,19 @@ pub const DVB_T_CONTINUAL_PILOTS_2K: [usize; 45] = [
     1146, 1206, 1269, 1323, 1377, 1491, 1683, 1704,
 ];
 
+/// The 17 TPS (Transmission Parameter Signalling) carrier indices for 2K mode
+/// (EN 300 744 Table 8, 2K column). These carriers convey the DBPSK-encoded TPS
+/// word (added in a later phase); here they are reserved as non-data so the
+/// data-carrier count is the conformant 1512 (they carry a `w_k`-derived
+/// placeholder pilot until TPS signalling is wired).
+pub const DVB_T_TPS_CARRIERS_2K: [usize; 17] = [
+    34, 50, 209, 346, 413, 569, 595, 688, 790, 901, 1073, 1219, 1262, 1286, 1469, 1594, 1687,
+];
+
+/// Number of distinct scattered-pilot symbol phases: the pilot pattern repeats
+/// every 4 OFDM symbols (`l mod 4`).
+pub const DVB_T_SCATTERED_PHASES: usize = 4;
+
 /// DVB-T guard interval as a fraction of the useful symbol part `Tu`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuardInterval {
@@ -249,6 +262,20 @@ impl GuardInterval {
             GuardInterval::G1_16 => DVB_T_N_FFT / 16, // 128
             GuardInterval::G1_8 => DVB_T_N_FFT / 8,   // 256
             GuardInterval::G1_4 => DVB_T_N_FFT / 4,   // 512
+        }
+    }
+
+    /// Recovers the guard interval from a 2K cyclic-prefix length (the inverse of
+    /// [`cp_len_2k`](Self::cp_len_2k)). Returns `None` for a non-2K CP length. Used
+    /// by the frame layer to rebuild the scattered-pilot orchestrators from a
+    /// config's plan alone.
+    pub const fn from_cp_len_2k(cp_len: usize) -> Option<Self> {
+        match cp_len {
+            64 => Some(GuardInterval::G1_32),
+            128 => Some(GuardInterval::G1_16),
+            256 => Some(GuardInterval::G1_8),
+            512 => Some(GuardInterval::G1_4),
+            _ => None,
         }
     }
 }
@@ -305,6 +332,235 @@ pub fn dvb_t_2k_plan(guard: GuardInterval) -> CarrierPlan {
     CarrierPlan::new(DVB_T_N_FFT, guard.cp_len_2k())
         .with_data_carriers(data)
         .with_pilot_carriers(pilots)
+}
+
+/// The scattered-pilot active-carrier indices for symbol phase `phase`
+/// (`l mod 4`, EN 300 744 §4.5.3): `{ k = 3·(phase mod 4) + 12p | p ≥ 0,
+/// 0 ≤ k ≤ Kmax }`. With `Kmin = 0` in 2K mode this is exactly
+/// `k mod 12 == 3·(phase mod 4)`. Present on every symbol but stepping through
+/// four positions, so the union over four consecutive symbols samples every
+/// third carrier.
+pub fn scattered_pilot_indices(phase: usize) -> Vec<usize> {
+    let start = 3 * (phase % DVB_T_SCATTERED_PHASES);
+    (start..=DVB_T_KMAX).step_by(12).collect()
+}
+
+/// The 17 TPS active-carrier indices for 2K mode. A thin wrapper over
+/// [`DVB_T_TPS_CARRIERS_2K`] mirroring [`scattered_pilot_indices`]'s shape.
+pub fn tps_carrier_indices() -> &'static [usize] {
+    &DVB_T_TPS_CARRIERS_2K
+}
+
+/// Builds the four symbol-phase carrier plans for the conformant 2K frame
+/// structure (EN 300 744 §4.5). Plan `p` (for symbols with `l mod 4 == p`)
+/// reserves the following as boosted, `w_k`-valued pilots:
+///
+/// - the 45 **continual** pilots (same on every symbol),
+/// - the phase-`p` **scattered** pilots (`k mod 12 == 3·p`),
+/// - the 17 **TPS** carriers (placeholder `w_k` value until TPS signalling is
+///   added; reserved now so the data layout is conformant),
+///
+/// with every remaining active carrier as data. By construction each plan
+/// carries **exactly [`DVB_T_DATA_CARRIERS`] = 1512 data carriers** — the
+/// standard fixes the scattered-pilot spacing so this count is constant across
+/// all four phases (see the note in §4.5). This invariant is what lets the
+/// frame layer's count-based bookkeeping (`bits_per_ofdm_symbol`, `block_plan`)
+/// stay valid while the physical pilot/data bins rotate underneath.
+///
+/// # Panics
+///
+/// Panics if any plan does not carry exactly 1512 data carriers — a transcription
+/// error in the pilot/TPS tables would otherwise silently desync TX and RX.
+pub fn dvb_t_2k_plans(guard: GuardInterval) -> [CarrierPlan; DVB_T_SCATTERED_PHASES] {
+    let wk = wk_prbs(DVB_T_ACTIVE_CARRIERS);
+    core::array::from_fn(|phase| {
+        // Reserve continual + phase-p scattered + TPS as pilots (deduped: a
+        // scattered pilot may coincide with a continual one every fourth symbol).
+        let mut reserved: std::collections::BTreeSet<usize> =
+            DVB_T_CONTINUAL_PILOTS_2K.iter().copied().collect();
+        reserved.extend(scattered_pilot_indices(phase));
+        reserved.extend(DVB_T_TPS_CARRIERS_2K.iter().copied());
+
+        let pilots: Vec<(i32, C32)> = reserved
+            .iter()
+            .map(|&a| (active_to_signed(a), boosted_pilot_value(wk[a])))
+            .collect();
+        let data: Vec<i32> = (0..=DVB_T_KMAX)
+            .filter(|a| !reserved.contains(a))
+            .map(active_to_signed)
+            .collect();
+        assert_eq!(
+            data.len(),
+            DVB_T_DATA_CARRIERS,
+            "scattered plan phase {phase} must carry exactly {DVB_T_DATA_CARRIERS} data carriers"
+        );
+        CarrierPlan::new(DVB_T_N_FFT, guard.cp_len_2k())
+            .with_data_carriers(data)
+            .with_pilot_carriers(pilots)
+    })
+}
+
+// ── Scattered-pilot symbol-phase orchestration ──────────────────────────────
+//
+// DVB-T scattered pilots move every symbol, cycling through four phases
+// (`l mod 4`). The generic OFDM grid (`CarrierGrid`) is built once and applies
+// the same bin→role map to every symbol, so a single grid cannot express the
+// rotating pilot pattern. These orchestrators own the four pre-built grids (one
+// per phase) and a symbol counter, selecting `grids[phase]` for each symbol and
+// advancing the phase — a frame-layer concern (cross-symbol state), so they are
+// deliberately NOT `Block`s (which are single-symbol and stateless-across-calls).
+// The per-symbol bin count is the same 1512 in every phase (see
+// [`dvb_t_2k_plans`]), so the surrounding count-based bookkeeping is unchanged;
+// only which physical bins are data vs. pilot rotates.
+
+/// The four symbol-phase grids plus a running phase counter, shared by the TX
+/// mapper and RX extractor. `l = 0` is defined at the first frame symbol (the
+/// caller [`reset`](Self::reset)s per frame), matching the scattered-pilot phase
+/// `l mod 4`.
+#[derive(Debug, Clone)]
+struct ScatteredGridCycle {
+    grids: [CarrierGrid; DVB_T_SCATTERED_PHASES],
+    phase: usize,
+}
+
+impl ScatteredGridCycle {
+    fn new(guard: GuardInterval) -> Self {
+        let plans = dvb_t_2k_plans(guard);
+        Self {
+            grids: plans.each_ref().map(CarrierGrid::from_plan),
+            phase: 0,
+        }
+    }
+
+    /// The grid for the current symbol phase.
+    fn current(&self) -> &CarrierGrid {
+        &self.grids[self.phase]
+    }
+
+    /// Advances to the next symbol phase (`l mod 4`).
+    fn advance(&mut self) {
+        self.phase = (self.phase + 1) % DVB_T_SCATTERED_PHASES;
+    }
+
+    /// Restarts at phase 0 (call once per frame, so `l = 0` is the first symbol).
+    fn reset(&mut self) {
+        self.phase = 0;
+    }
+}
+
+/// TX-side scattered-pilot grid mapper: scatters each symbol's dense data
+/// symbols onto the phase-appropriate 2K grid (continual, phase-`l` scattered,
+/// and TPS pilots inserted; all other active carriers = data), producing one
+/// `n_fft`-bin frequency-domain vector per symbol and advancing the symbol
+/// phase. The caller supplies already-mapped constellation symbols
+/// (`num_data_carriers()` of them) — the constellation mapping itself is
+/// grid-agnostic and stays with the generic mappers.
+#[derive(Debug, Clone)]
+pub struct ScatteredPilotMapper {
+    cycle: ScatteredGridCycle,
+}
+
+impl ScatteredPilotMapper {
+    /// Builds the mapper for the given guard interval (n_fft = 2048).
+    pub fn new(guard: GuardInterval) -> Self {
+        Self {
+            cycle: ScatteredGridCycle::new(guard),
+        }
+    }
+
+    /// Data carriers per symbol — the constant [`DVB_T_DATA_CARRIERS`] (1512).
+    pub fn num_data_carriers(&self) -> usize {
+        DVB_T_DATA_CARRIERS
+    }
+
+    /// FFT size (2048).
+    pub fn n_fft(&self) -> usize {
+        DVB_T_N_FFT
+    }
+
+    /// Restarts the symbol-phase counter (call once at the start of each frame).
+    pub fn reset(&mut self) {
+        self.cycle.reset();
+    }
+
+    /// Maps one symbol's `num_data_carriers()` constellation symbols into an
+    /// `n_fft`-bin frequency vector using the current phase's grid (pilots
+    /// inserted from their known boosted values), then advances the phase.
+    /// `freq_out` must be at least `n_fft` long; extra bins are zeroed.
+    pub fn map_symbol(&mut self, data: &[C32], freq_out: &mut [C32]) {
+        let grid = self.cycle.current();
+        let n_fft = grid.n_fft();
+        debug_assert!(data.len() >= grid.num_data_carriers());
+        debug_assert!(freq_out.len() >= n_fft);
+        for bin in freq_out[..n_fft].iter_mut() {
+            *bin = C32::default();
+        }
+        for (k, &bin) in grid.data_bins().iter().enumerate() {
+            freq_out[bin] = data[k];
+        }
+        for &(bin, value) in grid.pilot_bins() {
+            freq_out[bin] = value;
+        }
+        self.cycle.advance();
+    }
+}
+
+/// RX-side scattered-pilot orchestrator: for each symbol it exposes the current
+/// phase's data bins (to gather the dense data stream from an equalized
+/// frequency vector) and its pilot bins (to drive the channel estimator), then
+/// advances the phase. Mirrors [`ScatteredPilotMapper`].
+#[derive(Debug, Clone)]
+pub struct ScatteredPilotExtractor {
+    cycle: ScatteredGridCycle,
+}
+
+impl ScatteredPilotExtractor {
+    /// Builds the extractor for the given guard interval (n_fft = 2048).
+    pub fn new(guard: GuardInterval) -> Self {
+        Self {
+            cycle: ScatteredGridCycle::new(guard),
+        }
+    }
+
+    /// Data carriers per symbol — the constant [`DVB_T_DATA_CARRIERS`] (1512).
+    pub fn num_data_carriers(&self) -> usize {
+        DVB_T_DATA_CARRIERS
+    }
+
+    /// FFT size (2048).
+    pub fn n_fft(&self) -> usize {
+        DVB_T_N_FFT
+    }
+
+    /// Restarts the symbol-phase counter (call once at the start of each frame).
+    pub fn reset(&mut self) {
+        self.cycle.reset();
+    }
+
+    /// The current phase's pilot bins (rustfft bin index + known boosted TX
+    /// value), for installing on the equalizer before this symbol.
+    pub fn current_pilot_bins(&self) -> &[(usize, C32)] {
+        self.cycle.current().pilot_bins()
+    }
+
+    /// The current phase's data-carrier bins (rustfft bin indices), for the
+    /// equalizer to interpolate a channel estimate across before extraction.
+    pub fn data_bins(&self) -> &[usize] {
+        self.cycle.current().data_bins()
+    }
+
+    /// Gathers the current phase's data bins from an equalized `n_fft`-bin
+    /// frequency vector into `data_out` (`num_data_carriers()` symbols), then
+    /// advances the phase.
+    pub fn extract_symbol(&mut self, freq: &[C32], data_out: &mut [C32]) {
+        let grid = self.cycle.current();
+        debug_assert!(freq.len() >= grid.n_fft());
+        debug_assert!(data_out.len() >= grid.num_data_carriers());
+        for (k, &bin) in grid.data_bins().iter().enumerate() {
+            data_out[k] = freq[bin];
+        }
+        self.cycle.advance();
+    }
 }
 
 // ── Bandwidth / sample-rate scaling (narrowband DVB-T) ──────────────────────
@@ -371,7 +627,33 @@ pub fn dvb_t_mcs_table() -> McsTable {
 /// (`dvb_t_map_symbol`) is wired into the shared soft-decision core in a later
 /// phase.
 pub fn dvb_t_config(guard: GuardInterval, occupied_hz: f32) -> OfdmConfig {
-    let plan = dvb_t_2k_plan(guard);
+    dvb_t_config_with_plan(dvb_t_2k_plan(guard), occupied_hz)
+}
+
+/// Like [`dvb_t_config`], but with the conformant **scattered-pilot** structure:
+/// the payload symbols are mapped/demapped through the four-phase grid rotation
+/// (continual + scattered + TPS pilots reserved, exactly 1512 data carriers per
+/// symbol — EN 300 744 §4.5). The config's `carrier_plan` is the representative
+/// phase-0 plan (1512 data), and the frame layer rotates the physical bins
+/// underneath (`OfdmConfig::dvb_t_scattered` is set). Channel estimation uses the
+/// scattered + continual pilots per symbol, which tracks a frequency-selective
+/// channel far better than the 45 continual pilots alone.
+pub fn dvb_t_scattered_config(guard: GuardInterval, occupied_hz: f32) -> OfdmConfig {
+    // Representative plan = phase 0 (1512 data). The other three phases live in
+    // the orchestrators the frame layer builds from this config.
+    let plan = dvb_t_2k_plans(guard)[0].clone();
+    dvb_t_config_with_plan(plan, occupied_hz).with_dvb_t_scattered(true)
+}
+
+/// Shared assembly for the DVB-T link config over an explicit representative
+/// `plan`: DVB-T energy dispersal (before the outer FEC) and the Forney
+/// I=12/M=17 outer interleaver, at `fs = occupied_hz·2048/1705`.
+///
+/// The payload FEC is DVB-T-conformant (K=7 conv + Forney + RS(204,188) + exact
+/// energy dispersal); the symbol mapping through the frame layer is the generic
+/// QAM mapper for now — the DVB-T-exact constellation (`dvb_t_map_symbol`) is
+/// wired into the shared soft-decision core in a later phase.
+fn dvb_t_config_with_plan(plan: CarrierPlan, occupied_hz: f32) -> OfdmConfig {
     let fs = dvb_t_fs_for_bandwidth(occupied_hz);
     // The base constellation is overridden per-frame by the MCS table; QPSK is a
     // sensible default for the positional constructor.

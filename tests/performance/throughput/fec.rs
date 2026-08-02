@@ -803,7 +803,7 @@ fn frame_chain_with(
     payload_len: usize,
     label: &str,
 ) {
-    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre.clone());
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
     let payload = random_bytes(payload_len, 0xF4A3);
 
     let frame = FramePacket::new(FrameMetadata::new(0x2468, mcs_index), payload.clone());

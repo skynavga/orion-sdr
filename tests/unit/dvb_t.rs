@@ -6,9 +6,11 @@ use orion_sdr::fec::{ConvCode, InnerFec, OuterFec};
 use orion_sdr::modulate::ConstellationOrder;
 use orion_sdr::waveform::dvb_t::{
     DVB_T_ACTIVE_CARRIERS, DVB_T_CONTINUAL_PILOTS_2K, DVB_T_DATA_CARRIERS, DVB_T_FS_1MHZ,
-    DVB_T_FS_2MHZ, DVB_T_FS_333KHZ, DVB_T_KMAX, DVB_T_N_FFT, DVB_T_PRBS_INIT, DvbTEnergyDispersal,
-    GuardInterval, active_to_signed, boosted_pilot_value, dvb_t_2k_plan, dvb_t_demap_symbol,
-    dvb_t_fs_for_bandwidth, dvb_t_map_symbol, dvb_t_mcs_table, dvb_t_occupied_bw, wk_prbs,
+    DVB_T_FS_2MHZ, DVB_T_FS_333KHZ, DVB_T_KMAX, DVB_T_N_FFT, DVB_T_PRBS_INIT,
+    DVB_T_SCATTERED_PHASES, DVB_T_TPS_CARRIERS_2K, DvbTEnergyDispersal, GuardInterval,
+    active_to_signed, boosted_pilot_value, dvb_t_2k_plan, dvb_t_2k_plans, dvb_t_demap_symbol,
+    dvb_t_fs_for_bandwidth, dvb_t_map_symbol, dvb_t_mcs_table, dvb_t_occupied_bw,
+    scattered_pilot_indices, tps_carrier_indices, wk_prbs,
 };
 
 // ── DVB-T energy dispersal (whitener) ──────────────────────────────────────
@@ -286,4 +288,115 @@ fn mcs_table_dvb_t() {
         }
     ));
     assert_eq!(t.get(2).unwrap().constellation, ConstellationOrder::Qam16);
+}
+
+// ── Scattered pilots (Phase 2) ─────────────────────────────────────────────
+
+#[test]
+fn tps_carriers_table_valid() {
+    // 17 TPS carriers (EN 300 744 Table 8, 2K), in range, unique, sorted.
+    let tps = tps_carrier_indices();
+    assert_eq!(tps, &DVB_T_TPS_CARRIERS_2K);
+    assert_eq!(tps.len(), 17);
+    let mut prev = None;
+    for &k in tps {
+        assert!(k <= DVB_T_KMAX, "TPS carrier {k} out of range");
+        if let Some(p) = prev {
+            assert!(k > p, "TPS carriers must be strictly increasing");
+        }
+        prev = Some(k);
+    }
+    // Endpoints per the table.
+    assert_eq!(tps[0], 34);
+    assert_eq!(*tps.last().unwrap(), 1687);
+}
+
+#[test]
+fn scattered_indices_satisfy_formula() {
+    // EN 300 744 §4.5.3: scattered pilots for symbol phase l are the carriers
+    // with k mod 12 == 3·(l mod 4), Kmin=0..=Kmax.
+    for phase in 0..DVB_T_SCATTERED_PHASES {
+        let idx = scattered_pilot_indices(phase);
+        assert!(!idx.is_empty());
+        let start = 3 * phase;
+        assert_eq!(idx[0], start, "phase {phase} starts at 3·phase");
+        let mut prev = None;
+        for &k in &idx {
+            assert!(k <= DVB_T_KMAX);
+            assert_eq!(k % 12, (3 * phase) % 12, "phase {phase}: k mod 12");
+            if let Some(p) = prev {
+                assert_eq!(k - p, 12, "scattered pilots step by 12");
+            }
+            prev = Some(k);
+        }
+    }
+}
+
+#[test]
+fn scattered_plans_have_exactly_1512_data() {
+    // The load-bearing invariant: all four symbol-phase plans expose the same,
+    // conformant 1512 data carriers (EN 300 744 §4.5 fixes the spacing so the
+    // useful-carrier count is constant). This keeps the frame layer's count-based
+    // bookkeeping valid while the physical bins rotate.
+    for guard in [
+        GuardInterval::G1_32,
+        GuardInterval::G1_16,
+        GuardInterval::G1_8,
+        GuardInterval::G1_4,
+    ] {
+        let plans = dvb_t_2k_plans(guard);
+        assert_eq!(plans.len(), DVB_T_SCATTERED_PHASES);
+        for (phase, plan) in plans.iter().enumerate() {
+            assert_eq!(
+                plan.data_carriers().len(),
+                DVB_T_DATA_CARRIERS,
+                "guard {guard:?} phase {phase}: data count"
+            );
+            assert_eq!(plan.n_fft(), DVB_T_N_FFT);
+            assert_eq!(plan.cp_len(), guard.cp_len_2k());
+            // No data/pilot overlap, all indices in range.
+            plan.validate()
+                .unwrap_or_else(|e| panic!("phase {phase} plan invalid: {e}"));
+        }
+    }
+}
+
+#[test]
+fn scattered_plans_reserve_continual_scattered_tps() {
+    // Every plan reserves the 45 continual + phase-p scattered + 17 TPS carriers
+    // as pilots (deduped), and nothing else, so data = 1705 − reserved = 1512.
+    for phase in 0..DVB_T_SCATTERED_PHASES {
+        let plan = &dvb_t_2k_plans(GuardInterval::G1_32)[phase];
+        let pilot_set: std::collections::BTreeSet<i32> =
+            plan.pilot_carriers().iter().map(|&(a, _)| a).collect();
+        // Every continual pilot is reserved.
+        for &c in &DVB_T_CONTINUAL_PILOTS_2K {
+            assert!(pilot_set.contains(&active_to_signed(c)), "continual {c}");
+        }
+        // Every TPS carrier is reserved.
+        for &t in &DVB_T_TPS_CARRIERS_2K {
+            assert!(pilot_set.contains(&active_to_signed(t)), "TPS {t}");
+        }
+        // Every phase-p scattered pilot is reserved.
+        for k in scattered_pilot_indices(phase) {
+            assert!(pilot_set.contains(&active_to_signed(k)), "scattered {k}");
+        }
+    }
+}
+
+#[test]
+fn scattered_pilots_are_boosted_wk_valued() {
+    // Pilots carry the boosted ±4/3 value derived from w_k at their carrier index
+    // (continual and scattered share the same reference sequence, §4.5).
+    let wk = wk_prbs(DVB_T_ACTIVE_CARRIERS);
+    let plan = &dvb_t_2k_plans(GuardInterval::G1_32)[1];
+    for &(signed, value) in plan.pilot_carriers() {
+        let a = (signed + 852) as usize;
+        let expect = boosted_pilot_value(wk[a]);
+        assert!((value - expect).norm() < 1e-6, "pilot at active {a}");
+        assert!(
+            (value.norm_sqr() - 16.0 / 9.0).abs() < 1e-4,
+            "boosted power"
+        );
+    }
 }
