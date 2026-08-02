@@ -15,5 +15,6 @@ pub mod multicarrier;
 pub mod python;
 pub mod sync;
 pub mod util;
+pub mod waveform;
 
 pub use core::{AudioToIqChain, Block, IqToAudioChain, IqToIqChain, WorkReport};
