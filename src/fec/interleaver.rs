@@ -132,7 +132,7 @@ pub const fn conv_roundtrip_delay(branches: usize, depth: usize) -> usize {
 
 /// Streaming Forney convolutional byte interleaver (see the module header).
 /// Branch `j` carries a `j·depth`-byte FIFO; `feed` is length-preserving and
-/// stateful. DVB-T's outer interleaver is `ConvInterleaver::dvbt()`.
+/// stateful. DVB-T's outer interleaver is `ConvInterleaver::dvb_t()`.
 #[derive(Debug, Clone)]
 pub struct ConvInterleaver {
     branches: usize,
@@ -146,7 +146,7 @@ pub struct ConvInterleaver {
 impl ConvInterleaver {
     /// Creates a Forney interleaver with `branches` (`I`) branches, each a
     /// multiple-of-`depth` (`M`) delay line. Both must be nonzero. DVB-T's outer
-    /// interleaver is [`ConvInterleaver::dvbt`].
+    /// interleaver is [`ConvInterleaver::dvb_t`].
     pub fn new(branches: usize, depth: usize) -> Self {
         assert!(
             branches > 0 && depth > 0,
@@ -163,7 +163,7 @@ impl ConvInterleaver {
     }
 
     /// The DVB-T outer interleaver: `I = 12` branches, `M = 17` cells.
-    pub fn dvbt() -> Self {
+    pub fn dvb_t() -> Self {
         Self::new(12, 17)
     }
 
@@ -250,7 +250,7 @@ impl ConvDeinterleaver {
     }
 
     /// The matched deinterleaver for DVB-T's outer interleaver (`I=12`, `M=17`).
-    pub fn dvbt() -> Self {
+    pub fn dvb_t() -> Self {
         Self::new(12, 17)
     }
 

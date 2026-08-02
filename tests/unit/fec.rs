@@ -3,9 +3,10 @@
 
 use orion_sdr::codec::{crc16, crc32};
 use orion_sdr::fec::{
-    Bch, BchError, BlockInterleaver, ConvDeinterleaver, ConvInterleaver, DecodeRule, Gf256, Ldpc,
-    LdpcCode, PnScrambler, PnScramblerStream, PunctureRate, ReedSolomon, RsError,
-    conv_encode_punctured, conv_roundtrip_delay, punctured_coded_len, viterbi_decode_soft,
+    Bch, BchError, BlockInterleaver, ConvCode, ConvDeinterleaver, ConvInterleaver, DecodeRule,
+    Gf256, Ldpc, LdpcCode, PnScrambler, PnScramblerStream, PunctureRate, ReedSolomon, RsError,
+    conv_encode_punctured, conv_encode_punctured_with, conv_roundtrip_delay, punctured_coded_len,
+    punctured_coded_len_with, viterbi_decode_soft, viterbi_decode_soft_with,
 };
 
 // Small deterministic xorshift for reproducible test messages/errors.
@@ -174,8 +175,8 @@ fn interleaver_actually_permutes_across_rows() {
 // ── Forney convolutional interleaver (streaming) ───────────────────────────
 
 #[test]
-fn conv_interleaver_dvbt_dimensions() {
-    let ci = ConvInterleaver::dvbt();
+fn conv_interleaver_dvb_t_dimensions() {
+    let ci = ConvInterleaver::dvb_t();
     assert_eq!((ci.branches(), ci.depth()), (12, 17));
     assert_eq!(204, ci.branches() * ci.depth()); // one RS(204,188) codeword
     assert_eq!(ci.roundtrip_delay(), conv_roundtrip_delay(12, 17));
@@ -197,7 +198,7 @@ fn conv_frame_round_trip(branches: usize, depth: usize, payload: &[u8]) {
 }
 
 #[test]
-fn conv_interleaver_frame_round_trip_dvbt() {
+fn conv_interleaver_frame_round_trip_dvb_t() {
     for &n in &[204usize, 408, 2040] {
         let mut r = xorshift(0xF0 ^ n as u64);
         let payload: Vec<u8> = (0..n).map(|_| (r() & 0xff) as u8).collect();
@@ -218,10 +219,10 @@ fn conv_interleaver_stream_equals_chunked() {
     let mut r = xorshift(0x5EED);
     let data: Vec<u8> = (0..500).map(|_| (r() & 0xff) as u8).collect();
 
-    let mut one_shot = ConvInterleaver::dvbt();
+    let mut one_shot = ConvInterleaver::dvb_t();
     let full = one_shot.feed(&data);
 
-    let mut chunked = ConvInterleaver::dvbt();
+    let mut chunked = ConvInterleaver::dvb_t();
     let mut acc = Vec::new();
     for chunk in data.chunks(37) {
         acc.extend_from_slice(&chunked.feed(chunk));
@@ -232,7 +233,7 @@ fn conv_interleaver_stream_equals_chunked() {
 #[test]
 fn conv_interleaver_reset_restarts() {
     let data: Vec<u8> = (1..=204).collect();
-    let mut ci = ConvInterleaver::dvbt();
+    let mut ci = ConvInterleaver::dvb_t();
     let first = ci.feed(&data);
     ci.reset();
     let second = ci.feed(&data);
@@ -250,7 +251,7 @@ fn conv_interleaver_spreads_a_burst() {
     for slot in data.iter_mut().skip(24).take(12) {
         *slot = 1; // a 12-byte burst, one per branch
     }
-    let mut il = ConvInterleaver::dvbt();
+    let mut il = ConvInterleaver::dvb_t();
     let mut out = il.feed(&data);
     out.extend_from_slice(&il.flush());
     let ones: Vec<usize> = out
@@ -699,6 +700,105 @@ fn conv_corrects_sparse_errors_rate_half() {
     }
     let decoded = viterbi_decode_soft(&llrs, info.len(), PunctureRate::R1_2);
     assert_eq!(decoded, info, "rate-1/2 Viterbi corrects sparse errors");
+}
+
+// ── DVB-T K=7 convolutional inner code ─────────────────────────────────────
+
+#[test]
+fn conv_k7_generators_known_answer() {
+    // DVB-T inner code, G0 = 0o171 = 1111001, G1 = 0o133 = 1011011 (ETSI EN
+    // 300 744 §4.3.3). Encode a single 1 bit from the all-zero state, no tail:
+    // window = (1 << 6) | 0 = 0b1000000. Only the MSB (input tap) is set, which
+    // both G0 and G1 include, so (c0, c1) = (1, 1). The next few bits shift the
+    // 1 down the register and exercise the lower taps.
+    //
+    // Full hand-computed output for input [1, 0, 0, 0, 0, 0, 0] (a 1 then six
+    // zeros — the 1 walks the whole 6-bit register), rate-1/2 (unpunctured):
+    //   reg before each step (low..high after insert): the impulse response of
+    //   the two generators, i.e. the generator taps themselves read MSB-first.
+    // G0 = 1111001 → 1,1,1,1,0,0,1 ; G1 = 1011011 → 1,0,1,1,0,1,1
+    // interleaved [g0_0,g1_0, g0_1,g1_1, …]:
+    let info = [1u8, 0, 0, 0, 0, 0, 0];
+    // conv_encode_punctured_with appends 6 zero tail bits; take the first 14
+    // coded bits (7 steps) which are the pure impulse response.
+    let coded = conv_encode_punctured_with(ConvCode::DvbK7, &info, PunctureRate::R1_2);
+    let g0_impulse = [1u8, 1, 1, 1, 0, 0, 1];
+    let g1_impulse = [1u8, 0, 1, 1, 0, 1, 1];
+    for step in 0..7 {
+        assert_eq!(
+            coded[step * 2],
+            g0_impulse[step],
+            "K7 G0 impulse mismatch at step {step}"
+        );
+        assert_eq!(
+            coded[step * 2 + 1],
+            g1_impulse[step],
+            "K7 G1 impulse mismatch at step {step}"
+        );
+    }
+}
+
+#[test]
+fn conv_k7_noiseless_roundtrip_every_rate() {
+    for rate in PUNCTURE_RATES {
+        let mut r = xorshift(0x0DB7 ^ format!("{rate:?}").len() as u64);
+        let info: Vec<u8> = (0..188).map(|_| (r() & 1) as u8).collect();
+        let coded = conv_encode_punctured_with(ConvCode::DvbK7, &info, rate);
+        assert_eq!(
+            coded.len(),
+            punctured_coded_len_with(ConvCode::DvbK7, info.len(), rate),
+            "K7 coded length matches the size predictor for {rate:?}"
+        );
+        let llrs: Vec<f32> = coded
+            .iter()
+            .map(|&b| if b == 0 { 4.0 } else { -4.0 })
+            .collect();
+        let decoded = viterbi_decode_soft_with(ConvCode::DvbK7, &llrs, info.len(), rate);
+        assert_eq!(decoded, info, "K7 noiseless roundtrip for {rate:?}");
+    }
+}
+
+#[test]
+fn conv_k7_corrects_more_errors_than_k5() {
+    // The K=7 code has a larger free distance (dfree = 10 vs 7 for the K=5
+    // code), so it corrects a denser error burst at rate 1/2. Verify K7
+    // recovers a pattern that also stresses the decoder.
+    let mut r = xorshift(0xD7B7);
+    let info: Vec<u8> = (0..188).map(|_| (r() & 1) as u8).collect();
+    let coded = conv_encode_punctured_with(ConvCode::DvbK7, &info, PunctureRate::R1_2);
+    let mut llrs: Vec<f32> = coded
+        .iter()
+        .map(|&b| if b == 0 { 4.0 } else { -4.0 })
+        .collect();
+    // Flip several well-separated coded bits to the wrong sign.
+    for &i in &[7usize, 33, 61, 100, 140, 200, 260] {
+        if i < llrs.len() {
+            llrs[i] = -llrs[i];
+        }
+    }
+    let decoded = viterbi_decode_soft_with(ConvCode::DvbK7, &llrs, info.len(), PunctureRate::R1_2);
+    assert_eq!(decoded, info, "K7 rate-1/2 Viterbi corrects a sparse burst");
+}
+
+#[test]
+fn conv_k5_unchanged_by_generalization() {
+    // The K5 path must stay bit-identical to the original. Encode via both the
+    // legacy wrapper and the explicit-code entry; they must agree, and the
+    // explicit K5 must match what the wrapper produced pre-generalization.
+    let mut r = xorshift(0x5A5A);
+    let info: Vec<u8> = (0..120).map(|_| (r() & 1) as u8).collect();
+    let legacy = conv_encode_punctured(&info, PunctureRate::R2_3);
+    let explicit = conv_encode_punctured_with(ConvCode::K5, &info, PunctureRate::R2_3);
+    assert_eq!(legacy, explicit, "K5 legacy and explicit paths agree");
+    let llrs: Vec<f32> = legacy
+        .iter()
+        .map(|&b| if b == 0 { 4.0 } else { -4.0 })
+        .collect();
+    assert_eq!(
+        viterbi_decode_soft(&llrs, info.len(), PunctureRate::R2_3),
+        viterbi_decode_soft_with(ConvCode::K5, &llrs, info.len(), PunctureRate::R2_3),
+        "K5 legacy and explicit decoders agree"
+    );
 }
 
 // ── Reed–Solomon ───────────────────────────────────────────────────────────

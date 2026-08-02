@@ -3,6 +3,7 @@
 
 // src/demodulate/qam.rs
 use crate::core::{Block, WorkReport};
+use crate::modulate::qam::axis_scale;
 use num_complex::Complex32 as C32;
 
 // ── compile-time validation ──────────────────────────────────────────────────
@@ -15,12 +16,6 @@ const fn check_bits(bits: usize) {
 }
 
 // ── decision threshold table ─────────────────────────────────────────────────
-
-fn axis_scale(bits: usize) -> f32 {
-    let m = 1usize << (bits / 2);
-    let avg_e_total = 2.0 * ((m * m - 1) as f64) / 3.0;
-    (1.0 / avg_e_total.sqrt()) as f32
-}
 
 /// Build the M-1 decision thresholds for one axis, in normalized units.
 ///

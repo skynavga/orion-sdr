@@ -25,9 +25,9 @@ use super::{measure_throughput, minsps_from_env};
 use num_complex::Complex32 as C32;
 use orion_sdr::demodulate::demodulate_frame;
 use orion_sdr::fec::{
-    Bch, BlockInterleaver, DecodeRule, FrameMetadata, FramePacket, InnerFec, InterleaverKind, Ldpc,
-    LdpcCode, OuterFec, PnScrambler, PunctureRate, ReedSolomon, conv_encode_punctured,
-    punctured_coded_len, viterbi_decode_soft,
+    Bch, BlockInterleaver, ConvCode, DecodeRule, FrameMetadata, FramePacket, InnerFec,
+    InterleaverKind, Ldpc, LdpcCode, OuterFec, PnScrambler, PunctureRate, ReedSolomon,
+    conv_encode_punctured, punctured_coded_len, viterbi_decode_soft,
 };
 use orion_sdr::modulate::ofdm_frame::interleave_bits;
 use orion_sdr::modulate::{
@@ -35,6 +35,7 @@ use orion_sdr::modulate::{
 };
 use orion_sdr::multicarrier::CarrierPlan;
 use orion_sdr::sync::OfdmPreamble;
+use orion_sdr::waveform::dvb_t::{GuardInterval, dvb_t_config, dvb_t_mcs_table};
 use std::hint::black_box;
 
 // Small deterministic xorshift for reproducible messages / error patterns
@@ -783,13 +784,27 @@ fn frame_preamble(cfg: &OfdmConfig) -> OfdmPreamble {
 }
 
 /// Measures mod (`modulate_frame`, cache warm across frames) and batch demod
-/// (`demodulate_frame` with a persistent cache) for one concatenation, printing
-/// both Msps. `mcs_index` selects the entry from `table` to exercise.
+/// (`demodulate_frame` with a persistent cache) for one concatenation over the
+/// default small (n_fft=64) plan, printing both Msps. `mcs_index` selects the
+/// entry from `table` to exercise.
 fn frame_chain(table: McsTable, mcs_index: u8, label: &str) {
     let cfg = frame_config();
     let pre = frame_preamble(&cfg);
-    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
-    let payload = random_bytes(96, 0xF4A3);
+    frame_chain_with(cfg, pre, table, mcs_index, 96, label);
+}
+
+/// Like [`frame_chain`], but over a caller-supplied `cfg`/`preamble` and payload
+/// size — used to measure non-default plans (e.g. the DVB-T 2K carrier map).
+fn frame_chain_with(
+    cfg: OfdmConfig,
+    pre: OfdmPreamble,
+    table: McsTable,
+    mcs_index: u8,
+    payload_len: usize,
+    label: &str,
+) {
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre.clone());
+    let payload = random_bytes(payload_len, 0xF4A3);
 
     let frame = FramePacket::new(FrameMetadata::new(0x2468, mcs_index), payload.clone());
     let iq = modu.modulate_frame(&frame, 0);
@@ -853,8 +868,21 @@ fn throughput_frame_chain_conv_rs() {
         ConstellationOrder::Qpsk,
         InnerFec::Convolutional {
             rate: PunctureRate::R1_2,
+            code: ConvCode::K5,
         },
         OuterFec::ReedSolomon { n: 60, n_parity: 8 },
     )]);
     frame_chain(table, 0, "Conv+RS");
+}
+
+#[test]
+fn throughput_frame_chain_dvb_t_2k() {
+    // The conformant DVB-T 2K chain: K=7 conv + Forney(12,17) + RS(204,188) +
+    // energy dispersal over the 2048-point 2K carrier map (1 MHz mode). Uses the
+    // generalized frame_chain_with; one RS codeword of payload. The 2048-FFT
+    // dominates, so this is a coarse measurement (floor-guarded like the others).
+    let cfg = dvb_t_config(GuardInterval::G1_32, 1_000_000.0);
+    let pre = OfdmPreamble::new(4, 64)
+        .with_training_symbol(cfg.carrier_plan.n_fft(), cfg.carrier_plan.cp_len());
+    frame_chain_with(cfg, pre, dvb_t_mcs_table(), 1, 184, "DVB-T-2K");
 }

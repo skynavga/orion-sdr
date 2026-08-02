@@ -199,7 +199,7 @@ fn roundtrip_frame_forney_outer_interleaver() {
     // with a Reed–Solomon outer + convolutional inner (the DVB-style
     // concatenation it belongs to). Use small DVB-like dims so the round-trip
     // delay stays modest for the tiny test plan.
-    use orion_sdr::fec::PunctureRate;
+    use orion_sdr::fec::{ConvCode, PunctureRate};
     use orion_sdr::modulate::Mcs;
 
     let cfg = plan_config().with_outer_interleaver(InterleaverKind::Convolutional {
@@ -211,6 +211,7 @@ fn roundtrip_frame_forney_outer_interleaver() {
         ConstellationOrder::Qpsk,
         InnerFec::Convolutional {
             rate: PunctureRate::R1_2,
+            code: ConvCode::K5,
         },
         OuterFec::ReedSolomon { n: 60, n_parity: 8 },
     )]);
@@ -220,6 +221,43 @@ fn roundtrip_frame_forney_outer_interleaver() {
     let iq = modu.modulate_frame(&frame, 0);
     let body = strip_preamble(&cfg, modu.preamble(), &iq);
     let got = demodulate_frame(&cfg, &table, &body, None).expect("decode with Forney interleaver");
+    assert_eq!(got.payload, payload);
+}
+
+#[test]
+fn roundtrip_frame_dvb_t_payload_fec_chain() {
+    // The full DVB-T-conformant *payload* FEC chain composed end to end:
+    // Reed–Solomon(204,188) outer + Forney (I=12, M=17) outer interleaver +
+    // K=7 (0o171,0o133) punctured convolutional inner, over QPSK. Proves the
+    // Phase-0 streaming Forney interleaver and the K=7 inner code integrate
+    // through the frame layer. (Pilots/TPS and the 2K carrier map come later;
+    // this covers the coding chain.)
+    use orion_sdr::fec::{ConvCode, PunctureRate};
+    use orion_sdr::modulate::Mcs;
+
+    let cfg = plan_config().with_outer_interleaver(InterleaverKind::Convolutional {
+        branches: 12,
+        depth: 17,
+    });
+    let pre = preamble(&cfg);
+    let table = McsTable::new(vec![Mcs::new(
+        ConstellationOrder::Qpsk,
+        InnerFec::Convolutional {
+            rate: PunctureRate::R1_2,
+            code: ConvCode::DvbK7,
+        },
+        OuterFec::ReedSolomon {
+            n: 204,
+            n_parity: 16,
+        },
+    )]);
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+    // One RS(204,188) codeword's worth of info (188 − 4 CRC-32 bytes = 184).
+    let payload = sample_payload(184);
+    let frame = FramePacket::new(FrameMetadata::new(8, 0), payload.clone());
+    let iq = modu.modulate_frame(&frame, 0);
+    let body = strip_preamble(&cfg, modu.preamble(), &iq);
+    let got = demodulate_frame(&cfg, &table, &body, None).expect("DVB-T payload FEC chain decode");
     assert_eq!(got.payload, payload);
 }
 
@@ -455,7 +493,7 @@ fn stream_corrupted_payload_reports_error() {
 
 #[test]
 fn roundtrip_frame_rs_convolutional() {
-    use orion_sdr::fec::PunctureRate;
+    use orion_sdr::fec::{ConvCode, PunctureRate};
     use orion_sdr::modulate::Mcs;
 
     let cfg = plan_config();
@@ -467,6 +505,7 @@ fn roundtrip_frame_rs_convolutional() {
             ConstellationOrder::Qpsk,
             InnerFec::Convolutional {
                 rate: PunctureRate::R1_2,
+                code: ConvCode::K5,
             },
             OuterFec::ReedSolomon { n: 60, n_parity: 8 },
         ),
@@ -474,6 +513,7 @@ fn roundtrip_frame_rs_convolutional() {
             ConstellationOrder::Qpsk,
             InnerFec::Convolutional {
                 rate: PunctureRate::R3_4,
+                code: ConvCode::K5,
             },
             OuterFec::ReedSolomon { n: 60, n_parity: 8 },
         ),
@@ -495,7 +535,7 @@ fn roundtrip_frame_rs_convolutional() {
 
 #[test]
 fn roundtrip_frame_rs_convolutional_awgn() {
-    use orion_sdr::fec::PunctureRate;
+    use orion_sdr::fec::{ConvCode, PunctureRate};
     use orion_sdr::modulate::Mcs;
 
     let cfg = plan_config();
@@ -504,6 +544,7 @@ fn roundtrip_frame_rs_convolutional_awgn() {
         ConstellationOrder::Qpsk,
         InnerFec::Convolutional {
             rate: PunctureRate::R1_2,
+            code: ConvCode::K5,
         },
         OuterFec::ReedSolomon { n: 60, n_parity: 8 },
     )]);
@@ -530,12 +571,13 @@ fn roundtrip_frame_rs_convolutional_awgn() {
 // multipath test below uses a channel within that bound.
 
 fn qam_rs_conv_table() -> McsTable {
-    use orion_sdr::fec::PunctureRate;
+    use orion_sdr::fec::{ConvCode, PunctureRate};
     use orion_sdr::modulate::Mcs;
     McsTable::new(vec![Mcs::new(
         ConstellationOrder::Qam16,
         InnerFec::Convolutional {
             rate: PunctureRate::R1_2,
+            code: ConvCode::K5,
         },
         OuterFec::ReedSolomon { n: 60, n_parity: 8 },
     )])
