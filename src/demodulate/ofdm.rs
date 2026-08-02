@@ -311,6 +311,25 @@ impl OfdmEqualizer {
         self.method
     }
 
+    /// Replaces the pilot bins (and the data bins interpolated between them) for
+    /// the next `process()` call, without changing `process()` itself. Used by
+    /// DVB-T's scattered-pilot receiver, whose pilot/data layout rotates every
+    /// symbol (`l mod 4`): the caller installs symbol `l`'s pilot set here, then
+    /// runs `process()` under [`EqualizerMethod::PerSymbolPilotInterp`], which
+    /// re-interpolates the channel from exactly those pilots. `pilots` are
+    /// `(rustfft bin, known TX value)` pairs; `data_bins` are the bins to
+    /// interpolate an estimate for (a symbol's data-carrier bins). Bins covered
+    /// by neither keep their previous estimate — harmless, since the surrounding
+    /// grid extractor reads only the data bins.
+    ///
+    /// A mirror of [`estimate_from_training_symbol`](Self::estimate_from_training_symbol):
+    /// a separate pre-`process` call that sets up the estimate, not a change to
+    /// the per-symbol `Block` contract.
+    pub fn set_pilot_bins(&mut self, pilots: &[(usize, C32)], data_bins: &[usize]) {
+        self.pilot_bins = pilots.to_vec();
+        self.data_bins = data_bins.to_vec();
+    }
+
     /// Computes and holds the channel estimate from a received training
     /// symbol's FFT output (`n_fft` bins), dividing by the training
     /// symbol's known frequency-domain pattern per bin. Only meaningful for

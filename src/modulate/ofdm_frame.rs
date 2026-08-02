@@ -24,6 +24,7 @@
 
 use super::ofdm::{ConstellationOrder, OfdmConfig, OfdmMod};
 use crate::codec::{crc16, crc32};
+use crate::core::Block;
 use crate::fec::{
     Bch, CrcKind, FramePacket, HeaderFormat, InnerFec, InterleaverKind, Ldpc, LdpcCode, OuterFec,
     PnScrambler, ReedSolomon, ScramblerKind, ScramblerPos, SeedMode, conv_encode_punctured_with,
@@ -641,6 +642,60 @@ fn map_bits_to_iq(base: &OfdmConfig, constellation: ConstellationOrder, bits: &[
     modstage.modulate(bits)
 }
 
+/// Scattered-pilot variant of [`map_bits_to_iq`] for DVB-T: maps `bits` through
+/// the four-phase grid rotation (`mapper`), so each OFDM symbol reserves the
+/// phase-appropriate continual/scattered/TPS pilot bins (EN 300 744 §4.5). The
+/// `mapper`'s symbol-phase counter carries across calls, so a whole frame's
+/// header-then-payload symbols form one continuous rotation (`l = 0` at the
+/// first symbol after [`ScatteredPilotMapper::reset`]).
+///
+/// Mirrors `OfdmMod`'s per-symbol pipeline (map → grid → IFFT → CP → gain) but
+/// swaps the static [`GridMap`] for the rotating grid. Baseband only
+/// (`rf_hz == 0.0`, which every DVB-T config uses); zero-pads a final partial
+/// symbol like `OfdmMod::modulate`.
+fn map_bits_to_iq_scattered(
+    base: &OfdmConfig,
+    constellation: ConstellationOrder,
+    bits: &[u8],
+    mapper: &mut crate::waveform::dvb_t::ScatteredPilotMapper,
+) -> Vec<C32> {
+    let n_data = mapper.num_data_carriers();
+    let n_fft = mapper.n_fft();
+    let cp_len = base.carrier_plan.cp_len();
+    let bps = n_data * constellation.bits_per_symbol();
+    if bps == 0 {
+        return Vec::new();
+    }
+    let n_symbols = bits.len().div_ceil(bps);
+    let mut padded = bits.to_vec();
+    padded.resize(n_symbols * bps, 0);
+
+    let mut sym_mapper = crate::modulate::ofdm::ideal_symbol_mapper(constellation);
+    let mut ifft = crate::multicarrier::IfftBlock::new(n_fft);
+    let mut cp_insert = crate::multicarrier::CyclicPrefixInsert::new(n_fft, cp_len);
+    let mut symbols = vec![C32::default(); n_data];
+    let mut freq = vec![C32::default(); n_fft];
+    let mut time = vec![C32::default(); n_fft];
+    let sps = n_fft + cp_len;
+    let mut out = vec![C32::default(); n_symbols * sps];
+
+    let g = base.gain;
+    for s in 0..n_symbols {
+        let bit_off = s * bps;
+        sym_mapper.process(&padded[bit_off..bit_off + bps], &mut symbols);
+        mapper.map_symbol(&symbols, &mut freq);
+        ifft.process(&freq, &mut time);
+        let cp_out = &mut out[s * sps..(s + 1) * sps];
+        cp_insert.process(&time, cp_out);
+        if g != 1.0 {
+            for v in cp_out.iter_mut() {
+                *v = C32::new(g * v.re, g * v.im);
+            }
+        }
+    }
+    out
+}
+
 /// Builds a bare per-symbol `OfdmConfig` (no frame fields) for a given
 /// constellation, sharing the base plan/fs/rf/gain. Used to drive `OfdmMod`
 /// for the header (BPSK) and payload (MCS) symbol streams.
@@ -711,6 +766,25 @@ impl OfdmFrameMod {
     pub fn modulate_frame(&self, frame: &FramePacket, per_frame_seed: u32) -> Vec<C32> {
         let mut out = Vec::new();
 
+        // For a DVB-T scattered-pilot link, one grid-rotation orchestrator spans
+        // the whole frame's OFDM symbols (header then payload), so `l = 0` is the
+        // first header symbol and the phase carries through — matching the RX
+        // extractor's per-frame reset. `None` for every other link.
+        let mut scattered = self.cfg.dvb_t_scattered.then(|| {
+            let guard = crate::waveform::dvb_t::GuardInterval::from_cp_len_2k(
+                self.cfg.carrier_plan.cp_len(),
+            )
+            .expect("DVB-T scattered link requires a 2K guard interval");
+            crate::waveform::dvb_t::ScatteredPilotMapper::new(guard)
+        });
+
+        // Maps coded bits either through the rotating scattered grid (DVB-T) or
+        // the static plan.
+        let mut map = |constellation, bits: &[u8]| match scattered.as_mut() {
+            Some(m) => map_bits_to_iq_scattered(&self.cfg, constellation, bits, m),
+            None => map_bits_to_iq(&self.cfg, constellation, bits),
+        };
+
         // 1. Preamble + training symbol.
         out.extend_from_slice(&generate_ofdm_preamble(&self.preamble, &self.cfg));
 
@@ -735,11 +809,7 @@ impl OfdmFrameMod {
                 0,
                 &self.cache,
             );
-            out.extend_from_slice(&map_bits_to_iq(
-                &self.cfg,
-                HEADER_CONSTELLATION,
-                &header_bits,
-            ));
+            out.extend_from_slice(&map(HEADER_CONSTELLATION, &header_bits));
         }
 
         // 3. Payload, coded per the selected MCS.
@@ -759,7 +829,7 @@ impl OfdmFrameMod {
             per_frame_seed,
             &self.cache,
         );
-        out.extend_from_slice(&map_bits_to_iq(&self.cfg, mcs.constellation, &payload_bits));
+        out.extend_from_slice(&map(mcs.constellation, &payload_bits));
 
         out
     }

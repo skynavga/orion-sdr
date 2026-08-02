@@ -119,6 +119,76 @@ fn soft_demap(
     Some(llrs)
 }
 
+/// Scattered-pilot variant of [`soft_demap`] for DVB-T: demaps `n_symbols` OFDM
+/// symbols through the four-phase grid rotation (`extractor`). For each symbol it
+/// runs `CyclicPrefixRemove → FftBlock`, installs that symbol's phase-`l`
+/// continual+scattered+TPS pilot set on a per-symbol-interpolating equalizer
+/// (`OfdmEqualizer::set_pilot_bins` + `PerSymbolPilotInterp`), equalizes,
+/// extracts the phase-`l` data bins, and soft-demaps. The `extractor`'s phase
+/// counter carries across calls, so a frame's header-then-payload symbols form
+/// one continuous rotation matching the TX (`l = 0` at the first symbol after
+/// [`ScatteredPilotExtractor::reset`]).
+///
+/// This is the conformant DVB-T channel-estimation path (dense scattered pilots
+/// per symbol), replacing the Phase-1 training-symbol hold. Returns `None` if
+/// `iq` is too short.
+fn soft_demap_scattered(
+    base: &OfdmConfig,
+    constellation: ConstellationOrder,
+    iq: &[C32],
+    n_symbols: usize,
+    extractor: &mut crate::waveform::dvb_t::ScatteredPilotExtractor,
+) -> Option<Vec<f32>> {
+    let cfg = symbol_config(base, constellation);
+    let sps = cfg.samples_per_ofdm_symbol();
+    if iq.len() < n_symbols * sps {
+        return None;
+    }
+    let n_fft = cfg.carrier_plan.n_fft();
+    let cp_len = cfg.carrier_plan.cp_len();
+    let n_data = extractor.num_data_carriers();
+    let bps = n_data * constellation.bits_per_symbol();
+
+    let mut soft = OfdmSoftDemod::new(&cfg);
+    // A per-symbol-interpolating equalizer; its pilot set is re-installed for
+    // each symbol's phase before `process`.
+    let mut eq = OfdmEqualizer::new(&cfg, EqualizerMethod::PerSymbolPilotInterp);
+    let mut cp_remove = CyclicPrefixRemove::new(n_fft, cp_len);
+    let mut fft = FftBlock::new(n_fft);
+    let mut time = vec![C32::default(); n_fft];
+    let mut freq = vec![C32::default(); n_fft];
+    let mut equalized = vec![C32::default(); n_fft];
+    let mut symbols = vec![C32::default(); n_data];
+    let mut llrs = vec![0.0f32; n_symbols * bps];
+
+    let mut in_off = 0;
+    let mut out_off = 0;
+    for _ in 0..n_symbols {
+        if cp_remove.process(&iq[in_off..], &mut time).out_written != n_fft {
+            return None;
+        }
+        if fft.process(&time, &mut freq).out_written != n_fft {
+            return None;
+        }
+        // Install this symbol's phase-`l` pilots (bins + known TX values) and the
+        // phase's data bins to interpolate across, then equalize from them.
+        let pilots = extractor.current_pilot_bins().to_vec();
+        let data_bins: Vec<usize> = extractor.data_bins().to_vec();
+        eq.set_pilot_bins(&pilots, &data_bins);
+        if eq.process(&freq, &mut equalized).out_written != n_fft {
+            return None;
+        }
+        extractor.extract_symbol(&equalized, &mut symbols);
+        let sw = soft.process(&symbols, &mut llrs[out_off..out_off + bps]);
+        if sw.out_written != bps {
+            return None;
+        }
+        in_off += sps;
+        out_off += bps;
+    }
+    Some(llrs)
+}
+
 /// Inverse of the interleaver, in the LLR (`f32`) domain.
 fn deinterleave_llrs(il: InterleaverKind, llrs: &[f32]) -> Vec<f32> {
     match il {
@@ -401,6 +471,32 @@ fn decode_frame_body(
         })
     };
 
+    // For a DVB-T scattered-pilot link, one grid-rotation extractor spans the
+    // whole frame body (header then payload) so the RX symbol phase matches the
+    // TX (`l = 0` at the first header symbol). `None` for every other link, which
+    // takes the static-grid `soft_demap`.
+    let mut scattered = cfg.dvb_t_scattered.then(|| {
+        let guard =
+            crate::waveform::dvb_t::GuardInterval::from_cp_len_2k(cfg.carrier_plan.cp_len())
+                .expect("DVB-T scattered link requires a 2K guard interval");
+        crate::waveform::dvb_t::ScatteredPilotExtractor::new(guard)
+    });
+
+    // Soft-demaps `n_sym` symbols at `iq[off..]` through either the rotating
+    // scattered grid (DVB-T) or the static plan, whichever the config selects.
+    // `eq` is only consulted on the static path.
+    let mut demap = |constellation: ConstellationOrder,
+                     iq: &[C32],
+                     off: usize,
+                     n_sym: usize,
+                     eq: Option<&mut OfdmEqualizer>|
+     -> Option<Vec<f32>> {
+        match scattered.as_mut() {
+            Some(x) => soft_demap_scattered(cfg, constellation, &iq[off..], n_sym, x),
+            None => soft_demap(cfg, constellation, &iq[off..], n_sym, eq),
+        }
+    };
+
     // 1. Header (unless NoHeader).
     let (metadata, per_frame_seed, payload_len) = if cfg.header_format == HeaderFormat::OrionSdr {
         let hplan = block_plan(
@@ -415,7 +511,7 @@ fn decode_frame_body(
         let n_sym = symbols_for_coded_bits(cfg, HEADER_CONSTELLATION, hplan.coded_bits);
         let mut eq = make_eq(HEADER_CONSTELLATION);
         // Too few samples for the header ⇒ incomplete, not malformed.
-        let llrs = soft_demap(cfg, HEADER_CONSTELLATION, &iq[cursor..], n_sym, eq.as_mut())
+        let llrs = demap(HEADER_CONSTELLATION, iq, cursor, n_sym, eq.as_mut())
             .ok_or(BodyError::Incomplete)?;
         let (fields, ok) = decode_chain(
             &llrs,
@@ -480,8 +576,8 @@ fn decode_frame_body(
     let n_sym = symbols_for_coded_bits(cfg, mcs.constellation, pplan.coded_bits);
     let mut eq = make_eq(mcs.constellation);
     // Too few samples for the (now-known-length) payload ⇒ incomplete.
-    let llrs = soft_demap(cfg, mcs.constellation, &iq[cursor..], n_sym, eq.as_mut())
-        .ok_or(BodyError::Incomplete)?;
+    let llrs =
+        demap(mcs.constellation, iq, cursor, n_sym, eq.as_mut()).ok_or(BodyError::Incomplete)?;
     let (bytes, ok) = decode_chain(
         &llrs,
         &pplan,

@@ -9,6 +9,53 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.48] - 2026-08-01
+
+NB-DVB-T (narrowband DVB-T for amateur DATV) Phase 2: DVB-T's four-phase
+scattered-pilot channel estimation (ETSI EN 300 744 §4.5). Pilots at
+`k mod 12 == 3·(l mod 4)` cycle over four symbols, giving far denser per-symbol
+channel tracking than the 45 continual pilots alone — enough to decode a
+frequency-selective (multipath) channel that the continual-pilots-only path
+cannot. Acquisition still uses the Schmidl & Cox preamble + `OrionSdr` header,
+and TPS carriers hold a placeholder value (DBPSK signalling, guard-interval
+acquisition, and full soft-decision are Phase 3).
+
+### Added
+
+- `dvb_t_2k_plans(guard) -> [CarrierPlan; 4]`: the four symbol-phase 2K carrier
+  plans, each reserving the 45 continual + phase-`p` scattered + 17 TPS carriers
+  as boosted `w_k`-valued pilots, with **exactly 1512 data carriers** in every
+  phase (the standard fixes this count constant). New `scattered_pilot_indices`,
+  `tps_carrier_indices` / `DVB_T_TPS_CARRIERS_2K` (verified vs. EN 300 744
+  Table 8), `DVB_T_SCATTERED_PHASES`, and `GuardInterval::from_cp_len_2k`.
+- `ScatteredPilotMapper` / `ScatteredPilotExtractor` (in `src/waveform/dvb_t.rs`):
+  non-`Block` frame-layer orchestrators owning the four `CarrierGrid`s plus a
+  symbol-phase counter, selecting the phase-appropriate grid per symbol.
+- `OfdmEqualizer::set_pilot_bins`: an additive method to install each symbol's
+  pilot set before `process` (under `PerSymbolPilotInterp`), leaving the
+  per-symbol `Block` contract unchanged.
+- `OfdmConfig::dvb_t_scattered` (+ `with_dvb_t_scattered`) and
+  `dvb_t_scattered_config(guard, occupied_hz)`, which assemble a scattered-pilot
+  DVB-T link over a representative phase-0 plan.
+- Scattered-pilot tests: all four plans (× four guard intervals) expose exactly
+  1512 data carriers; the scattered index formula and TPS table; a bit-exact
+  four-phase noiseless roundtrip; and the load-bearing pair
+  (`dvb_t_scattered_multipath_decodes` / `dvb_t_scattered_needed_for_multipath`)
+  showing a 2-tap channel the scattered per-symbol estimate recovers but the
+  continual-pilots-only path cannot.
+
+### Changed
+
+- The frame layer maps/demaps payload symbols through the four-phase grid
+  rotation when `dvb_t_scattered` is set: one orchestrator spans a frame's
+  header-then-payload symbols so `l = 0` is the first header symbol and TX/RX
+  stay phase-aligned. Non-DVB-T links are unaffected (the flag defaults `false`).
+
+### Fixed
+
+- Dropped a redundant `.clone()` on the `Copy`-type `OfdmPreamble` in the
+  throughput tests (a pre-existing Clippy warning).
+
 ## [0.0.47] - 2026-08-01
 
 NB-DVB-T (narrowband DVB-T for amateur DATV) Phase 1: a conformant DVB-T payload

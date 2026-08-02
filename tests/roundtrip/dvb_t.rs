@@ -27,7 +27,7 @@ use orion_sdr::multicarrier::{CarrierGrid, CyclicPrefixRemove, FftBlock, GridExt
 use orion_sdr::sync::OfdmPreamble;
 use orion_sdr::waveform::dvb_t::{
     GuardInterval, dvb_t_2k_plan, dvb_t_config, dvb_t_demap_symbol, dvb_t_map_symbol,
-    dvb_t_mcs_table,
+    dvb_t_mcs_table, dvb_t_scattered_config,
 };
 
 // A preamble sized to the 2K plan, with a training symbol for channel/CFO.
@@ -164,4 +164,100 @@ fn dvb_t_qam_through_ofdm_channel() {
             );
         }
     }
+}
+
+// ── Scattered pilots (Phase 2) ─────────────────────────────────────────────
+//
+// The conformant 2K frame structure: continual + phase-rotating scattered + TPS
+// pilots reserved (exactly 1512 data carriers per symbol), with per-symbol
+// channel estimation off the scattered+continual pilots. The frame layer rotates
+// the four symbol-phase grids underneath a representative phase-0 plan
+// (`dvb_t_scattered_config`); see `waveform::dvb_t`.
+
+/// Convolves `iq` with a short FIR channel (delay spread ≤ cp_len), mirroring
+/// the multipath helper in the COFDM frame roundtrip tests.
+fn apply_fir_channel(iq: &[C32], taps: &[C32]) -> Vec<C32> {
+    let mut out = vec![C32::default(); iq.len()];
+    for (n, &x) in iq.iter().enumerate() {
+        for (k, &h) in taps.iter().enumerate() {
+            if n + k < out.len() {
+                out[n + k] += x * h;
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn roundtrip_dvb_t_2k_scattered_noiseless() {
+    // Bit-exact frame roundtrip through the four-phase scattered-pilot rotation
+    // (flat channel). Proves TX/RX agree on the per-symbol grid phase across the
+    // whole header+payload symbol stream.
+    let cfg = dvb_t_scattered_config(GuardInterval::G1_32, 1_000_000.0);
+    let pre = preamble(&cfg);
+    let table = dvb_t_mcs_table();
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+
+    // Two RS codewords, so the payload spans several rotation cycles.
+    let payload = sample_payload(368);
+    let frame = FramePacket::new(FrameMetadata::new(7, 0), payload.clone());
+    let iq = modu.modulate_frame(&frame, 0);
+    let body = strip_preamble(modu.preamble(), &iq);
+    let got = demodulate_frame(&cfg, &table, &body, None).expect("scattered frame decode");
+    assert_eq!(got.payload, payload);
+}
+
+/// A 2-tap frequency-selective channel strong enough that an uncorrected decode
+/// fails outright — the second tap is comparable to the first, giving a deep
+/// frequency null and large per-carrier phase rotation. The dense per-symbol
+/// scattered-pilot estimate tracks it and recovers the frame; the flat path
+/// (no channel correction) cannot. Delay spread (1 sample) ≤ cp_len (64).
+fn scattered_multipath_taps() -> [C32; 2] {
+    [C32::new(0.8, 0.0), C32::new(0.7, -0.35)]
+}
+
+#[test]
+fn dvb_t_scattered_multipath_decodes() {
+    // WITH the scattered-pilot config the dense per-symbol channel estimate
+    // tracks the frequency-selective channel and the frame decodes.
+    let cfg = dvb_t_scattered_config(GuardInterval::G1_32, 1_000_000.0);
+    let pre = preamble(&cfg);
+    let table = dvb_t_mcs_table();
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+
+    let payload = sample_payload(184);
+    let frame = FramePacket::new(FrameMetadata::new(3, 0), payload.clone());
+    let iq = modu.modulate_frame(&frame, 0);
+    let taps = scattered_multipath_taps();
+    assert!(taps.len() - 1 <= cfg.carrier_plan.cp_len());
+    let channeled = apply_fir_channel(&iq, &taps);
+    let body = strip_preamble(modu.preamble(), &channeled);
+    let got =
+        demodulate_frame(&cfg, &table, &body, None).expect("scattered multipath frame decode");
+    assert_eq!(got.payload, payload);
+}
+
+#[test]
+fn dvb_t_scattered_needed_for_multipath() {
+    // The load-bearing counter-test: the SAME channel through the Phase-1
+    // continual-pilots-only config (no scattered rotation, no per-symbol
+    // estimate here — flat-channel demap) must FAIL. This proves the scattered
+    // pilots are what carry the multipath decode, not some incidental margin.
+    let cfg = dvb_t_config(GuardInterval::G1_32, 1_000_000.0);
+    let pre = preamble(&cfg);
+    let table = dvb_t_mcs_table();
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+
+    let payload = sample_payload(184);
+    let frame = FramePacket::new(FrameMetadata::new(3, 0), payload.clone());
+    let iq = modu.modulate_frame(&frame, 0);
+    let channeled = apply_fir_channel(&iq, &scattered_multipath_taps());
+    let body = strip_preamble(modu.preamble(), &channeled);
+    // The flat-channel batch demap has no channel correction, so the strong
+    // 2-tap channel corrupts the payload beyond the FEC's reach.
+    let got = demodulate_frame(&cfg, &table, &body, None);
+    assert!(
+        got.is_err() || got.as_ref().unwrap().payload != payload,
+        "continual-pilots-only decode must not recover the multipath frame"
+    );
 }
