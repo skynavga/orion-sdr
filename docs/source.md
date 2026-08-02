@@ -48,6 +48,8 @@ src/
                         bpsk_soft_llr/qpsk_soft_llr/qam_soft_llr
     ofdm_frame.rs      — demodulate_frame (batch), OfdmFrameStreamDemod (streaming
                         feed/flush RX), RxFrame (COFDM frame demodulator)
+    dvb_t_frame.rs     — dvb_t_frame_demodulate, DvbTRxFrame (conformant preamble-less
+                        DVB-T RX: GI-acquire → equalize → soft-demap → TPS + FEC)
     pm.rs             — PmQuadratureDemod
     psk31.rs          — Bpsk31Demod, Bpsk31Decider, Qpsk31Demod, Qpsk31Decider
     qam.rs            — QamDemod, QamDecider<BITS>, Qam16/64/256Decider
@@ -65,6 +67,8 @@ src/
                         (mapper → grid → IFFT → cyclic prefix → optional RF)
     ofdm_frame.rs      — OfdmFrameMod, Mcs, McsTable (COFDM frame modulator +
                         shared coding chain and block-size bookkeeping)
+    dvb_t_frame.rs     — dvb_t_frame_modulate, DvbTFrame (conformant preamble-less
+                        DVB-T TX: TS + energy dispersal → FEC → map → scattered grid + TPS)
     pm.rs             — PmDirectPhaseMod
     psk31.rs          — Bpsk31Mod, Qpsk31Mod (DBPSK/DQPSK, 31.25 baud, Hann pulse shaping)
     qam.rs            — QamMapper<BITS>, QamMod, Qam16/64/256Mapper
@@ -95,6 +99,16 @@ src/
     frame.rs           — FramePacket, FrameMetadata, RxError, and the scheme
                         descriptors (OuterFec, InnerFec, InterleaverKind, CrcKind,
                         ScramblerKind/SeedMode/ScramblerPos, HeaderFormat)
+  waveform/            — standard-specific waveform assemblies built from the generic
+                        fec/multicarrier/modulate/demodulate primitives (per-standard
+                        parameter tables + orchestrators; no new generic abstractions)
+    dvb_t.rs           — DVB-T 2K numerology, fs-scaling, continual/scattered pilots,
+                        Figure-9a mapping + soft-LLR, energy-dispersal PRBS, MCS table,
+                        scattered-pilot orchestrators, DvbTFrameParams (TX/RX-shared)
+    dvb_t_ts.rs        — MPEG-2 TS packet adaptation + energy dispersal (188-byte
+                        packets, 8-packet PRBS re-init, sync-byte inversion)
+    dvb_t_tps.rs       — TPS signalling: standalone GF(2^7) BCH(67,53), TpsWord
+                        pack/unpack, DBPSK-along-symbol-axis TpsEncoder/TpsDecoder
   sync/
     costas.rs         — Costas difference-metric scorer and top-N candidate search
     ft4_sync.rs       — ft4_sync() → Vec<Ft4SyncResult>
@@ -102,6 +116,8 @@ src/
     ofdm_sync.rs       — OfdmPreamble, TrainingSymbol, OfdmSyncResult, ofdm_sync(),
                         generate_ofdm_preamble() (Schmidl & Cox timing/fractional-CFO,
                         integer-CFO via training-symbol correlation)
+    dvb_t_gi_sync.rs   — dvb_t_gi_sync(), GiSyncConfig (van de Beek guard-interval ML
+                        timing/CFO for preamble-less OFDM: |γ| − ρ·Φ over the cyclic prefix)
     psk31_sync.rs     — psk31_sync() → Vec<Psk31SyncResult> (energy persistence carrier search)
     waterfall.rs      — symbol-rate magnitude spectrogram (Goertzel per tone per symbol)
   message/

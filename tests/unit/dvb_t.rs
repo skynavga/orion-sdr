@@ -9,8 +9,8 @@ use orion_sdr::waveform::dvb_t::{
     DVB_T_FS_2MHZ, DVB_T_FS_333KHZ, DVB_T_KMAX, DVB_T_N_FFT, DVB_T_PRBS_INIT,
     DVB_T_SCATTERED_PHASES, DVB_T_TPS_CARRIERS_2K, DvbTEnergyDispersal, GuardInterval,
     active_to_signed, boosted_pilot_value, dvb_t_2k_plan, dvb_t_2k_plans, dvb_t_demap_symbol,
-    dvb_t_fs_for_bandwidth, dvb_t_map_symbol, dvb_t_mcs_table, dvb_t_occupied_bw,
-    scattered_pilot_indices, tps_carrier_indices, wk_prbs,
+    dvb_t_fs_for_bandwidth, dvb_t_map_symbol, dvb_t_mcs_table, dvb_t_occupied_bw, dvb_t_soft_llr,
+    is_dvb_t_constellation, scattered_pilot_indices, tps_carrier_indices, wk_prbs,
 };
 
 // ── DVB-T energy dispersal (whitener) ──────────────────────────────────────
@@ -174,6 +174,57 @@ fn qam_unsupported_order_is_none() {
     assert!(dvb_t_demap_symbol(C32::new(0.0, 0.0), 8).is_none()); // 256-QAM not in DVB-T
 }
 
+// ── DVB-T soft-decision LLR ─────────────────────────────────────────────────
+
+#[test]
+fn soft_llr_sign_matches_hard_demap() {
+    // For every DVB-T constellation point, the sign of each LLR (positive ⇒ bit 0)
+    // must agree with the hard-demapped bit at a clean received symbol.
+    for &v in &[2usize, 4, 6] {
+        for code in 0u32..(1 << v) {
+            let bits: Vec<u8> = (0..v).rev().map(|b| ((code >> b) & 1) as u8).collect();
+            let sym = dvb_t_map_symbol(&bits).unwrap();
+            let llr = dvb_t_soft_llr(sym, v).unwrap();
+            assert_eq!(llr.len(), v);
+            for (i, (&bit, &l)) in bits.iter().zip(llr.iter()).enumerate() {
+                // bit 0 ⇒ LLR > 0; bit 1 ⇒ LLR < 0.
+                let hard = u8::from(l <= 0.0);
+                assert_eq!(hard, bit, "v={v} code={code} bit {i}: LLR {l} vs bit {bit}");
+            }
+        }
+    }
+}
+
+#[test]
+fn soft_llr_unsupported_order_is_none() {
+    assert!(dvb_t_soft_llr(C32::new(0.0, 0.0), 3).is_none());
+    assert!(dvb_t_soft_llr(C32::new(0.0, 0.0), 8).is_none());
+}
+
+#[test]
+fn soft_llr_magnitude_grows_with_confidence() {
+    // A symbol pushed far past a QPSK decision boundary yields a larger-magnitude
+    // LLR than one near the axis (more confident bit decision).
+    let near = dvb_t_soft_llr(C32::new(0.05, 0.05), 2).unwrap();
+    let far = dvb_t_soft_llr(C32::new(3.0, 3.0), 2).unwrap();
+    assert!(
+        far[0].abs() > near[0].abs(),
+        "far symbol should be more confident"
+    );
+    // Deep in the (+,+) quadrant both bits decide to 0 (positive LLR).
+    assert!(far[0] > 0.0 && far[1] > 0.0);
+}
+
+#[test]
+fn is_dvb_t_constellation_membership() {
+    use orion_sdr::modulate::ConstellationOrder::*;
+    assert!(is_dvb_t_constellation(Qpsk));
+    assert!(is_dvb_t_constellation(Qam16));
+    assert!(is_dvb_t_constellation(Qam64));
+    assert!(!is_dvb_t_constellation(Bpsk));
+    assert!(!is_dvb_t_constellation(Qam256));
+}
+
 // ── 2K numerology and carrier map ──────────────────────────────────────────
 
 #[test]
@@ -264,6 +315,39 @@ fn fs_bandwidth_scaling() {
         fs_333k < 521_000.0,
         "333 kHz mode fs {fs_333k} below Pluto floor"
     );
+}
+
+#[test]
+fn nb_bandwidth_modes() {
+    use orion_sdr::waveform::dvb_t::NbBandwidth;
+    // occupied_hz() matches the nominal channel widths.
+    assert_eq!(NbBandwidth::Bw333kHz.occupied_hz(), 333_000.0);
+    assert_eq!(NbBandwidth::Bw1MHz.occupied_hz(), 1_000_000.0);
+    assert_eq!(NbBandwidth::Bw2MHz.occupied_hz(), 2_000_000.0);
+    // fs() equals the corresponding constant (fs = BW · 2048/1705).
+    assert!((NbBandwidth::Bw333kHz.fs() - DVB_T_FS_333KHZ).abs() < 1.0);
+    assert!((NbBandwidth::Bw1MHz.fs() - DVB_T_FS_1MHZ).abs() < 1.0);
+    assert!((NbBandwidth::Bw2MHz.fs() - DVB_T_FS_2MHZ).abs() < 1.0);
+    // Pluto continuous-TX floor: 333 kHz is below, 1/2 MHz are above.
+    assert!(!NbBandwidth::Bw333kHz.is_pluto_continuous_tx());
+    assert!(NbBandwidth::Bw1MHz.is_pluto_continuous_tx());
+    assert!(NbBandwidth::Bw2MHz.is_pluto_continuous_tx());
+}
+
+#[test]
+fn nb_bandwidth_composes_with_config_builders() {
+    use orion_sdr::waveform::dvb_t::{NbBandwidth, dvb_t_config, dvb_t_scattered_config};
+    // A named mode composes with the existing config builders via occupied_hz().
+    let a = dvb_t_config(GuardInterval::G1_32, NbBandwidth::Bw1MHz.occupied_hz());
+    let b = dvb_t_config(GuardInterval::G1_32, 1_000_000.0);
+    assert_eq!(a.fs, b.fs);
+    assert_eq!(a.carrier_plan, b.carrier_plan);
+
+    // Or set fs directly with the generic with_fs() builder.
+    let c =
+        dvb_t_scattered_config(GuardInterval::G1_8, 1_000_000.0).with_fs(NbBandwidth::Bw2MHz.fs());
+    assert!((c.fs - NbBandwidth::Bw2MHz.fs()).abs() < 1.0);
+    assert!(c.dvb_t_scattered);
 }
 
 #[test]

@@ -96,6 +96,17 @@ impl DvbTEnergyDispersal {
         self.feed_in_place(&mut out);
         out
     }
+
+    /// Advances the PRBS by one byte (8 steps) WITHOUT applying its output — the
+    /// "PRBS generation continues but output disabled" behaviour the standard
+    /// specifies over the MPEG-2 sync bytes of the seven trailing packets in a
+    /// group (§4.3.1). Keeps the register phase aligned with a run that skips
+    /// those bytes for output but still clocks the generator.
+    pub fn advance_byte(&mut self) {
+        for _ in 0..8 {
+            self.next_bit();
+        }
+    }
 }
 
 // ── DVB-T constellation mapping (ETSI EN 300 744 §4.3.5, Figure 9a) ─────────
@@ -194,6 +205,66 @@ pub fn dvb_t_demap_symbol(sym: num_complex::Complex32, v: usize) -> Option<Vec<u
         out[2 * j + 1] = qb[j]; // odd → Q
     }
     Some(out)
+}
+
+/// Max-log soft LLRs for one received DVB-T symbol `sym` at order `v` bits,
+/// returned in the same `y0..y(v-1)` order as [`dvb_t_map_symbol`] (even bits on
+/// the I axis, odd on Q). `LLR > 0 ⇒ bit more likely 0`, matching the crate-wide
+/// convention (see `demodulate::ofdm`). Returns `None` for an unsupported order.
+///
+/// This is the DVB-T counterpart to the generic `qam_soft_llr`: the generic
+/// mapper groups the first half of the bits on I and the second on Q with its own
+/// Gray labels, whereas DVB-T interleaves even/odd bits across the axes and uses
+/// the Figure-9a per-axis tables — so DVB-T soft-decision needs this dedicated
+/// LLR extraction rather than the generic one.
+pub fn dvb_t_soft_llr(sym: num_complex::Complex32, v: usize) -> Option<Vec<f32>> {
+    let table = dvb_t_axis_table(v)?;
+    let scale = crate::modulate::qam::axis_scale(v);
+    let k = v / 2; // bits per axis
+
+    // Per-axis LLRs for the k axis bits (MSB-first, matching `axis_index`).
+    let axis_llrs = |coord: f32| -> Vec<f32> {
+        let mut out = vec![0.0f32; k];
+        for (b, slot) in out.iter_mut().enumerate() {
+            // Axis index bit `b` is at shift (k-1-b): MSB is bit 0 of the label.
+            let shift = k - 1 - b;
+            let mut d0 = f32::INFINITY;
+            let mut d1 = f32::INFINITY;
+            for (idx, &lvl) in table.iter().enumerate() {
+                let d = coord - lvl as f32 * scale;
+                let d_sq = d * d;
+                if (idx >> shift) & 1 == 0 {
+                    d0 = d0.min(d_sq);
+                } else {
+                    d1 = d1.min(d_sq);
+                }
+            }
+            // Positive ⇒ bit 0 (closer to a 0-labelled level than any 1-labelled).
+            *slot = d1 - d0;
+        }
+        out
+    };
+
+    let il = axis_llrs(sym.re);
+    let ql = axis_llrs(sym.im);
+    // Re-interleave to y-order: even bits from I, odd from Q.
+    let mut out = vec![0.0f32; v];
+    for j in 0..k {
+        out[2 * j] = il[j];
+        out[2 * j + 1] = ql[j];
+    }
+    Some(out)
+}
+
+/// Whether `order` is one of the three DVB-T constellations (QPSK/16-QAM/64-QAM)
+/// that [`dvb_t_map_symbol`]/[`dvb_t_soft_llr`] handle. BPSK/256-QAM are crate
+/// extensions outside DVB-T, so a link carrying them (e.g. an `OrionSdr`-header
+/// BPSK block) must fall back to the generic mapper for those symbols.
+pub fn is_dvb_t_constellation(order: ConstellationOrder) -> bool {
+    matches!(
+        order,
+        ConstellationOrder::Qpsk | ConstellationOrder::Qam16 | ConstellationOrder::Qam64
+    )
 }
 
 // ── 2K-mode numerology and carrier map (ETSI EN 300 744 §4.4–4.5) ───────────
@@ -349,6 +420,16 @@ pub fn scattered_pilot_indices(phase: usize) -> Vec<usize> {
 /// [`DVB_T_TPS_CARRIERS_2K`] mirroring [`scattered_pilot_indices`]'s shape.
 pub fn tps_carrier_indices() -> &'static [usize] {
     &DVB_T_TPS_CARRIERS_2K
+}
+
+/// The rustfft bin index for each TPS carrier in the 2K plan, in the order of
+/// [`DVB_T_TPS_CARRIERS_2K`]: `bin = (active − 852).rem_euclid(2048)`. The DVB-T
+/// frame assembler overwrites these bins with the DBPSK TPS cells after the
+/// scattered-grid mapper has placed data + pilots.
+pub fn tps_carrier_bins() -> [usize; DVB_T_TPS_CARRIERS_2K.len()] {
+    core::array::from_fn(|i| {
+        active_to_signed(DVB_T_TPS_CARRIERS_2K[i]).rem_euclid(DVB_T_N_FFT as i32) as usize
+    })
 }
 
 /// Builds the four symbol-phase carrier plans for the conformant 2K frame
@@ -588,6 +669,45 @@ pub const DVB_T_FS_1MHZ: f32 = 1_000_000.0 * DVB_T_N_FFT as f32 / DVB_T_ACTIVE_C
 /// fs for the ~2 MHz narrowband mode (wider repeater config).
 pub const DVB_T_FS_2MHZ: f32 = 2_000_000.0 * DVB_T_N_FFT as f32 / DVB_T_ACTIVE_CARRIERS as f32;
 
+/// The standard narrowband DVB-T (amateur DATV) channel bandwidths. NB-DVB-T is
+/// a pure fs-scaling of the fixed 2K structure, so a mode is just a target
+/// occupied bandwidth; this enum is a convenience so callers pick a named mode
+/// instead of a raw `occupied_hz`. Compose with the config builders, e.g.
+/// `dvb_t_scattered_config(guard, NbBandwidth::Bw1MHz.occupied_hz())` or
+/// `cfg.with_fs(NbBandwidth::Bw1MHz.fs())`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NbBandwidth {
+    /// ~333 kHz — robust 70 cm config. Below PlutoSDR's ~521 kS/s continuous-TX
+    /// floor (a hardware limit, not a waveform one); valid as a library mode.
+    Bw333kHz,
+    /// ~1 MHz — the common general-purpose amateur DATV channel.
+    Bw1MHz,
+    /// ~2 MHz — a wider repeater/high-rate config.
+    Bw2MHz,
+}
+
+impl NbBandwidth {
+    /// The nominal occupied RF bandwidth (Hz) for this mode.
+    pub const fn occupied_hz(self) -> f32 {
+        match self {
+            NbBandwidth::Bw333kHz => 333_000.0,
+            NbBandwidth::Bw1MHz => 1_000_000.0,
+            NbBandwidth::Bw2MHz => 2_000_000.0,
+        }
+    }
+
+    /// The sample rate (S/s) for this mode: `occupied_hz · 2048/1705`.
+    pub fn fs(self) -> f32 {
+        dvb_t_fs_for_bandwidth(self.occupied_hz())
+    }
+
+    /// Whether this mode's `fs` is representable for continuous PlutoSDR TX
+    /// (≥ ~521 kS/s). `Bw333kHz` is below the floor (a valid library/test mode).
+    pub fn is_pluto_continuous_tx(self) -> bool {
+        self.fs() >= 521_000.0
+    }
+}
+
 // ── DVB-T MCS table (concatenated FEC) ──────────────────────────────────────
 
 /// A DVB-T MCS table: QPSK and 16-QAM, each with the K=7 punctured convolutional
@@ -664,4 +784,69 @@ fn dvb_t_config_with_plan(plan: CarrierPlan, occupied_hz: f32) -> OfdmConfig {
             branches: 12,
             depth: 17,
         })
+}
+
+// ── Conformant DVB-T frame: shared parameters (TX/RX common) ────────────────
+//
+// `DvbTFrameParams` and the FEC constants below are shared by the conformant
+// DVB-T frame modulator (`modulate::dvb_t_frame`) and demodulator
+// (`demodulate::dvb_t_frame`) — the direction-split assemblers that build/parse
+// the preamble-less, TPS-signalled on-air frame. They live here, with the rest
+// of the DVB-T waveform definitions, the same way `Mcs`/`BlockPlan` are shared
+// frame-layer types (not duplicated per direction).
+
+/// The DVB-T outer FEC: RS(204,188), t = 8 (§4.3.2).
+pub const DVB_T_FRAME_OUTER: OuterFec = OuterFec::ReedSolomon {
+    n: 204,
+    n_parity: 16,
+};
+/// The DVB-T outer interleaver: Forney convolutional, I = 12 branches, M = 17.
+pub const DVB_T_FRAME_OUTER_IL: InterleaverKind = InterleaverKind::Convolutional {
+    branches: 12,
+    depth: 17,
+};
+
+/// The transmission parameters of one conformant DVB-T frame — everything the
+/// TPS word signals, plus enough to drive the FEC. A cold receiver is given this
+/// (real receivers acquire on assumptions) and TPS verifies it. Shared by the
+/// modulator and demodulator.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DvbTFrameParams {
+    pub guard: GuardInterval,
+    pub constellation: ConstellationOrder,
+    pub code_rate: PunctureRate,
+    pub frame_number: u8,
+    pub cell_id: u8,
+}
+
+impl DvbTFrameParams {
+    /// The inner FEC (K=7 punctured convolutional at the frame's code rate).
+    pub fn inner(self) -> InnerFec {
+        InnerFec::Convolutional {
+            rate: self.code_rate,
+            code: ConvCode::DvbK7,
+        }
+    }
+
+    /// The TPS word this frame signals on the 17 TPS carriers.
+    pub fn tps_word(self) -> crate::waveform::dvb_t_tps::TpsWord {
+        crate::waveform::dvb_t_tps::TpsWord {
+            frame_number: self.frame_number,
+            constellation: self.constellation,
+            code_rate_hp: self.code_rate,
+            guard: self.guard,
+            cell_id: self.cell_id,
+        }
+    }
+
+    /// The representative (phase-0) [`OfdmConfig`] for this frame: the 1512-data
+    /// phase-0 plan at the frame's constellation, scattered-pilot mode enabled.
+    /// `fs` is set from the 1 MHz scaling — it only affects timing/CFO units in
+    /// the batch assemblers (no RF upconversion), so the exact value is not
+    /// load-bearing for a baseband frame.
+    pub fn config(self) -> OfdmConfig {
+        let plan0 = dvb_t_2k_plans(self.guard)[0].clone();
+        let fs = dvb_t_fs_for_bandwidth(1_000_000.0);
+        OfdmConfig::new(plan0, fs, 0.0, 1.0, self.constellation).with_dvb_t_scattered(true)
+    }
 }

@@ -217,14 +217,16 @@ impl PyOfdmConfig {
         Ok(Self(cfg))
     }
 
-    /// Sets the header format: `"orion_sdr"` (default) or `"none"`.
+    /// Sets the header format: `"orion_sdr"` (default), `"none"`, or `"dvb_tps"`
+    /// (DVB-T TPS signalling; decode via the dedicated DVB-T frame path).
     fn with_header_format(&self, kind: &str) -> PyResult<Self> {
         let hf = match kind {
             "orion_sdr" | "orionsdr" => HeaderFormat::OrionSdr,
             "none" | "no_header" => HeaderFormat::NoHeader,
+            "dvb_tps" | "dvbtps" => HeaderFormat::DvbTps,
             other => {
                 return Err(PyValueError::new_err(format!(
-                    "with_header_format: unknown format {other:?} (expected orion_sdr|none)"
+                    "with_header_format: unknown format {other:?} (expected orion_sdr|none|dvb_tps)"
                 )));
             }
         };

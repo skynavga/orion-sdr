@@ -29,14 +29,14 @@ the OFDM/COFDM conventions.
 | CSR | Compressed Sparse Row | Flat contiguous edge-message storage (buffer + offset table) in the LDPC decoder (`fec/ldpc_codes.rs`) |
 | CW | Continuous Wave | Morse-code keyed carrier |
 | DATV | Digital Amateur Television | Amateur digital TV; NB-DVB-T is the DVB-T-over-ham-bands variant |
-| DBPSK | Differential Binary Phase-Shift Keying | PSK31's BPSK31 modulation; also DVB-T TPS-carrier signalling (differential along the symbol axis) |
+| DBPSK | Differential Binary Phase-Shift Keying | PSK31's BPSK31; also DVB-T TPS signalling (differential along the symbol axis) |
 | DC | Direct Current | Zero-frequency component; blocked by `DcBlocker`; implicitly null in OFDM carrier plans |
 | DQPSK | Differential Quadrature Phase-Shift Keying | PSK31's QPSK31 modulation, decoded via soft Viterbi |
 | DSB | Double-Sideband | Both sidebands transmitted; see AM |
 | DSP | Digital Signal Processing | — |
 | DVB-H | Digital Video Broadcasting – Handheld | Mobile DVB variant; reuses DVB-T's TPS signalling verbatim (extra bits) |
 | DVB-T | Digital Video Broadcasting – Terrestrial | Terrestrial digital-TV standard (ETSI EN 300 744); RS(204,188)+conv FEC, OFDM 2K/8K |
-| DVB-T2 | Digital Video Broadcasting – Terrestrial 2nd gen | Successor to DVB-T; replaces TPS with P1/P2 preamble L1 signalling (context only) |
+| DVB-T2 | Digital Video Broadcasting – Terrestrial 2nd gen | Successor to DVB-T; replaces TPS with P1/P2 L1 signalling (context only) |
 | EHF | Extremely High Frequency | 30–300 GHz; upper end of the OFDM target-band range |
 | EVM | Error Vector Magnitude | Soft-vs-ideal constellation distance, in dB; `OfdmRxFrame::evm_db` |
 | FEC | Forward Error Correction | LDPC in FT8/FT4; COFDM concatenates an inner (LDPC/convolutional) and outer (BCH/RS) code (`fec/`) |
@@ -63,6 +63,7 @@ the OFDM/COFDM conventions.
 | LP | Low-Pass | `FirLowpass`, `LpCascade` filter types |
 | MAC | Medium Access Control | The COFDM frame layer (`FramePacket`, `OfdmFrameMod`/`OfdmFrameStreamDemod`) |
 | MCS | Modulation and Coding Scheme | `McsTable` maps a per-frame index to (constellation, inner/outer FEC) |
+| ML | Maximum Likelihood | The van de Beek guard-interval timing/CFO estimator (`dvb_t_gi_sync`); not *max-log* (LLR approximation) |
 | MLSE | Maximum-Likelihood Sequence Estimation | `viterbi_decode_coherent` in `codec/psk31.rs` |
 | MMSE | Minimum Mean-Square Error | Noise-aware equalizer; a candidate remedy for high-order-QAM multipath (not yet implemented) |
 | MPEG-TS | MPEG Transport Stream | The 188-byte-packet payload DVB-T carries; the RS(204,188) code protects one TS packet |
@@ -87,7 +88,7 @@ the OFDM/COFDM conventions.
 | SNR | Signal-to-Noise Ratio | Expressed in dB throughout |
 | SSB | Single-Sideband | Phasing (Weaver) modulator; product demodulator |
 | TDF-II | Transposed Direct Form II | Biquad filter state-variable structure |
-| TPS | Transmission Parameter Signalling | DVB-T/DVB-H signalling on 17 dedicated carriers (2K mode), DBPSK over a 68-symbol frame; `HeaderFormat::DvbTps` |
+| TPS | Transmission Parameter Signalling | DVB-T/DVB-H signalling on 17 carriers, DBPSK over a 68-symbol frame; `HeaderFormat::DvbTps` |
 | TX | Transmit / Transmitter | — |
 | UHF | Ultra High Frequency | 300 MHz–3 GHz; secondary target band |
 | VHF | Very High Frequency | 30–300 MHz; lower end of the OFDM target-band range |

@@ -9,7 +9,7 @@ Measurements taken on Apple M2 Pro, release build (`opt-level=3`, `lto=fat`,
 `codegen-units=1`), no SIMD.  Results are ordered by throughput (descending)
 within each table.
 
-## v0.0.48 Results
+## v0.0.49 Results
 
 ### Analog modes (65536 samples × 30 passes)
 
@@ -441,6 +441,79 @@ loads, see the isolated, error-injected `LDPC-Decode` fixtures above. The Conv+R
 demodulator is slower because its convolutional inner code runs a full-block soft
 Viterbi over the whole payload every frame — work the LDPC path's per-codeword belief
 propagation and shared code cache do not lighten.
+
+## DVB-T / NB-DVB-T
+
+DVB-T runs the 2K structure (n_fft = 2048) — a ~30× larger FFT than the small
+COFDM test plans above, so absolute Msps are lower and FFT-dominated. See
+[dvb.md](dvb.md) for the waveform design.
+
+### DVB-T 2K payload-FEC chain, narrowband bandwidth sweep (184-byte payload, 200 passes)
+
+The DVB-T payload FEC (K=7 conv + Forney I=12 + RS(204,188) + energy dispersal)
+over the 2K carrier map via the generic frame layer, at the three amateur
+bandwidth modes. Because NB-DVB-T is a **pure fs-scaling of the same 2K
+structure**, the bandwidth mode changes only the sample-rate metadata, not the
+per-sample compute — so throughput is essentially identical across modes (the
+small spread is run-to-run noise). "Msps" is total frame samples / wall time.
+
+| Bandwidth mode | fs (MS/s) | mod Msps | demod Msps |
+| --- | ---: | ---: | ---: |
+| 333 kHz | 0.400 | ~65 | ~5.8 |
+| 1 MHz | 1.201 | ~66 | ~5.6 |
+| 2 MHz | 2.402 | ~64 | ~5.7 |
+
+The takeaway: the amateur bandwidth choice is an RF/hardware concern (channel
+occupancy, PlutoSDR's ~521 kS/s continuous-TX floor rules out 333 kHz), **not a
+compute one** — the DSP cost is identical.
+
+### DVB-T conformant frame, end to end (184-byte TS payload, 68-symbol frame, 50 passes)
+
+The full conformant preamble-less frame (`modulate::dvb_t_frame` ↔
+`demodulate::dvb_t_frame`): TS packetization + energy dispersal, payload FEC,
+Figure-9a soft-decision through the four-phase scattered-pilot grid, TPS
+signalling, and guard-interval acquisition on RX.
+
+| Path | Msps |
+| --- | ---: |
+| modulate | ~75 |
+| demodulate (incl. GI acquisition) | ~4.0 |
+
+Decode is ~30% slower than the generic 2K frame layer (~5.7 → ~4.0 Msps): the
+conformant RX adds per-symbol scattered-pilot equalization, DVB-T-exact soft
+LLRs, TPS DBPSK recovery, and the guard-interval correlation search. All are
+correctness-first, not yet optimized.
+
+### DVB-T conformant frame, decode-vs-SNR (GI 1/8, 30 trials/point)
+
+Frame-decode success and post-decode payload BER vs. per-sample SNR, for the
+conformant frame. QPSK r1/2 and 16-QAM r3/4 payloads, both padded to a full
+68-symbol TPS frame.
+
+| SNR (dB) | QPSK r1/2 decode% | 16-QAM r3/4 decode% |
+| ---: | ---: | ---: |
+| 6 | 10% | 7% |
+| 8 | 17% | 97% |
+| 10 | 20% | 100% |
+| 12 | 37% | 100% |
+| 15 | 77% | 100% |
+
+Payload BER is 0 whenever a frame decodes at all (the FEC either clears the
+channel or the frame fails as a unit). **Known limitation — the curves are
+erratic and NOT ordered by nominal robustness** (QPSK r1/2, the *more* redundant
+config, trails 16-QAM r3/4). Root cause, isolated by diagnostics (it is **not**
+acquisition — GI-sync locks the exact symbol offset 30/30 at these SNRs — and
+**not** a QPSK bug): a small payload is padded to the full 68-symbol frame, so
+the real coded data occupies only **~5–13 of 68 symbols** (the rest are zero).
+With so few data-bearing symbols, the per-symbol scattered-pilot equalizer's
+**band-edge residual** (data carriers beyond the outermost scattered pilot hold
+the nearest pilot's estimate — a documented Phase-2 limitation) can spoil a
+whole decode, and the outcome is dominated by which few symbols got an unlucky
+noise draw. Candidate fixes (a dedicated optimization pass): **multi-codeword
+frame packing** so the payload fills the frame instead of padding it, and/or an
+**MMSE / band-edge-aware equalizer**. At a longer guard interval (GI 1/8,
+cp_len = 256) both configs reach a clean waterfall (16-QAM: 97% at 8 dB, 100% by
+10 dB); the effect is worst at the short GI 1/32 CP.
 
 ## Running the Benchmarks
 

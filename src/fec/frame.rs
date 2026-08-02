@@ -203,4 +203,24 @@ pub enum HeaderFormat {
     /// No in-band header symbol; the receiver takes MCS/length from
     /// configuration or out-of-band signaling.
     NoHeader,
+    /// DVB-T Transmission Parameter Signalling (TPS): no prepended header block —
+    /// the transmission parameters (constellation, code rate, guard interval,
+    /// frame number, cell id) ride on the 17 reserved TPS carriers, DBPSK-encoded
+    /// along the symbol axis over each 68-symbol frame (`waveform::dvb_t_tps`).
+    /// Like [`NoHeader`](Self::NoHeader) the cold receiver takes the MCS/length
+    /// from configuration to demap symbol 0; TPS carries and verifies the full
+    /// parameter set (matching real DVB-T receivers, which acquire on assumptions
+    /// then confirm via TPS). Named for the signalling *scheme* — identical for
+    /// narrowband and broadcast DVB-T — not the channel bandwidth.
+    DvbTps,
+}
+
+impl HeaderFormat {
+    /// Whether this format prepends a dedicated, separately-coded header symbol
+    /// block before the payload. Only [`OrionSdr`](Self::OrionSdr) does; both
+    /// [`NoHeader`](Self::NoHeader) and [`DvbTps`](Self::DvbTps) carry no separate
+    /// header block (DvbTps signals in-band on the TPS carriers instead).
+    pub fn has_header_block(self) -> bool {
+        matches!(self, HeaderFormat::OrionSdr)
+    }
 }
