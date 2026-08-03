@@ -21,7 +21,7 @@
 use crate::common::add_awgn;
 use num_complex::Complex32 as C32;
 use orion_sdr::core::Block;
-use orion_sdr::demodulate::demodulate_frame;
+use orion_sdr::demodulate::OfdmFrameDemod;
 use orion_sdr::fec::{FrameMetadata, FramePacket};
 use orion_sdr::modulate::{OfdmConfig, OfdmFrameMod};
 use orion_sdr::multicarrier::{CarrierGrid, CyclicPrefixRemove, FftBlock, GridExtract, GridMap};
@@ -58,7 +58,9 @@ fn dvb_t_frame_roundtrip(occupied_hz: f32, mcs_index: u8) {
     let frame = FramePacket::new(FrameMetadata::new(1, mcs_index), payload.clone());
     let iq = modu.modulate_frame(&frame, 0);
     let body = strip_preamble(modu.preamble(), &iq);
-    let got = demodulate_frame(&cfg, &table, &body, None).expect("DVB-T frame decode");
+    let got = OfdmFrameDemod::new(cfg.clone(), table.clone())
+        .decode(&body)
+        .expect("DVB-T frame decode");
     assert_eq!(got.payload, payload);
 }
 
@@ -94,7 +96,9 @@ fn roundtrip_dvb_t_2k_awgn() {
     let mut body = strip_preamble(modu.preamble(), &iq);
     let sig_power: f32 = body.iter().map(|s| s.norm_sqr()).sum::<f32>() / body.len() as f32;
     add_awgn(&mut body, sig_power * 0.06, 0xD7B_C0DE);
-    let got = demodulate_frame(&cfg, &table, &body, None).expect("DVB-T AWGN decode");
+    let got = OfdmFrameDemod::new(cfg.clone(), table.clone())
+        .decode(&body)
+        .expect("DVB-T AWGN decode");
     assert_eq!(got.payload, payload);
 }
 
@@ -204,7 +208,9 @@ fn roundtrip_dvb_t_2k_scattered_noiseless() {
     let frame = FramePacket::new(FrameMetadata::new(7, 0), payload.clone());
     let iq = modu.modulate_frame(&frame, 0);
     let body = strip_preamble(modu.preamble(), &iq);
-    let got = demodulate_frame(&cfg, &table, &body, None).expect("scattered frame decode");
+    let got = OfdmFrameDemod::new(cfg.clone(), table.clone())
+        .decode(&body)
+        .expect("scattered frame decode");
     assert_eq!(got.payload, payload);
 }
 
@@ -233,8 +239,9 @@ fn dvb_t_scattered_multipath_decodes() {
     assert!(taps.len() - 1 <= cfg.carrier_plan.cp_len());
     let channeled = apply_fir_channel(&iq, &taps);
     let body = strip_preamble(modu.preamble(), &channeled);
-    let got =
-        demodulate_frame(&cfg, &table, &body, None).expect("scattered multipath frame decode");
+    let got = OfdmFrameDemod::new(cfg.clone(), table.clone())
+        .decode(&body)
+        .expect("scattered multipath frame decode");
     assert_eq!(got.payload, payload);
 }
 
@@ -256,7 +263,7 @@ fn dvb_t_scattered_needed_for_multipath() {
     let body = strip_preamble(modu.preamble(), &channeled);
     // The flat-channel batch demap has no channel correction, so the strong
     // 2-tap channel corrupts the payload beyond the FEC's reach.
-    let got = demodulate_frame(&cfg, &table, &body, None);
+    let got = OfdmFrameDemod::new(cfg.clone(), table.clone()).decode(&body);
     assert!(
         got.is_err() || got.as_ref().unwrap().payload != payload,
         "continual-pilots-only decode must not recover the multipath frame"

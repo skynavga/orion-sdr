@@ -894,7 +894,7 @@ class CodecCache:
     Building a code (the LDPC parity-check matrix especially) costs
     milliseconds and depends only on its parameters, so it need only be done
     once per link. Pass one ``CodecCache`` to an ``OfdmFrameMod``, an
-    ``OfdmFrameStreamDemod``, and/or ``demodulate_frame`` (via ``cache=``) to
+    ``OfdmFrameStreamDemod``, and/or an ``OfdmFrameDemod`` (via ``cache=``) to
     build each code once and reuse it across all of them — a transmitter and
     receiver on the same MCS then share the built codes. Omitting ``cache=``
     gives each object its own private cache, which still amortizes across that
@@ -956,19 +956,26 @@ class OfdmFrameStreamDemod:
     def buffered(self) -> int: ...
     def clear(self) -> None: ...
 
-def demodulate_frame(
-    cfg: OfdmConfig,
-    mcs_table: McsTable,
-    iq: NDArray[np.complex64],
-    cache: CodecCache | None = None,
-) -> FramePacket:
-    """Batch-demodulate a single frame at a known start (*iq*[0] is the first
-    sample after the preamble+training). Raises ``ValueError`` on a decode
-    failure. Pass ``cache=`` a ``CodecCache`` to reuse built FEC codes across a
-    batch of calls (or share them with a modulator). See ``OfdmFrameStreamDemod``
-    for the streaming path.
+class OfdmFrameDemod:
+    """Batch COFDM frame demodulator: decodes a single frame at a known start
+    (*iq*[0] is the first sample after the preamble+training, already
+    synchronized). The counterpart of ``OfdmFrameMod``; see
+    ``OfdmFrameStreamDemod`` for the streaming path.
     """
-    ...
+
+    def __init__(
+        self,
+        cfg: OfdmConfig,
+        mcs_table: McsTable,
+        cache: CodecCache | None = None,
+    ) -> None:
+        """Build a batch demodulator. Pass ``cache=`` a ``CodecCache`` to reuse
+        built FEC codes across calls (or share them with a modulator)."""
+        ...
+    def decode(self, iq: NDArray[np.complex64]) -> FramePacket:
+        """Decode one frame whose IQ begins at the first post-preamble sample.
+        Raises ``ValueError`` on a decode failure."""
+        ...
 
 # ---------------------------------------------------------------------------
 # Conformant DVB-T on-air frame (EN 300 744)

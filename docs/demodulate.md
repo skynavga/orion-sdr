@@ -502,22 +502,23 @@ The COFDM frame layer recovers a whole `FramePacket` — running the inverse of
 `OfdmFrameMod`'s chain (soft-demap → deinterleave → concatenated FEC decode →
 CRC) — through two entry points.
 
-**Batch, known start.** `demodulate_frame` decodes one frame whose IQ begins at
-the first post-preamble sample (the caller has already synchronized and, if
-needed, equalized). It mirrors `OfdmFrameMod` and shares the same `OfdmConfig`
-and `McsTable`.
+**Batch, known start.** `OfdmFrameDemod` decodes one frame whose IQ begins at the
+first post-preamble sample (the caller has already synchronized and, if needed,
+equalized). It is the exact counterpart of `OfdmFrameMod`: construct it once from
+the same `OfdmConfig` and `McsTable`, then `decode` each frame.
 
 ```rust
-use orion_sdr::demodulate::demodulate_frame;
+use orion_sdr::demodulate::OfdmFrameDemod;
 
 // `iq` is a full modulated frame (preamble + training + header + payload); the
 // batch decoder wants the samples after the preamble+training.
 let body = &iq[modu.preamble().total_len()..];
 
-// `None` builds a throwaway CodecCache for this call. Decoding many known-start
-// frames in a loop? Pass `Some(&cache)` (a caller-owned `CodecCache`) to build
-// each FEC code once across the whole batch.
-match demodulate_frame(&cfg, &table, body, None) {
+// The demodulator owns a persistent CodecCache warmed across every `decode`; use
+// `OfdmFrameDemod::with_cache(cfg, table, cache)` to share one `Arc<CodecCache>`
+// with a modulator so each FEC code is built once between them.
+let demod = OfdmFrameDemod::new(cfg, table);
+match demod.decode(body) {
     Ok(frame) => {
         assert_eq!(frame.metadata.mcs_index, 1);
         // frame.payload — the recovered bytes; frame.metadata.sequence_num, etc.
@@ -561,8 +562,8 @@ transmitter. Those parameters (interleaver dimensions, scrambler poly/width/seed
 mode, the MCS mapping) are shared out-of-band link state; only the per-frame
 scrambler *seed* and `mcs_index` are signaled in the header. See
 [modulate.md](modulate.md#configuring-the-coding-chain-non-default-fec--interleave--scramble)
-for building such a config; decode is symmetric — pass the identical `cfg`/`table`
-to `demodulate_frame` or `OfdmFrameStreamDemod`.
+for building such a config; decode is symmetric — construct `OfdmFrameDemod` or
+`OfdmFrameStreamDemod` from the identical `cfg`/`table`.
 
 The receiver's LDPC inner decoder uses the check-node rule selected by
 `OfdmConfig::with_ldpc_decode_rule` (exact sum-product by default; opt-in

@@ -636,8 +636,8 @@ print(frame.channel_mse)  # None — not computed by the equalizer
 
 The coded, framed COFDM link wraps the OFDM PHY: `OfdmFrameMod` serializes a
 `FramePacket` (metadata + payload bytes) with the concatenated FEC configured on
-`OfdmConfig`, and `demodulate_frame` (batch, known start) or
-`OfdmFrameStreamDemod` (streaming, unknown start) recovers it.
+`OfdmConfig`, and `OfdmFrameDemod` (batch, known start) or `OfdmFrameStreamDemod`
+(streaming, unknown start) recovers it.
 
 ```python
 import orion_sdr as sdr
@@ -666,10 +666,11 @@ payload = np.frombuffer(bytes((i * 37 + 11) & 0xFF for i in range(96)), dtype=np
 frame = sdr.FramePacket(payload, sequence_num=1, mcs_index=0)
 iq = mod.modulate_frame(frame)
 
-# Batch decode: strip the preamble+training, then demodulate one frame.
+# Batch decode: strip the preamble+training, then decode one frame.
 preamble = sdr.generate_ofdm_preamble(cfg, 4, 16, N_FFT, CP_LEN)
 body = iq[len(preamble):]
-got = sdr.demodulate_frame(cfg, table, body)   # pass cache=<CodecCache> to reuse codes
+demod = sdr.OfdmFrameDemod(cfg, table)   # pass cache=<CodecCache> to reuse codes
+got = demod.decode(body)
 assert np.array_equal(got.payload, payload)
 print(got.sequence_num, got.mcs_index)
 
@@ -680,8 +681,8 @@ for f in rx.feed(iq):
 ```
 
 Share one set of built FEC codes across the transmitter, receiver, and batch
-calls by passing the same `sdr.CodecCache()` as the `cache=` argument to
-`OfdmFrameMod`, `OfdmFrameStreamDemod`, and `demodulate_frame`.
+demod by passing the same `sdr.CodecCache()` as the `cache=` argument to
+`OfdmFrameMod`, `OfdmFrameStreamDemod`, and `OfdmFrameDemod`.
 
 #### Non-default FEC / interleave / scramble
 

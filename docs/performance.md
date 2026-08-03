@@ -9,7 +9,7 @@ Measurements taken on Apple M2 Pro, release build (`opt-level=3`, `lto=fat`,
 `codegen-units=1`), no SIMD.  Results are ordered by throughput (descending)
 within each table.
 
-## v0.0.52 Results
+## v0.0.53 Results
 
 ### Analog modes (65536 samples × 30 passes)
 
@@ -240,8 +240,9 @@ low SNR, not the CFO estimators layered on top of it.
 ### COFDM frame throughput (n_fft=64, cp_len=8, QPSK payload, 96-byte payload, 200 passes)
 
 Full frame pipeline: `OfdmFrameMod::modulate_frame` (CRC → concatenated FEC
-encode → interleave → map → preamble/header) and `demodulate_frame` (soft-demap
-→ deinterleave → concatenated FEC decode → CRC). Two concatenations are shown.
+encode → interleave → map → preamble/header) and `OfdmFrameDemod::decode`
+(soft-demap → deinterleave → concatenated FEC decode → CRC). Two concatenations
+are shown.
 "Msps" is total frame samples / wall time.
 
 Both paths reuse a warm per-link `CodecCache` across the measured frames (the
@@ -418,12 +419,11 @@ into a one-time per-link cost. "Mc/s" = millions of constructions per second.
 ### Full COFDM frame chain
 
 The end-to-end per-link path: `OfdmFrameMod::modulate_frame` and batch
-`demodulate_frame` over many frames on one modulator instance (n_fft=64, cp_len=8,
-QPSK payload, 96-byte payload), for both concatenations. "Msps" = frame IQ samples /
-wall time, directly comparable to the "COFDM frame throughput" table above. Both paths
-reuse a warm `CodecCache` across the measured frames — the modulator holds one, and
-the batch demodulator is driven with a persistent caller-owned cache
-(`demodulate_frame`'s optional `cache` argument) — so both directions measure
+`OfdmFrameDemod::decode` over many frames on one modulator/demodulator instance
+(n_fft=64, cp_len=8, QPSK payload, 96-byte payload), for both concatenations.
+"Msps" = frame IQ samples / wall time, directly comparable to the "COFDM frame
+throughput" table above. Both paths reuse a warm `CodecCache` across the measured
+frames — each object holds a persistent one — so both directions measure
 steady-state, codes-warm throughput, not per-frame code construction.
 
 | Config | mod Msps | demod Msps |

@@ -92,7 +92,7 @@ would silently truncate a rate-expanding stage like the IFFT+CP.
 
 The frame layer turns raw OFDM symbols into a coded, framed link: a
 `FramePacket` (metadata + opaque byte payload) is serialized to IQ by
-`OfdmFrameMod` and recovered by either the batch `demodulate_frame` (known
+`OfdmFrameMod` and recovered by either the batch `OfdmFrameDemod` (known
 start) or the streaming `OfdmFrameStreamDemod` (unknown start, CFO, and
 multipath). The waveform-agnostic pieces — FEC codes, interleavers, the PN
 scrambler, CRCs, and the `FramePacket`/`RxError` types — live in the `fec/`

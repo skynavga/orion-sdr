@@ -4,9 +4,9 @@
 // src/demodulate/ofdm_frame.rs
 //
 // The OFDM frame (MAC-layer) demodulator: the exact inverse of
-// `modulate::ofdm_frame`. This release provides the *batch* path
-// [`demodulate_frame`] — a frame at a KNOWN start (no acquisition/streaming
-// yet; that is the next release). It runs the concatenated COFDM decode chain:
+// `modulate::ofdm_frame`. The *batch* receiver [`OfdmFrameDemod`] decodes a frame
+// at a KNOWN start, and [`OfdmFrameStreamDemod`] handles the unknown-start /
+// streaming case. It runs the concatenated COFDM decode chain:
 //
 //   IQ → soft-demap (LLRs) → inner-deinterleave (LLR) → inner-decode →
 //        outer-deinterleave (byte) → outer-decode → descramble → strip CRC
@@ -627,43 +627,61 @@ fn decode_frame_body(
     Ok((FramePacket { metadata, payload }, cursor))
 }
 
-/// Batch-demodulates a frame at a KNOWN start (`iq[0]` is the first sample
-/// AFTER the preamble+training — the caller has already synchronized and, if
-/// needed, equalized). Returns the recovered [`FramePacket`] or an [`RxError`].
+/// The batch OFDM frame demodulator — decodes a frame at a KNOWN start (`iq[0]`
+/// is the first sample AFTER the preamble+training; the caller has already
+/// synchronized and, if needed, equalized). The exact counterpart of
+/// [`OfdmFrameMod`](crate::modulate::OfdmFrameMod), constructed the same way.
 ///
-/// This is the flat-channel, known-start entry point; the streaming
+/// This is the flat-channel, known-start receiver; the streaming
 /// [`OfdmFrameStreamDemod`] runs `ofdm_sync`, CFO correction, and training-
 /// symbol equalization for unknown start / CFO / multipath.
-///
-/// `cache` is an optional caller-owned [`CodecCache`]. Pass `Some(&cache)` when
-/// decoding many known-start frames in a loop to build each FEC code once across
-/// the whole batch (the `Ldpc` construction is milliseconds); pass `None` for a
-/// one-shot decode, which builds a throwaway cache for that call (the header and
-/// payload codes are still each built at most once within the call). The
-/// decode output is identical either way — the cache only affects speed.
-pub fn demodulate_frame(
-    cfg: &OfdmConfig,
-    mcs_table: &McsTable,
-    iq: &[C32],
-    cache: Option<&CodecCache>,
-) -> Result<FramePacket, RxError> {
-    // Borrow the caller's cache, or stand up a per-call one when none is given.
-    let owned;
-    let cache = match cache {
-        Some(c) => c,
-        None => {
-            owned = CodecCache::new();
-            &owned
+#[derive(Debug, Clone)]
+pub struct OfdmFrameDemod {
+    cfg: OfdmConfig,
+    mcs_table: McsTable,
+    /// FEC code cache, so a stream of frames builds each code once (see
+    /// [`CodecCache`]). Held behind `Arc` so it can be shared with a paired
+    /// modulator (TX and RX then reuse the same built codes).
+    cache: Arc<CodecCache>,
+}
+
+impl OfdmFrameDemod {
+    /// Creates a batch demodulator over `cfg` and an `mcs_table`. It owns a
+    /// fresh, private [`CodecCache`] warmed across the frames it decodes; use
+    /// [`with_cache`](Self::with_cache) to share one with a modulator.
+    pub fn new(cfg: OfdmConfig, mcs_table: McsTable) -> Self {
+        Self::with_cache(cfg, mcs_table, Arc::new(CodecCache::new()))
+    }
+
+    /// Like [`new`](Self::new), but reuses the caller-provided `cache` — share
+    /// one `Arc<CodecCache>` across a modulator/demodulator pair (or several
+    /// links on the same MCS) so each FEC code is constructed only once.
+    pub fn with_cache(cfg: OfdmConfig, mcs_table: McsTable, cache: Arc<CodecCache>) -> Self {
+        Self {
+            cfg,
+            mcs_table,
+            cache,
         }
-    };
-    decode_frame_body(cfg, mcs_table, iq, None, cache)
-        .map(|(frame, _)| frame)
-        .map_err(|e| match e {
-            // A batch caller has no "wait for more" option; a truncated buffer
-            // is a malformed input here.
-            BodyError::Incomplete => RxError::MalformedHeader,
-            BodyError::Failed(err) => err,
-        })
+    }
+
+    pub fn config(&self) -> &OfdmConfig {
+        &self.cfg
+    }
+
+    /// Decodes one frame whose IQ begins at the first post-preamble sample.
+    /// Returns the recovered [`FramePacket`] or an [`RxError`]. The internal
+    /// [`CodecCache`] is reused across calls, so decoding many frames on one
+    /// `OfdmFrameDemod` builds each FEC code only once.
+    pub fn decode(&self, iq: &[C32]) -> Result<FramePacket, RxError> {
+        decode_frame_body(&self.cfg, &self.mcs_table, iq, None, &self.cache)
+            .map(|(frame, _)| frame)
+            .map_err(|e| match e {
+                // A batch caller has no "wait for more" option; a truncated buffer
+                // is a malformed input here.
+                BodyError::Incomplete => RxError::MalformedHeader,
+                BodyError::Failed(err) => err,
+            })
+    }
 }
 
 // ── Streaming receiver ─────────────────────────────────────────────────────
