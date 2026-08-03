@@ -496,6 +496,23 @@ and reusing a ratio scratch buffer across symbols, so the estimate is a fraction
 of the FFT rather than an O(data·pilots) scan. The roundtrip (~9.5 Msps) is set by
 the two directions in series.
 
+### DVB-T super-frame, end to end (700-byte payload, 4 frames, 20 passes)
+
+The conformant super-frame (`modulate::dvb_t_super_frame` ↔
+`demodulate::dvb_t_super_frame`): four consecutive frames (numbers 0–3) with the
+alternating TPS sync word and the 16-bit cell id split across them.
+
+| Path | Msps |
+| --- | ---: |
+| modulate | ~32 |
+| demodulate | ~13 |
+| roundtrip | ~9.5 |
+
+A super-frame is the single-frame conformant path run four times plus the
+multi-frame sequencing and cross-frame checks (frame-number sequence, cell-id
+reassembly), which are negligible next to the per-frame FFT/FEC/equalize work — so
+its throughput tracks the conformant single frame's, with no new bottleneck.
+
 ### DVB-T conformant frame, decode-vs-SNR (GI 1/8, 30 trials/point)
 
 Frame-decode success and post-decode payload BER vs. per-sample SNR, for the
@@ -554,6 +571,13 @@ To run only the COFDM FEC/interleave/scrambler block benchmarks:
 
 ```bash
 cargo test --release --features throughput "throughput::fec" -- --nocapture --test-threads=1
+```
+
+To run only the DVB-T / NB-DVB-T waveform benchmarks (bandwidth sweep, conformant
+frame, super-frame):
+
+```bash
+cargo test --release --features throughput "throughput::dvbt" -- --nocapture --test-threads=1
 ```
 
 To run the SNR sensitivity / acquisition-probability sweeps (prints full
