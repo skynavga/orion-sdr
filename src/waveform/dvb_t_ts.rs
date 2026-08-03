@@ -99,6 +99,39 @@ pub fn ts_packetize(payload: &[u8]) -> Vec<u8> {
     out
 }
 
+/// A single MPEG-2 **null packet** (PID `0x1FFF`), the standard TS stuffing
+/// packet. Header: sync `0x47`, then PID bits all 1 with a payload-only
+/// adaptation field control; the 184 payload bytes are `0xFF` (§4.3.1 keeps the
+/// data stream continuous — a compliant modulator emits null packets rather than
+/// nothing when there is no program data). The 4-byte header is
+/// `47 1F FF 10`: PID 0x1FFF split across bytes 1–2 (`0x1F`/`0xFF`), byte 3 =
+/// `0x10` (adaptation_field_control = 01, payload only, continuity counter 0).
+pub fn ts_null_packet() -> [u8; TS_PACKET_LEN] {
+    let mut pkt = [0xFFu8; TS_PACKET_LEN];
+    pkt[0] = TS_SYNC_BYTE; // 0x47
+    pkt[1] = 0x1F; // TEI=0, PUSI=0, prio=0, PID[12:8]=1_1111
+    pkt[2] = 0xFF; // PID[7:0]
+    pkt[3] = 0x10; // scrambling=00, AFC=01 (payload only), CC=0000
+    pkt
+}
+
+/// Appends whole null TS packets to an already-packetized `ts` byte stream until
+/// it reaches at least `target_packets` packets, so the coded stream fills the
+/// OFDM frame instead of leaving zeroed data carriers (§4.4: every symbol carries
+/// data). `ts` must already be a whole number of `TS_PACKET_LEN`-byte packets; a
+/// no-op if it already holds `target_packets` or more.
+pub fn ts_stuff_null_packets(ts: &mut Vec<u8>, target_packets: usize) {
+    debug_assert!(
+        ts.len().is_multiple_of(TS_PACKET_LEN),
+        "ts_stuff_null_packets: ts must be whole TS packets"
+    );
+    let have = ts.len() / TS_PACKET_LEN;
+    let null = ts_null_packet();
+    for _ in have..target_packets {
+        ts.extend_from_slice(&null);
+    }
+}
+
 /// Recovers the payload bytes from whole TS packets (inverse of [`ts_packetize`]):
 /// strips each packet's sync byte and concatenates the 187-byte payloads. The
 /// caller trims trailing zero padding via the known original length. Returns

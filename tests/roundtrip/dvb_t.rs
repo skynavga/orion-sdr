@@ -329,3 +329,173 @@ fn dvb_t_tps_frame_survives_awgn() {
     assert_eq!(got.payload, payload);
     assert_eq!(got.tps.constellation, params.constellation);
 }
+
+// ── Equalizer channel-reference regression (the TPS-pilot bug) ──────────────
+//
+// Guards a subtle correctness property: the RX scattered-pilot equalizer must NOT
+// use the 17 TPS carriers as channel references. The modulator transmits data-
+// power DBPSK (±1.0) on the TPS bins, but the grid records them as boosted `w_k`
+// pilots (±4/3); feeding them to the estimator would yield `h = ±1.0/±4/3 = ∓0.75`
+// (wrong magnitude AND sign), which `interpolate_at` then smears onto the ~3 data
+// carriers straddling each TPS carrier — a deterministic, SNR-invariant pre-FEC
+// error floor. A payload-only decode assertion at zero noise can pass on a thin
+// single-codeword RS margin without exercising this, so the test checks the
+// equalizer directly: noiselessly, every EQUALIZED data carrier must equal the
+// transmitted one (pre-FEC coded-bit error exactly zero) — for both a robust and a
+// dense config, at every guard interval.
+fn assert_noiseless_equalizer_is_clean(
+    constellation: ConstellationOrder,
+    code_rate: PunctureRate,
+    guard: GuardInterval,
+) {
+    use orion_sdr::demodulate::ofdm::{EqualizerMethod, OfdmEqualizer};
+    use orion_sdr::waveform::dvb_t::{DVB_T_DATA_CARRIERS, DVB_T_N_FFT, ScatteredPilotExtractor};
+
+    let params = DvbTFrameParams {
+        guard,
+        constellation,
+        code_rate,
+        frame_number: 0,
+        cell_id: 0,
+    };
+    let payload = sample_payload(184);
+    let frame = dvb_t_frame_modulate(params, &payload);
+    let n_fft = DVB_T_N_FFT;
+    let cp_len = guard.cp_len_2k();
+    let sps = n_fft + cp_len;
+
+    // Reconstruct each symbol's transmitted frequency-domain data carriers by
+    // re-running the mapper isn't necessary: the transmitted data-carrier values
+    // are recoverable by FFT-ing each TX symbol (noiseless) and gathering the data
+    // bins. Compare those against the RX equalizer's output over a NOISELESS
+    // channel — they must match to floating-point precision.
+    let mut tx_cpr = CyclicPrefixRemove::new(n_fft, cp_len);
+    let mut tx_fft = FftBlock::new(n_fft);
+    let mut tx_time = vec![C32::default(); n_fft];
+    let mut tx_freq = vec![C32::default(); n_fft];
+
+    let mut ext = ScatteredPilotExtractor::new(guard);
+    let mut tx_ext = ScatteredPilotExtractor::new(guard); // phase-tracks the TX gather
+    let base = params.config();
+    let mut eq = OfdmEqualizer::new(&base, EqualizerMethod::PerSymbolPilotInterp);
+    let mut rx_cpr = CyclicPrefixRemove::new(n_fft, cp_len);
+    let mut rx_fft = FftBlock::new(n_fft);
+    let mut rx_time = vec![C32::default(); n_fft];
+    let mut rx_freq = vec![C32::default(); n_fft];
+    let mut equalized = vec![C32::default(); n_fft];
+    let mut rx_data = vec![C32::default(); DVB_T_DATA_CARRIERS];
+    let mut tx_data = vec![C32::default(); DVB_T_DATA_CARRIERS];
+
+    let mut max_err = 0.0f32;
+    for s in 0..frame.n_symbols {
+        let off = s * sps;
+        // TX truth: FFT the noiseless transmitted symbol, gather its data bins.
+        tx_cpr.process(&frame.iq[off..], &mut tx_time);
+        tx_fft.process(&tx_time, &mut tx_freq);
+        tx_ext.extract_symbol(&tx_freq, &mut tx_data);
+        // RX: same noiseless samples through CP-remove → FFT → equalize → extract.
+        rx_cpr.process(&frame.iq[off..], &mut rx_time);
+        rx_fft.process(&rx_time, &mut rx_freq);
+        let pilots = ext.current_pilot_bins().to_vec();
+        let data_bins = ext.data_bins().to_vec();
+        eq.set_pilot_bins(&pilots, &data_bins);
+        eq.process(&rx_freq, &mut equalized);
+        ext.extract_symbol(&equalized, &mut rx_data);
+        for (a, b) in rx_data.iter().zip(tx_data.iter()) {
+            max_err = max_err.max((a - b).norm());
+        }
+    }
+    // Flat unit channel: the equalizer divides by h≈1, so equalized == transmitted
+    // to float precision. A TPS carrier admitted as a channel reference instead
+    // corrupts the estimate on its neighbours by order-1 (the bogus ratio, or a
+    // near-null blow-up through EQUALIZER_FLOOR), so 1e-3 cleanly separates the two.
+    assert!(
+        max_err < 1e-3,
+        "noiseless equalized data carriers must equal transmitted ({constellation:?} {code_rate:?} {guard:?}): max |Δ| = {max_err}"
+    );
+}
+
+#[test]
+fn dvb_t_equalizer_noiseless_clean_qpsk() {
+    for guard in [
+        GuardInterval::G1_32,
+        GuardInterval::G1_16,
+        GuardInterval::G1_8,
+        GuardInterval::G1_4,
+    ] {
+        assert_noiseless_equalizer_is_clean(ConstellationOrder::Qpsk, PunctureRate::R1_2, guard);
+    }
+}
+
+#[test]
+fn dvb_t_equalizer_noiseless_clean_qam16() {
+    for guard in [
+        GuardInterval::G1_32,
+        GuardInterval::G1_16,
+        GuardInterval::G1_8,
+        GuardInterval::G1_4,
+    ] {
+        assert_noiseless_equalizer_is_clean(ConstellationOrder::Qam16, PunctureRate::R3_4, guard);
+    }
+}
+
+// ── Null-packet stuffing: every data carrier is filled (EN 300 744 §4.4) ─────
+//
+// A short payload is padded to a full 68-symbol frame; the modulator stuffs the
+// TS stream with null packets so the coded stream reaches every data carrier
+// (§4.4: "all symbols contain data"; §4.3.1: randomization stays active with no
+// program input) — a compliant DVB-T signal never leaves data carriers zeroed.
+// The stuffing must also be transparent: the RX still recovers the real payload.
+#[test]
+fn dvb_t_short_frame_stuffs_all_carriers() {
+    use orion_sdr::multicarrier::CyclicPrefixRemove;
+    use orion_sdr::waveform::dvb_t::{DVB_T_DATA_CARRIERS, DVB_T_N_FFT, ScatteredPilotExtractor};
+
+    for (const_, rate) in [
+        (ConstellationOrder::Qpsk, PunctureRate::R1_2),
+        (ConstellationOrder::Qpsk, PunctureRate::R3_4), // non-integer RS pkts / frame
+        (ConstellationOrder::Qam16, PunctureRate::R3_4),
+    ] {
+        let params = DvbTFrameParams {
+            guard: GuardInterval::G1_8,
+            constellation: const_,
+            code_rate: rate,
+            frame_number: 0,
+            cell_id: 0,
+        };
+        // A tiny payload — far short of the frame, so most of it would be padding.
+        let payload = sample_payload(184);
+        let frame = dvb_t_frame_modulate(params, &payload);
+        let n_fft = DVB_T_N_FFT;
+        let cp_len = GuardInterval::G1_8.cp_len_2k();
+        let sps = n_fft + cp_len;
+
+        // Every data carrier of every symbol must be a real (non-zero) cell.
+        let mut ext = ScatteredPilotExtractor::new(GuardInterval::G1_8);
+        let mut cpr = CyclicPrefixRemove::new(n_fft, cp_len);
+        let mut fft = FftBlock::new(n_fft);
+        let mut time = vec![C32::default(); n_fft];
+        let mut freq = vec![C32::default(); n_fft];
+        let mut data = vec![C32::default(); DVB_T_DATA_CARRIERS];
+        let mut zeroed = 0usize;
+        for s in 0..frame.n_symbols {
+            cpr.process(&frame.iq[s * sps..], &mut time);
+            fft.process(&time, &mut freq);
+            ext.extract_symbol(&freq, &mut data);
+            zeroed += data.iter().filter(|v| v.norm() < 1e-6).count();
+        }
+        assert_eq!(
+            zeroed, 0,
+            "no data carrier may be zeroed after null-packet stuffing ({const_:?} {rate:?})"
+        );
+
+        // Stuffing is transparent: the payload still round-trips.
+        let lead = 200usize;
+        let mut buf = vec![C32::default(); lead];
+        buf.extend_from_slice(&frame.iq);
+        buf.extend(vec![C32::default(); frame.samples_per_symbol]);
+        let got = dvb_t_frame_demodulate(params, &buf, frame.n_symbols, payload.len())
+            .expect("stuffed short frame decodes");
+        assert_eq!(got.payload, payload, "payload recovered through stuffing");
+    }
+}

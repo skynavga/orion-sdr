@@ -7,7 +7,7 @@
 
 use orion_sdr::waveform::dvb_t_ts::{
     TS_DISPERSAL_GROUP, TS_PACKET_LEN, TS_PAYLOAD_LEN, TS_SYNC_BYTE, TS_SYNC_BYTE_INVERTED,
-    ts_depacketize, ts_energy_disperse, ts_packetize,
+    ts_depacketize, ts_energy_disperse, ts_null_packet, ts_packetize, ts_stuff_null_packets,
 };
 
 fn make_packets(n: usize) -> Vec<u8> {
@@ -130,4 +130,56 @@ fn depacketize_rejects_partial() {
     assert!(ts_depacketize(&[]).is_none());
     assert!(ts_depacketize(&[0u8; TS_PACKET_LEN - 1]).is_none());
     assert!(ts_depacketize(&[0u8; TS_PACKET_LEN + 5]).is_none());
+}
+
+#[test]
+fn null_packet_is_pid_1fff_stuffing() {
+    // MPEG-2 null packet: sync 0x47, PID 0x1FFF, payload-only AFC, 0xFF payload.
+    let pkt = ts_null_packet();
+    assert_eq!(pkt.len(), TS_PACKET_LEN);
+    assert_eq!(pkt[0], TS_SYNC_BYTE);
+    // PID = 0x1FFF spread across the low 5 bits of byte 1 and all of byte 2.
+    let pid = (((pkt[1] & 0x1F) as u16) << 8) | pkt[2] as u16;
+    assert_eq!(pid, 0x1FFF, "null packet PID");
+    assert_eq!(pkt[3] & 0x30, 0x10, "payload-only adaptation field control");
+    assert!(pkt[4..].iter().all(|&b| b == 0xFF), "0xFF stuffing payload");
+}
+
+#[test]
+fn stuff_null_packets_reaches_target() {
+    let mut ts = ts_packetize(&[1u8; TS_PAYLOAD_LEN]); // one real packet
+    assert_eq!(ts.len(), TS_PACKET_LEN);
+    ts_stuff_null_packets(&mut ts, 5);
+    assert_eq!(ts.len(), 5 * TS_PACKET_LEN, "stuffed up to 5 packets");
+    // The first packet is the real one; the rest are null packets.
+    assert_eq!(ts[0], TS_SYNC_BYTE);
+    for p in 1..5 {
+        let base = p * TS_PACKET_LEN;
+        assert_eq!(
+            &ts[base..base + TS_PACKET_LEN],
+            &ts_null_packet()[..],
+            "packet {p} is null"
+        );
+    }
+}
+
+#[test]
+fn stuff_null_packets_is_noop_when_already_full() {
+    let mut ts = ts_packetize(&[7u8; 3 * TS_PAYLOAD_LEN]); // three packets
+    let before = ts.clone();
+    ts_stuff_null_packets(&mut ts, 2); // target below current count
+    assert_eq!(ts, before, "no change when already at/above target");
+}
+
+#[test]
+fn stuffed_stream_depacketizes_and_dispersal_is_self_inverse() {
+    // A real packet + null stuffing survives disperse→disperse and depacketize.
+    let mut ts = ts_packetize(&[0xA5u8; TS_PAYLOAD_LEN]);
+    ts_stuff_null_packets(&mut ts, 4);
+    let original = ts.clone();
+    ts_energy_disperse(&mut ts);
+    ts_energy_disperse(&mut ts);
+    assert_eq!(ts, original, "dispersal self-inverse over stuffed stream");
+    let recovered = ts_depacketize(&ts).expect("depacketize stuffed stream");
+    assert_eq!(&recovered[..TS_PAYLOAD_LEN], &[0xA5u8; TS_PAYLOAD_LEN]);
 }

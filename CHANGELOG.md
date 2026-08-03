@@ -9,6 +9,58 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.50] - 2026-08-02
+
+NB-DVB-T Phase 4a: fixes the conformant DVB-T frame's channel estimation, packs
+the frame with real coded data, exposes the frame path to Python, and optimizes
+the receiver. A diagnostic re-audit found the decode-vs-SNR anomaly documented in
+0.0.49 was a channel-estimation bug — the receiver fed the 17 TPS carriers to the
+equalizer as boosted pilots, but the modulator transmits data-power DBPSK on
+them — not the short-frame/band-edge effect previously suspected. With that fixed
+the decode-vs-SNR waterfall is clean and ordered by nominal robustness, and both
+0.0.49 known limitations (the anomaly and the Rust-only frame path) are resolved.
+
+### Fixed
+
+- DVB-T conformant-frame channel estimation: the RX scattered-pilot equalizer no
+  longer uses the 17 TPS carriers as channel references. The modulator transmits
+  data-power DBPSK on them (EN 300 744 §4.6), not the boosted `w_k` pilot value
+  the grid records, so dividing the received cell by that known value produced a
+  bogus channel estimate that the interpolator smeared onto the data carriers
+  straddling each TPS carrier — a deterministic, SNR-invariant pre-FEC error
+  floor. `ScatteredGridCycle` now precomputes a per-phase reference-pilot set
+  (continual + scattered only) that `ScatteredPilotExtractor::current_pilot_bins`
+  returns; the equalizer interpolates across the TPS bins instead. The
+  decode-vs-SNR curves are now robustness-ordered (QPSK r1/2 locks by ~4 dB,
+  16-QAM r3/4 by ~12–15 dB). Guarded by a new noiseless regression asserting
+  every equalized data carrier equals the transmitted one.
+
+### Added
+
+- Python bindings for the conformant DVB-T frame (`src/python/dvb_t_frame.rs`):
+  `DvbTFrameParams`, `dvb_t_frame_modulate`, `dvb_t_frame_demodulate` (returning
+  the payload and the recovered `TpsWord`), and the `nb_bandwidth_fs` /
+  `nb_bandwidth_occupied_hz` helpers, with a worked round-trip example in
+  `docs/python.md`. The conformant frame path is no longer Rust-only.
+- Null-packet stuffing (`waveform::dvb_t_ts::{ts_null_packet, ts_stuff_null_packets}`):
+  the modulator fills a short payload with MPEG-2 null packets (PID `0x1FFF`) so
+  every data carrier carries real coded data, as EN 300 744 §4.4/§4.3.1 require
+  (a compliant signal never leaves carriers zeroed). The receiver trims to the
+  original payload length, so the stuffing is transparent.
+
+### Changed
+
+- DVB-T conformant-frame receiver throughput (~4.0 → ~13 Msps): the per-symbol
+  pilot interpolation now binary-searches the sorted pilot set (O(data·log
+  pilots)), sorts the pilot bins once, and reuses a ratio scratch buffer, so it
+  allocates nothing per symbol. Same decoded bits; benefits every
+  `PerSymbolPilotInterp` user. (The conformant modulate figure drops ~90 → ~33
+  Msps as a consequence of frame-filling — it now runs the full payload FEC over
+  a whole frame of RS packets.)
+- `docs/performance.md`: refreshed all DVB-T figures, added roundtrip columns to
+  the bandwidth-sweep and conformant-frame tables, and replaced the retracted
+  band-edge narrative.
+
 ## [0.0.49] - 2026-08-02
 
 NB-DVB-T (narrowband DVB-T for amateur DATV) Phase 3: the fully conformant,

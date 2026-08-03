@@ -68,6 +68,17 @@ reserved). `ScatteredPilotMapper`/`ScatteredPilotExtractor` own the four grids +
 a symbol-phase counter (frame-layer orchestrators, **not** `Block`s), and the
 equalizer's `set_pilot_bins` installs each symbol's pilot set before `process`.
 
+The **17 TPS carriers are reserved as non-data but are not channel-estimation
+references.** The four grids record them as boosted `w_k` pilots so the 1512-data
+invariant holds, but the modulator overwrites those bins with data-power DBPSK TPS
+cells (§4.6), not the boosted value — so dividing the received cell by the grid's
+known `w_k` would give a wrong channel ratio that the interpolator then smears onto
+the data carriers straddling each TPS carrier. `ScatteredPilotExtractor::
+current_pilot_bins()` therefore returns the continual + scattered pilots **only**;
+the equalizer interpolates its estimate across the TPS bins from those real
+references. (TPS is demodulated separately and differentially, off the raw
+pre-equalization bins, so it needs no channel estimate of its own.)
+
 ## Payload FEC chain
 
 Bit-exact to EN 300 744 §4.3: MPEG-TS → energy dispersal → RS(204,188) t=8 →
@@ -86,6 +97,19 @@ sync is `0x03`.
 Q, each Gray-mapped per axis — distinct from the generic mapper's bit
 assignment, so DVB-T has its own `dvb_t_map_symbol`/`dvb_t_soft_llr`. The
 soft-LLR path gives the DVB-T frame real soft-decision coding gain.
+
+**Frame filling** (§4.4 / §4.3.1): a single frame is 68 symbols, and §4.4
+requires **every** symbol to carry data — a compliant signal never leaves data
+carriers zeroed (§4.3.1: randomization stays active even with no program input).
+A short payload is therefore stuffed with **MPEG-2 null packets** (PID `0x1FFF`,
+`0xFF` payload — `ts_null_packet`/`ts_stuff_null_packets`) up to the frame's
+data-carrier capacity before energy dispersal, so the coded stream reaches every
+carrier; the RX trims the recovered payload back to its original length, so the
+stuffing is transparent. The standard's stronger "exact integer number of RS
+packets, **no** stuffing" property (§4.7, Table 16 — e.g. 252 RS packets per 2K
+QPSK-r1/2 super-frame) holds only over the full 4-frame **super-frame** (a single
+frame is fractional for some rates), so exact-fit belongs to the super-frame path,
+not the single-frame assembler here.
 
 ## TPS signalling
 

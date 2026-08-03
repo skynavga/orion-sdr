@@ -854,9 +854,31 @@ fn frame_chain_with(
         repeats,
     );
     println!("[Frame-Chain-Demod {label}] {demod_msps:.4} Msps in {demod_dt:.3}s");
+
+    // Roundtrip: modulate a fresh frame, strip the preamble, and decode it — the
+    // full end-to-end path in one measured pass. "Msps" is frame samples / (mod +
+    // demod) wall time, so it is lower than either single-direction figure.
+    let pre_len = modu.preamble().total_len();
+    let (rt_msps, rt_dt) = measure_throughput(
+        || {
+            seed = seed.wrapping_add(1);
+            let iq = modu.modulate_frame(black_box(&frame), black_box(seed));
+            let body: Vec<C32> = iq[pre_len..].to_vec();
+            let got = demodulate_frame(&cfg, &table, &body, Some(&demod_cache)).expect("decode");
+            assert_eq!(
+                got.payload, payload,
+                "frame chain roundtrip: payload recovered"
+            );
+            black_box(got.payload[0]);
+            frame_samples
+        },
+        frame_samples,
+        repeats,
+    );
+    println!("[Frame-Chain-Roundtrip {label}] {rt_msps:.4} Msps in {rt_dt:.3}s");
     // Measurement run for the doc table; floor guards gross regressions only.
     let floor = minsps_from_env(0.05);
-    assert!(mod_msps >= floor && demod_msps >= floor);
+    assert!(mod_msps >= floor && demod_msps >= floor && rt_msps >= floor);
 }
 
 #[test]
@@ -958,6 +980,29 @@ fn throughput_dvb_t_conformant_frame() {
         repeats,
     );
     println!("[DVB-T-Frame-Demod] {demod_msps:.4} Msps in {demod_dt:.3}s");
+
+    // Roundtrip: modulate a fresh frame, place it after lead-in silence, and
+    // GI-acquire + decode it — the full conformant path in one measured pass.
+    // "Msps" is frame samples / (mod + demod) wall time.
+    let (rt_msps, rt_dt) = measure_throughput(
+        || {
+            let f = dvb_t_frame_modulate(black_box(params), black_box(&payload));
+            let mut rt_buf = vec![C32::default(); 200];
+            rt_buf.extend_from_slice(&f.iq);
+            rt_buf.extend(vec![C32::default(); f.samples_per_symbol]);
+            let got = dvb_t_frame_demodulate(black_box(params), black_box(&rt_buf), n_symbols, 184)
+                .expect("conformant DVB-T roundtrip decode");
+            assert_eq!(
+                got.payload, payload,
+                "conformant roundtrip payload recovered"
+            );
+            black_box(got.payload[0]);
+            frame_samples
+        },
+        frame_samples,
+        repeats,
+    );
+    println!("[DVB-T-Frame-Roundtrip] {rt_msps:.4} Msps in {rt_dt:.3}s");
     let floor = minsps_from_env(0.02);
-    assert!(mod_msps >= floor && demod_msps >= floor);
+    assert!(mod_msps >= floor && demod_msps >= floor && rt_msps >= floor);
 }

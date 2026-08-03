@@ -9,7 +9,7 @@ Measurements taken on Apple M2 Pro, release build (`opt-level=3`, `lto=fat`,
 `codegen-units=1`), no SIMD.  Results are ordered by throughput (descending)
 within each table.
 
-## v0.0.49 Results
+## v0.0.50 Results
 
 ### Analog modes (65536 samples × 30 passes)
 
@@ -455,13 +455,15 @@ over the 2K carrier map via the generic frame layer, at the three amateur
 bandwidth modes. Because NB-DVB-T is a **pure fs-scaling of the same 2K
 structure**, the bandwidth mode changes only the sample-rate metadata, not the
 per-sample compute — so throughput is essentially identical across modes (the
-small spread is run-to-run noise). "Msps" is total frame samples / wall time.
+small spread is run-to-run noise). "Msps" is total frame samples / wall time; the
+roundtrip column modulates then decodes one frame per pass, so it is set by the
+slower (decode) direction.
 
-| Bandwidth mode | fs (MS/s) | mod Msps | demod Msps |
-| --- | ---: | ---: | ---: |
-| 333 kHz | 0.400 | ~65 | ~5.8 |
-| 1 MHz | 1.201 | ~66 | ~5.6 |
-| 2 MHz | 2.402 | ~64 | ~5.7 |
+| Bandwidth mode | fs (MS/s) | mod Msps | demod Msps | roundtrip Msps |
+| --- | ---: | ---: | ---: | ---: |
+| 333 kHz | 0.400 | ~66 | ~5.8 | ~5.4 |
+| 1 MHz | 1.201 | ~66 | ~5.8 | ~5.4 |
+| 2 MHz | 2.402 | ~66 | ~5.8 | ~5.4 |
 
 The takeaway: the amateur bandwidth choice is an RF/hardware concern (channel
 occupancy, PlutoSDR's ~521 kS/s continuous-TX floor rules out 333 kHz), **not a
@@ -472,48 +474,56 @@ compute one** — the DSP cost is identical.
 The full conformant preamble-less frame (`modulate::dvb_t_frame` ↔
 `demodulate::dvb_t_frame`): TS packetization + energy dispersal, payload FEC,
 Figure-9a soft-decision through the four-phase scattered-pilot grid, TPS
-signalling, and guard-interval acquisition on RX.
+signalling, and guard-interval acquisition on RX. "Msps" is frame samples / wall
+time; the roundtrip row modulates then GI-acquires and decodes one frame per pass.
 
 | Path | Msps |
 | --- | ---: |
-| modulate | ~75 |
-| demodulate (incl. GI acquisition) | ~4.0 |
+| modulate | ~33 |
+| demodulate (incl. GI acquisition) | ~13 |
+| roundtrip (mod → GI-acquire → demod) | ~9.5 |
 
-Decode is ~30% slower than the generic 2K frame layer (~5.7 → ~4.0 Msps): the
-conformant RX adds per-symbol scattered-pilot equalization, DVB-T-exact soft
-LLRs, TPS DBPSK recovery, and the guard-interval correlation search. All are
-correctness-first, not yet optimized.
+The modulate figure is lower than the generic 2K chain above (~33 vs ~66) because
+the conformant modulator **fills the frame**: a short payload is stuffed with null
+TS packets (§4.4 — every data carrier must carry data), so it runs the full
+payload FEC over a whole frame's worth of RS packets rather than one packet plus
+zeros. The RX adds per-symbol scattered-pilot equalization, DVB-T-exact soft LLRs,
+TPS DBPSK recovery, and the guard-interval correlation search on top of the FFT
+chain; the per-symbol pilot interpolation is its dominant cost, locating each data
+carrier's bracketing pilots by binary search over the sorted pilot set
+(O(data·log pilots) per symbol, for 1512 data carriers × ~176 reference pilots)
+and reusing a ratio scratch buffer across symbols, so the estimate is a fraction
+of the FFT rather than an O(data·pilots) scan. The roundtrip (~9.5 Msps) is set by
+the two directions in series.
 
 ### DVB-T conformant frame, decode-vs-SNR (GI 1/8, 30 trials/point)
 
 Frame-decode success and post-decode payload BER vs. per-sample SNR, for the
-conformant frame. QPSK r1/2 and 16-QAM r3/4 payloads, both padded to a full
-68-symbol TPS frame.
+conformant frame. QPSK r1/2 and 16-QAM r3/4 payloads, each a genuine full-payload
+frame (a short payload is filled with null TS packets, so every carrier decodes).
 
 | SNR (dB) | QPSK r1/2 decode% | 16-QAM r3/4 decode% |
 | ---: | ---: | ---: |
-| 6 | 10% | 7% |
-| 8 | 17% | 97% |
-| 10 | 20% | 100% |
-| 12 | 37% | 100% |
-| 15 | 77% | 100% |
+| 2 | 0% | 0% |
+| 4 | 100% | 0% |
+| 10 | 100% | 0% |
+| 12 | 100% | 77% |
+| 15 | 100% | 100% |
 
 Payload BER is 0 whenever a frame decodes at all (the FEC either clears the
-channel or the frame fails as a unit). **Known limitation — the curves are
-erratic and NOT ordered by nominal robustness** (QPSK r1/2, the *more* redundant
-config, trails 16-QAM r3/4). Root cause, isolated by diagnostics (it is **not**
-acquisition — GI-sync locks the exact symbol offset 30/30 at these SNRs — and
-**not** a QPSK bug): a small payload is padded to the full 68-symbol frame, so
-the real coded data occupies only **~5–13 of 68 symbols** (the rest are zero).
-With so few data-bearing symbols, the per-symbol scattered-pilot equalizer's
-**band-edge residual** (data carriers beyond the outermost scattered pilot hold
-the nearest pilot's estimate — a documented Phase-2 limitation) can spoil a
-whole decode, and the outcome is dominated by which few symbols got an unlucky
-noise draw. Candidate fixes (a dedicated optimization pass): **multi-codeword
-frame packing** so the payload fills the frame instead of padding it, and/or an
-**MMSE / band-edge-aware equalizer**. At a longer guard interval (GI 1/8,
-cp_len = 256) both configs reach a clean waterfall (16-QAM: 97% at 8 dB, 100% by
-10 dB); the effect is worst at the short GI 1/32 CP.
+channel or the frame fails as a unit). The waterfall is ordered by nominal
+robustness: the redundant QPSK r1/2 config locks by ~4 dB, while the denser
+16-QAM r3/4 needs ~12–15 dB — the whole frame of real coded data must clear, so
+these are steeper full-payload cliffs than a mostly-empty frame would show.
+
+Channel estimation excludes the 17 TPS carriers from the equalizer's pilot
+reference set: the modulator transmits data-power DBPSK on them, not the boosted
+`w_k` pilot value the grid records, so using them as references would divide the
+received cell by the wrong known value and corrupt the interpolated estimate on
+the data carriers straddling each TPS carrier. The equalizer interpolates its
+estimate across the TPS bins from the true continual + scattered pilots instead;
+the noiseless correctness guard is
+`roundtrip::dvb_t::dvb_t_equalizer_noiseless_clean_*`.
 
 ## Running the Benchmarks
 

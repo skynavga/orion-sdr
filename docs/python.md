@@ -742,9 +742,40 @@ cfg = (
 ```
 
 The fully **conformant preamble-less DVB-T frame** (TS payload, TPS-on-carriers,
-scattered pilots, guard-interval acquisition) is provided by the Rust
-`modulate::dvb_t_frame` / `demodulate::dvb_t_frame` assemblers
-(see [dvb.md](dvb.md)); it is **not yet exposed through the Python bindings**.
+scattered pilots, guard-interval acquisition — see [dvb.md](dvb.md)) is exposed
+directly through `dvb_t_frame_modulate` / `dvb_t_frame_demodulate`. The
+transmission parameters are a `DvbTFrameParams` (guard interval, constellation,
+and code rate as strings); the RX acquires the frame from its cyclic prefix (no
+preamble) and returns the payload plus the parameters recovered from the TPS
+carriers:
+
+```python
+import numpy as np
+import orion_sdr as sdr
+
+params = sdr.DvbTFrameParams("1/8", "qpsk", "1/2", frame_number=2, cell_id=0x5A)
+
+payload = np.frombuffer(bytes(range(184)), dtype=np.uint8)   # MPEG-TS payload
+frame = sdr.dvb_t_frame_modulate(params, payload)
+# frame.iq (complex64), frame.n_symbols, frame.samples_per_symbol
+
+# Place at an unknown offset with lead-in/out silence; the RX GI-acquires it.
+buf = np.concatenate([
+    np.zeros(200, dtype=np.complex64),
+    frame.iq,
+    np.zeros(frame.samples_per_symbol, dtype=np.complex64),
+])
+
+rx = sdr.dvb_t_frame_demodulate(params, buf, frame.n_symbols, len(payload))
+assert rx.payload == payload.tobytes()
+assert rx.tps.constellation == "qpsk" and rx.tps.cell_id == 0x5A
+# rx.tps also carries frame_number, code_rate, and guard.
+```
+
+Narrowband DVB-T is a pure sample-rate scaling of the fixed 2K structure;
+`nb_bandwidth_fs("333khz" | "1mhz" | "2mhz")` gives the `fs` for each amateur mode
+(`nb_bandwidth_occupied_hz` the nominal channel width). `dvb_t_frame_demodulate`
+raises `ValueError` on an acquisition or decode failure.
 
 ## Notes
 

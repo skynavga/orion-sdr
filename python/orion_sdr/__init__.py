@@ -50,6 +50,14 @@ from orion_sdr.orion_sdr import (
     OfdmFrameMod,
     OfdmFrameStreamDemod,
     demodulate_frame,
+    DvbTFrameParams,
+    DvbTFrame,
+    DvbTRxFrame,
+    TpsWord,
+    dvb_t_frame_modulate,
+    dvb_t_frame_demodulate,
+    nb_bandwidth_fs,
+    nb_bandwidth_occupied_hz,
 )
 
 __all__ = [
@@ -104,4 +112,12 @@ __all__ = [
     "OfdmFrameMod",
     "OfdmFrameStreamDemod",
     "demodulate_frame",
+    "DvbTFrameParams",
+    "DvbTFrame",
+    "DvbTRxFrame",
+    "TpsWord",
+    "dvb_t_frame_modulate",
+    "dvb_t_frame_demodulate",
+    "nb_bandwidth_fs",
+    "nb_bandwidth_occupied_hz",
 ]

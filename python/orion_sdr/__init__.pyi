@@ -969,3 +969,94 @@ def demodulate_frame(
     for the streaming path.
     """
     ...
+
+# ---------------------------------------------------------------------------
+# Conformant DVB-T on-air frame (EN 300 744)
+# ---------------------------------------------------------------------------
+
+class DvbTFrameParams:
+    """Transmission parameters for a conformant DVB-T frame. *guard* is one of
+    ``"1/32" | "1/16" | "1/8" | "1/4"``; *constellation* one of
+    ``"qpsk" | "qam16" | "qam64"``; *code_rate* one of
+    ``"1/2" | "2/3" | "3/4" | "5/6" | "7/8"``.
+    """
+
+    def __init__(
+        self,
+        guard: str,
+        constellation: str,
+        code_rate: str,
+        frame_number: int = 0,
+        cell_id: int = 0,
+    ) -> None: ...
+    @property
+    def guard(self) -> str: ...
+    @property
+    def constellation(self) -> str: ...
+    @property
+    def code_rate(self) -> str: ...
+    @property
+    def frame_number(self) -> int: ...
+    @property
+    def cell_id(self) -> int: ...
+
+class TpsWord:
+    """The transmission parameters recovered from a frame's TPS carriers."""
+
+    @property
+    def frame_number(self) -> int: ...
+    @property
+    def constellation(self) -> str: ...
+    @property
+    def code_rate(self) -> str: ...
+    @property
+    def guard(self) -> str: ...
+    @property
+    def cell_id(self) -> int: ...
+
+class DvbTFrame:
+    """A modulated DVB-T frame: time-domain IQ plus its numerology."""
+
+    @property
+    def iq(self) -> NDArray[np.complex64]: ...
+    @property
+    def n_symbols(self) -> int: ...
+    @property
+    def samples_per_symbol(self) -> int: ...
+
+class DvbTRxFrame:
+    """The recovered contents of a DVB-T frame: TS payload and TPS word."""
+
+    @property
+    def payload(self) -> bytes: ...
+    @property
+    def tps(self) -> TpsWord: ...
+
+def dvb_t_frame_modulate(
+    params: DvbTFrameParams, payload: NDArray[np.uint8]
+) -> DvbTFrame:
+    """Modulate *payload* (MPEG-TS payload bytes) into one conformant,
+    preamble-less DVB-T frame."""
+    ...
+
+def dvb_t_frame_demodulate(
+    params: DvbTFrameParams,
+    iq: NDArray[np.complex64],
+    n_symbols: int,
+    payload_len: int,
+) -> DvbTRxFrame:
+    """Demodulate one conformant DVB-T frame, acquiring the symbol grid from the
+    guard interval (no preamble). *n_symbols* comes from the paired
+    ``dvb_t_frame_modulate`` result; *payload_len* is the original payload byte
+    count. Raises ``ValueError`` on any acquisition/decode failure.
+    """
+    ...
+
+def nb_bandwidth_fs(mode: str) -> float:
+    """Sample rate (S/s) for a narrowband DVB-T mode: ``"333khz" | "1mhz" |
+    "2mhz"``. ``fs = occupied_hz * 2048/1705``."""
+    ...
+
+def nb_bandwidth_occupied_hz(mode: str) -> float:
+    """Nominal occupied RF bandwidth (Hz) for a narrowband DVB-T mode."""
+    ...

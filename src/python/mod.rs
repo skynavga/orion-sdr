@@ -4,6 +4,7 @@
 use pyo3::prelude::*;
 
 mod demodulate;
+mod dvb_t_frame;
 mod ft8;
 mod modulate;
 mod ofdm;
@@ -66,5 +67,7 @@ fn orion_sdr(m: &Bound<'_, PyModule>) -> PyResult<()> {
     ofdm::register(m)?;
     // COFDM frame (MAC) layer
     ofdm_frame::register(m)?;
+    // Conformant DVB-T on-air frame
+    dvb_t_frame::register(m)?;
     Ok(())
 }
