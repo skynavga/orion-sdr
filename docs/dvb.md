@@ -151,17 +151,19 @@ the **45 continual pilots** — they sit at fixed carrier positions on every sym
 alignment it FFTs a symbol and, for each trial shift `k ∈ [−max, max]`, sums the
 energy landing at the continual-pilot bins shifted by `k`; the maximizing `k` is
 the integer CFO. This is the DVB-T-native counterpart to the OFDM preamble path's
-training-symbol integer-CFO recovery, which a preamble-less frame cannot use. It
-is **opt-in**: the estimator returns `k` (and a confidence ratio) and the caller
-rotates the buffer by `−k·fs/n_fft` before decoding — it is not wired into
-`dvb_t_frame_demodulate`, since a clean link needs no correction and mirroring the
-generic `OfdmSyncResult::integer_cfo_bins` "estimate-then-correct" split keeps the
-common no-offset path free. (Measured, the estimate + correction is within
-run-to-run noise of the decode cost even when run on every frame.) The pilot peak
-is modest — 45 of 1705 carriers, boosted only ~1.78× — so the winning shift sits
-~1.7× above the all-shifts mean; accumulating the pilot energy over several
-symbols (sum `|X|²` per bin) firms it up under noise. See
-[demodulate.md](demodulate.md) for the opt-in usage.
+training-symbol integer-CFO recovery, which a preamble-less frame cannot use.
+Correction is a **link-constant builder flag** on the receiver:
+`DvbTFrameDemod::new(params).with_integer_cfo_correction(true)` (and the same on
+the super-frame and streaming receivers). When enabled, the demod runs the
+estimate right after its own guard-interval acquisition and rotates the buffer by
+`−k·fs/n_fft` internally before decoding; off by default, since a clean link needs
+no correction and the estimate/rotate is then skipped. (Always-on, the estimate
+costs on the order of a few percent of the decode — a continual-pilot search per
+frame.) The pilot peak is modest — 45 of 1705 carriers, boosted only ~1.78× — so
+the winning shift sits ~1.7× above the all-shifts mean; the demod accumulates the
+pilot energy over several symbols (sum `|X|²` per bin) to firm it up under noise.
+The estimator `sync::dvb_t_integer_cfo` (returning `k` and a confidence ratio) is
+also public for standalone use. See [demodulate.md](demodulate.md) for the flag.
 
 ## Header formats
 
@@ -180,11 +182,12 @@ oriented).
 
 Three layers assemble the on-air stream, each over the one below:
 
-- **Single frame** — `{modulate,demodulate}::dvb_t_frame` (above). One 68-symbol
-  frame carrying a TS payload; a short payload is null-packet-stuffed so every
-  carrier is filled. `dvb_t_frame_modulate` returns the IQ plus `n_symbols` /
-  `samples_per_symbol`; `dvb_t_frame_demodulate` GI-acquires it at an unknown
-  offset and recovers the payload + TPS word.
+- **Single frame** — `modulate::DvbTFrameMod` / `demodulate::DvbTFrameDemod`
+  (above). One 68-symbol frame carrying a TS payload; a short payload is
+  null-packet-stuffed so every carrier is filled. `DvbTFrameMod::modulate` returns
+  the IQ plus `n_symbols` / `samples_per_symbol`; `DvbTFrameDemod::decode`
+  GI-acquires it at an unknown offset and recovers the payload + TPS word (and,
+  with the integer-CFO flag set, removes a whole-subcarrier offset first).
 - **Super-frame** — `{modulate,demodulate}::dvb_t_super_frame` sequences **four**
   consecutive frames (numbers 0–3) with the standard's super-frame structure: the
   TPS sync word alternates each frame (frames 1 & 3 use `TPS_SYNC_WORD_13`, 2 & 4

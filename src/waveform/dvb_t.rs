@@ -852,24 +852,52 @@ pub const DVB_T_FRAME_OUTER_IL: InterleaverKind = InterleaverKind::Convolutional
     depth: 17,
 };
 
-/// The transmission parameters of one conformant DVB-T frame — everything the
-/// TPS word signals, plus enough to drive the FEC. A cold receiver is given this
-/// (real receivers acquire on assumptions) and TPS verifies it. Shared by the
-/// modulator and demodulator.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DvbTFrameParams {
+/// The modulation-and-coding parameters shared by every DVB-T frame on a link:
+/// guard interval, constellation, and inner code rate. These are constant across a
+/// (super-)frame; [`DvbTFrameParams`] and [`DvbTSuperFrameParams`] each embed one,
+/// so the shared set is defined once rather than duplicated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DvbTLinkParams {
     pub guard: GuardInterval,
     pub constellation: ConstellationOrder,
     pub code_rate: PunctureRate,
+}
+
+/// The transmission parameters of one conformant DVB-T frame — the shared link
+/// parameters ([`DvbTLinkParams`]) plus this frame's TPS-signalled number and
+/// cell-id byte. A cold receiver is given this (real receivers acquire on
+/// assumptions) and TPS verifies it. Shared by the modulator and demodulator.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DvbTFrameParams {
+    /// Guard interval, constellation, and code rate (constant across the link).
+    pub link: DvbTLinkParams,
+    /// This frame's number within the super-frame (0..=3).
     pub frame_number: u8,
+    /// The cell-identifier **byte** this frame carries on its TPS carriers (the
+    /// full 16-bit id is a super-frame property — see [`DvbTSuperFrameParams`]).
     pub cell_id: u8,
 }
 
 impl DvbTFrameParams {
+    /// The guard interval (from the link parameters).
+    pub fn guard(self) -> GuardInterval {
+        self.link.guard
+    }
+
+    /// The constellation (from the link parameters).
+    pub fn constellation(self) -> ConstellationOrder {
+        self.link.constellation
+    }
+
+    /// The inner code rate (from the link parameters).
+    pub fn code_rate(self) -> PunctureRate {
+        self.link.code_rate
+    }
+
     /// The inner FEC (K=7 punctured convolutional at the frame's code rate).
     pub fn inner(self) -> InnerFec {
         InnerFec::Convolutional {
-            rate: self.code_rate,
+            rate: self.link.code_rate,
             code: ConvCode::DvbK7,
         }
     }
@@ -878,9 +906,9 @@ impl DvbTFrameParams {
     pub fn tps_word(self) -> crate::waveform::dvb_t_tps::TpsWord {
         crate::waveform::dvb_t_tps::TpsWord {
             frame_number: self.frame_number,
-            constellation: self.constellation,
-            code_rate_hp: self.code_rate,
-            guard: self.guard,
+            constellation: self.link.constellation,
+            code_rate_hp: self.link.code_rate,
+            guard: self.link.guard,
             cell_id: self.cell_id,
         }
     }
@@ -891,8 +919,8 @@ impl DvbTFrameParams {
     /// the batch assemblers (no RF upconversion), so the exact value is not
     /// load-bearing for a baseband frame.
     pub fn config(self) -> OfdmConfig {
-        let plan0 = dvb_t_2k_plans(self.guard)[0].clone();
+        let plan0 = dvb_t_2k_plans(self.link.guard)[0].clone();
         let fs = dvb_t_fs_for_bandwidth(1_000_000.0);
-        OfdmConfig::new(plan0, fs, 0.0, 1.0, self.constellation).with_dvb_t_scattered(true)
+        OfdmConfig::new(plan0, fs, 0.0, 1.0, self.link.constellation).with_dvb_t_scattered(true)
     }
 }

@@ -26,11 +26,11 @@ pub mod ofdm_frame;
 pub use ofdm_frame::{CodecCache, Mcs, McsTable, OfdmFrameMod};
 
 pub mod dvb_t_frame;
-pub use dvb_t_frame::{DvbTFrame, dvb_t_frame_modulate};
+pub use dvb_t_frame::{DvbTFrame, DvbTFrameMod};
 
 pub mod dvb_t_super_frame;
 pub use dvb_t_super_frame::{
-    DVB_T_FRAMES_PER_SUPER_FRAME, DvbTSuperFrame, DvbTSuperFrameParams, dvb_t_super_frame_modulate,
+    DVB_T_FRAMES_PER_SUPER_FRAME, DvbTSuperFrame, DvbTSuperFrameMod, DvbTSuperFrameParams,
 };
 
 pub mod pm;

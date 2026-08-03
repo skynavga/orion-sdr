@@ -3,7 +3,7 @@
 """Tests for the conformant DVB-T on-air frame Python bindings.
 
 All tests are noiseless / synthetic. They exercise the batch frame modulator and
-demodulator (`dvb_t_frame_modulate` / `dvb_t_frame_demodulate`, EN 300 744): a
+demodulator objects (`DvbTFrameMod` / `DvbTFrameDemod`, EN 300 744): a
 preamble-less frame placed at an unknown offset, guard-interval-acquired, with
 both the payload and the TPS-signalled parameters recovered.
 """
@@ -70,7 +70,7 @@ def test_params_reject_bad_strings(guard, const, rate):
 
 def test_frame_shape():
     p = sdr.DvbTFrameParams("1/8", "qpsk", "1/2")
-    frame = sdr.dvb_t_frame_modulate(p, _sample_payload(184))
+    frame = sdr.DvbTFrameMod(p).modulate(_sample_payload(184))
     # A frame is padded to at least a full 68-symbol TPS block.
     assert frame.n_symbols >= 68
     assert frame.samples_per_symbol == 2048 + 256  # n_fft + cp_len(1/8)
@@ -90,10 +90,10 @@ def test_frame_shape():
 def test_roundtrip_recovers_payload_and_tps(guard, const, rate):
     p = sdr.DvbTFrameParams(guard, const, rate, frame_number=1, cell_id=0x33)
     payload = _sample_payload(184)
-    frame = sdr.dvb_t_frame_modulate(p, payload)
+    frame = sdr.DvbTFrameMod(p).modulate(payload)
     buf = _place_with_offset(frame.iq, frame.samples_per_symbol)
 
-    rx = sdr.dvb_t_frame_demodulate(p, buf, frame.n_symbols, len(payload))
+    rx = sdr.DvbTFrameDemod(p).decode(buf, frame.n_symbols, len(payload))
     assert rx.payload == payload.tobytes()
     assert rx.tps.frame_number == 1
     assert rx.tps.constellation == const
@@ -105,9 +105,9 @@ def test_roundtrip_recovers_payload_and_tps(guard, const, rate):
 def test_payload_returned_as_bytes():
     p = sdr.DvbTFrameParams("1/8", "qpsk", "1/2")
     payload = _sample_payload(184)
-    frame = sdr.dvb_t_frame_modulate(p, payload)
+    frame = sdr.DvbTFrameMod(p).modulate(payload)
     buf = _place_with_offset(frame.iq, frame.samples_per_symbol)
-    rx = sdr.dvb_t_frame_demodulate(p, buf, frame.n_symbols, len(payload))
+    rx = sdr.DvbTFrameDemod(p).decode(buf, frame.n_symbols, len(payload))
     assert isinstance(rx.payload, bytes)
     assert len(rx.payload) == len(payload)
 
@@ -119,12 +119,44 @@ def test_payload_returned_as_bytes():
 
 def test_demodulate_too_short_raises():
     p = sdr.DvbTFrameParams("1/8", "qpsk", "1/2")
-    frame = sdr.dvb_t_frame_modulate(p, _sample_payload(184))
+    frame = sdr.DvbTFrameMod(p).modulate(_sample_payload(184))
     # A buffer far too short for the declared symbol count.
     with pytest.raises(ValueError):
-        sdr.dvb_t_frame_demodulate(
-            p, np.zeros(5000, dtype=np.complex64), frame.n_symbols, 184
+        sdr.DvbTFrameDemod(p).decode(
+            np.zeros(5000, dtype=np.complex64), frame.n_symbols, 184
         )
+
+
+# ---------------------------------------------------------------------------
+# Integer-CFO correction builder
+# ---------------------------------------------------------------------------
+
+
+def test_integer_cfo_correction_builder():
+    # A whole-subcarrier CFO breaks decode unless the demod's
+    # `with_integer_cfo_correction` flag is set; the default (off) leaves it
+    # uncorrected. Apply +5 subcarriers by rotating the frame in the time domain.
+    p = sdr.DvbTFrameParams("1/8", "qpsk", "1/2")
+    payload = _sample_payload(184)
+    frame = sdr.DvbTFrameMod(p).modulate(payload)
+    n_fft = 2048
+
+    # A pure bin shift is fs-independent: rotating by +k/n_fft cycles/sample in
+    # the time domain slides the spectrum up by k whole subcarriers.
+    k = 5
+    n = np.arange(frame.iq.shape[0])
+    shifted = (frame.iq * np.exp(2j * np.pi * k * n / n_fft)).astype(np.complex64)
+    buf = _place_with_offset(shifted, frame.samples_per_symbol)
+
+    # Flag off (default): decode fails.
+    with pytest.raises(ValueError):
+        sdr.DvbTFrameDemod(p).decode(buf, frame.n_symbols, len(payload))
+
+    # Flag on: the demod removes the offset internally and recovers the payload.
+    demod = sdr.DvbTFrameDemod(p).with_integer_cfo_correction(True)
+    assert demod.integer_cfo_correction is True
+    rx = demod.decode(buf, frame.n_symbols, len(payload))
+    assert rx.payload == payload.tobytes()
 
 
 # ---------------------------------------------------------------------------

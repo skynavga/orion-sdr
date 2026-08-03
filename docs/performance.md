@@ -471,11 +471,11 @@ compute one** — the DSP cost is identical.
 
 ### DVB-T conformant frame, end to end (184-byte TS payload, 68-symbol frame, 50 passes)
 
-The full conformant preamble-less frame (`modulate::dvb_t_frame` ↔
-`demodulate::dvb_t_frame`): TS packetization + energy dispersal, payload FEC,
-Figure-9a soft-decision through the four-phase scattered-pilot grid, TPS
-signalling, and guard-interval acquisition on RX. "Msps" is frame samples / wall
-time; the roundtrip row modulates then GI-acquires and decodes one frame per pass.
+The full conformant preamble-less frame (`DvbTFrameMod` ↔ `DvbTFrameDemod`): TS
+packetization + energy dispersal, payload FEC, Figure-9a soft-decision through the
+four-phase scattered-pilot grid, TPS signalling, and guard-interval acquisition on
+RX. "Msps" is frame samples / wall time; the roundtrip row modulates then
+GI-acquires and decodes one frame per pass.
 
 | Path | Msps |
 | --- | ---: |
@@ -498,9 +498,9 @@ the two directions in series.
 
 ### DVB-T super-frame, end to end (700-byte payload, 4 frames, 20 passes)
 
-The conformant super-frame (`modulate::dvb_t_super_frame` ↔
-`demodulate::dvb_t_super_frame`): four consecutive frames (numbers 0–3) with the
-alternating TPS sync word and the 16-bit cell id split across them.
+The conformant super-frame (`DvbTSuperFrameMod` ↔ `DvbTSuperFrameDemod`): four
+consecutive frames (numbers 0–3) with the alternating TPS sync word and the 16-bit
+cell id split across them.
 
 | Path | Msps |
 | --- | ---: |
@@ -515,7 +515,7 @@ its throughput tracks the conformant single frame's, with no new bottleneck.
 
 ### DVB-T streaming receiver (4-frame stream, feed/flush, 20 passes)
 
-The streaming receiver (`demodulate::dvb_t_stream`, `feed`/`flush`) decoding a
+The streaming receiver (`DvbTFrameStreamDemod`, `feed`/`flush`) decoding a
 continuous run of frames: it accumulates IQ, guard-interval-acquires the next
 frame at the front of the buffer, decodes it, and drains its samples.
 
@@ -526,6 +526,27 @@ frame at the front of the buffer, decodes it, and drains its samples.
 Slightly below the batch conformant demodulate (~13): the per-frame decode work
 is identical, and the small gap is the streaming buffer management — the repeated
 front-of-buffer GI search and the per-frame `drain` of consumed samples.
+
+### DVB-T integer-CFO correction overhead (184-byte frame, 50 passes)
+
+`DvbTFrameDemod::with_integer_cfo_correction(true)` folds a continual-pilot
+integer-CFO estimate into every decode (after the RX's own guard-interval
+acquisition), for a link that may sit a whole subcarrier or more off frequency. The
+overhead is the always-on cost of that estimate, measured as a plain flag-off
+decode vs. a flag-on decode over the **same clean buffer** (offset 0, so the
+estimate returns k = 0 and the rotate is skipped — the normal locked-link case).
+
+| Path | Msps |
+| --- | ---: |
+| decode, correction off | ~13.1 |
+| decode, correction on (always estimating) | ~12.5 |
+
+That is **a few percent** (measured ~4–6% across six runs — the added work, an FFT
+of a few symbols plus a 45-bin continual-pilot search per frame, is small enough
+that the ratio is dominated by decode jitter). It is off by default (a clean link
+needs no correction), so the common path pays nothing; when a capture carries an
+integer offset, the flag removes it internally rather than the caller running a
+pre-pass. The estimator `sync::dvb_t_integer_cfo` is also public for standalone use.
 
 ### DVB-T conformant frame, decode-vs-SNR (GI 1/8, 30 trials/point)
 
@@ -588,7 +609,7 @@ cargo test --release --features throughput "throughput::fec" -- --nocapture --te
 ```
 
 To run only the DVB-T / NB-DVB-T waveform benchmarks (bandwidth sweep, conformant
-frame, super-frame):
+frame, super-frame, streaming receiver, integer-CFO overhead):
 
 ```bash
 cargo test --release --features throughput "throughput::dvbt" -- --nocapture --test-threads=1

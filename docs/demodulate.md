@@ -572,70 +572,54 @@ payload — the header always uses sum-product). See
 
 ## DVB-T Frame Demodulation (conformant, preamble-less)
 
-`dvb_t_frame_demodulate` is the exact inverse of `modulate::dvb_t_frame_modulate`:
-it acquires the symbol grid from the guard interval (no preamble), equalizes each
-symbol from the scattered/continual pilots, soft-demaps the Figure-9a
-constellation, recovers the TPS word from the 17 TPS carriers, runs the payload
-FEC decode, and undoes the TS energy dispersal — returning both the payload and
-the TPS-signalled parameters. The `params` supply the cold-start MCS (as real
-receivers acquire on assumptions), which the recovered TPS then verifies. See
-[dvb.md](dvb.md).
+`DvbTFrameDemod` is the exact inverse of `modulate::DvbTFrameMod`: it acquires the
+symbol grid from the guard interval (no preamble), equalizes each symbol from the
+scattered/continual pilots, soft-demaps the Figure-9a constellation, recovers the
+TPS word from the 17 TPS carriers, runs the payload FEC decode, and undoes the TS
+energy dispersal — returning both the payload and the TPS-signalled parameters.
+Construct it with the cold-start MCS `params` (as real receivers acquire on
+assumptions), which the recovered TPS then verifies. See [dvb.md](dvb.md).
 
 ```rust
-use orion_sdr::demodulate::dvb_t_frame_demodulate;
-# use orion_sdr::modulate::dvb_t_frame_modulate;
-# use orion_sdr::fec::PunctureRate;
-# use orion_sdr::modulate::ConstellationOrder;
-# use orion_sdr::waveform::dvb_t::{DvbTFrameParams, GuardInterval};
-# let params = DvbTFrameParams { guard: GuardInterval::G1_8,
-#     constellation: ConstellationOrder::Qpsk, code_rate: PunctureRate::R1_2,
-#     frame_number: 0, cell_id: 0 };
-# let payload: Vec<u8> = (0..184).map(|i| (i * 37 + 11) as u8).collect();
-# let frame = dvb_t_frame_modulate(params, &payload);
-# let iq = &frame.iq;   // in practice: captured/received samples
+use orion_sdr::demodulate::DvbTFrameDemod;
 
-// `params` is the assumed MCS; `frame.n_symbols` the frame length; the last
-// argument is the expected payload byte count (for trimming the TS padding).
-let rx = dvb_t_frame_demodulate(params, iq, frame.n_symbols, payload.len())
+// `params` is the assumed MCS (a DvbTFrameParams); `iq` the received samples;
+// `n_symbols` / `payload_len` come from the paired DvbTFrameMod's DvbTFrame.
+let rx = DvbTFrameDemod::new(params)
+    .decode(iq, n_symbols, payload_len)
     .expect("conformant DVB-T frame decode");
 
-// The recovered TS payload, plus the parameters read off the TPS carriers —
-// which a receiver can check against its acquisition assumptions.
-assert_eq!(rx.payload, payload);
-assert_eq!(rx.tps.constellation, params.constellation);
-assert_eq!(rx.tps.code_rate_hp, params.code_rate);
-assert_eq!(rx.tps.guard, params.guard);
+// rx.payload — the recovered TS payload; rx.tps — the parameters read off the TPS
+// carriers (constellation, code_rate_hp, guard, frame_number, cell_id), which a
+// receiver can check against its acquisition assumptions.
+let _ = (&rx.payload, rx.tps.constellation);
 ```
 
-This is a batch, single-frame entry point (the buffer holds one whole frame plus
+This is a batch, single-frame receiver (the buffer holds one whole frame plus
 enough lead-in for the guard-interval search). The **super-frame** and
 **streaming** receivers below wrap it. It recovers only the *fractional* CFO from
-the guard interval; if a real front end may be off by whole subcarriers, correct
-the **integer** CFO first with `dvb_t_integer_cfo` (below).
+the guard interval; if a real front end may be off by whole subcarriers, enable
+**integer**-CFO correction with the builder flag (below).
 
 ### DVB-T super-frame demodulation
 
-`dvb_t_super_frame_demodulate` is the inverse of `modulate::
-dvb_t_super_frame_modulate`: it decodes the four frames, verifies the frame-number
-sequence `0,1,2,3` (which implies the correct alternating TPS sync word),
-reassembles the 16-bit cell id from its byte halves, and concatenates the
-payloads. `symbols_per_frame` and `frame_payload_lens` come from the paired
-modulator's `DvbTSuperFrame`.
+`DvbTSuperFrameDemod` is the inverse of `modulate::DvbTSuperFrameMod`: it decodes
+the four frames, verifies the frame-number sequence `0,1,2,3` (which implies the
+correct alternating TPS sync word), reassembles the 16-bit cell id from its byte
+halves, and concatenates the payloads. `symbols_per_frame` and `frame_payload_lens`
+come from the paired modulator's `DvbTSuperFrame`.
 
 ```rust
-use orion_sdr::demodulate::dvb_t_super_frame_demodulate;
-# use orion_sdr::modulate::{DvbTSuperFrameParams, dvb_t_super_frame_modulate, ConstellationOrder};
-# use orion_sdr::fec::PunctureRate;
-# use orion_sdr::waveform::dvb_t::GuardInterval;
-# let params = DvbTSuperFrameParams { guard: GuardInterval::G1_8,
-#     constellation: ConstellationOrder::Qpsk, code_rate: PunctureRate::R1_2, cell_id: 0xBEEF };
-# let payload: Vec<u8> = (0..700).map(|i| (i * 37 + 11) as u8).collect();
-# let sf = dvb_t_super_frame_modulate(params, &payload);
+use orion_sdr::demodulate::DvbTSuperFrameDemod;
 
-let rx = dvb_t_super_frame_demodulate(params, &sf.iq, sf.symbols_per_frame, sf.frame_payload_lens)
+// `params` is a DvbTSuperFrameParams; `sf` is the paired modulator's DvbTSuperFrame
+// (its `symbols_per_frame` / `frame_payload_lens` describe the re-slice).
+let rx = DvbTSuperFrameDemod::new(params)
+    .decode(&sf.iq, sf.symbols_per_frame, sf.frame_payload_lens)
     .expect("super-frame decode");
-assert_eq!(rx.payload, payload);
-assert_eq!(rx.cell_id, 0xBEEF); // reassembled 16-bit cell id
+// rx.payload — the four frames' payloads concatenated; rx.cell_id — the reassembled
+// 16-bit cell id.
+let _ = (&rx.payload, rx.cell_id);
 ```
 
 ### DVB-T streaming reception (`feed`/`flush`)
@@ -645,25 +629,14 @@ arrive, mirroring `OfdmFrameStreamDemod`. It accumulates IQ across `feed` calls,
 guard-interval-acquires the next frame at the front of the buffer, decodes it,
 drains its samples, and loops — holding a partially-arrived frame until a later
 `feed` completes it. The frame geometry (`n_symbols`, `payload_len`) is fixed at
-construction (as the batch entry point takes it); `feed` is
-chunk-boundary-invariant.
+construction (as the batch demod takes it); `feed` is chunk-boundary-invariant.
 
 ```rust
 use orion_sdr::demodulate::DvbTFrameStreamDemod;
-# use orion_sdr::modulate::{dvb_t_frame_modulate, ConstellationOrder};
-# use orion_sdr::fec::PunctureRate;
-# use orion_sdr::waveform::dvb_t::{DvbTFrameParams, GuardInterval};
-# use num_complex::Complex32 as C32;
-# let params = DvbTFrameParams { guard: GuardInterval::G1_8,
-#     constellation: ConstellationOrder::Qpsk, code_rate: PunctureRate::R1_2,
-#     frame_number: 0, cell_id: 0 };
-# let payload: Vec<u8> = (0..184).map(|i| (i * 37 + 11) as u8).collect();
-# let frame = dvb_t_frame_modulate(params, &payload);
-# let mut stream = vec![C32::default(); 200];
-# stream.extend_from_slice(&frame.iq);
-# stream.extend(vec![C32::default(); frame.samples_per_symbol]);
 
-let mut rx = DvbTFrameStreamDemod::new(params, frame.n_symbols, payload.len());
+// `params`, `n_symbols`, `payload_len` fix the frame geometry (as the batch demod
+// takes them); `stream` is a run of incoming IQ chunked arbitrarily.
+let mut rx = DvbTFrameStreamDemod::new(params, n_symbols, payload_len);
 let mut frames = Vec::new();
 for chunk in stream.chunks(4096) {
     // `feed` returns the frames that completed on this call (decode errors are
@@ -671,113 +644,46 @@ for chunk in stream.chunks(4096) {
     frames.extend(rx.feed(chunk));
 }
 frames.extend(rx.flush());
-assert_eq!(frames.iter().filter(|r| r.is_ok()).count(), 1);
 ```
 
-### DVB-T integer-CFO correction (opt-in)
+### DVB-T integer-CFO correction (a builder flag)
 
 The guard-interval acquisition resolves the CFO only within ±½ a subcarrier. A
 capture with a larger front-end offset is shifted by whole subcarriers, and the
-frame will not demap until that integer offset is removed. `dvb_t_integer_cfo`
-recovers it from the 45 continual pilots (fixed positions, boosted); the caller
-rotates the buffer by `−k·fs/n_fft` and then decodes as usual. It is deliberately
-**not** wired into the receivers — a clean link needs no correction, and this
-mirrors the generic `OfdmSyncResult::integer_cfo_bins` "estimate, then correct"
-split (see [dvb.md](dvb.md) for the design).
+frame will not demap until that integer offset is removed. This is a
+**link-constant, RX-only** property, so it is a set-once builder flag on the demod:
+`DvbTFrameDemod::new(params).with_integer_cfo_correction(true)`. When enabled, the
+demod estimates the whole-subcarrier offset from the 45 continual pilots (fixed
+positions, boosted) right after its own guard-interval acquisition and rotates it
+out internally — the caller just decodes as usual. Off by default: a clean link
+needs no correction, and the estimate/rotate is skipped entirely.
 
-**How it composes with the receivers.** `dvb_t_frame_demodulate` (and the
-super-frame / streaming receivers) take *raw* IQ and run their own guard-interval
-acquisition internally, so correction is a **pre-pass**: hand them a buffer whose
-integer CFO is already removed. A frequency rotation commutes with the timing
-offset, so the receiver's internal GI-sync still finds the same symbol boundary.
-The estimator, however, needs an *aligned* symbol — so the pre-pass runs
-`dvb_t_gi_sync` itself first (cheap, one symbol period) to find that boundary,
-estimates, then rotates the whole buffer. Wrap it once and reuse it in front of
-any of the three receivers:
+The super-frame and streaming receivers carry the same flag —
+`DvbTSuperFrameDemod::new(params).with_integer_cfo_correction(true)` (delegated to
+each constituent frame) and
+`DvbTFrameStreamDemod::new(params, n_symbols, payload_len)` gains it via
+`.with_integer_cfo_correction(true)`:
 
 ```rust
-use orion_sdr::sync::{dvb_t_gi_sync, dvb_t_integer_cfo};
-use orion_sdr::dsp::Rotator;
-use orion_sdr::multicarrier::{CyclicPrefixRemove, FftBlock};
-use orion_sdr::core::Block;
-use orion_sdr::waveform::dvb_t::DVB_T_N_FFT;
-use num_complex::Complex32 as C32;
+use orion_sdr::demodulate::{DvbTFrameDemod, DvbTFrameStreamDemod};
 
-/// Removes any whole-subcarrier CFO from a raw DVB-T capture, returning a buffer
-/// ready for `dvb_t_frame_demodulate` / super-frame / streaming. `n_accum` symbols
-/// of pilot energy are summed for a firmer estimate under noise. No-op (clone) if
-/// acquisition fails or the estimate is 0.
-fn integer_cfo_correct(iq: &[C32], guard_cp_len: usize, fs: f32, n_accum: usize) -> Vec<C32> {
-    let n_fft = DVB_T_N_FFT;
-    let sps = n_fft + guard_cp_len;
-    // Align to a symbol boundary (this also gives the fractional CFO, which the
-    // receiver re-derives; here we only need the timing).
-    let Some(acq) = dvb_t_gi_sync(iq, n_fft, guard_cp_len, fs, sps) else {
-        return iq.to_vec();
-    };
-    // Sum |X|^2 per bin over the first `n_accum` aligned symbols → firmer estimate.
-    let mut cpr = CyclicPrefixRemove::new(n_fft, guard_cp_len);
-    let mut fft = FftBlock::new(n_fft);
-    let mut time = vec![C32::default(); n_fft];
-    let mut freq = vec![C32::default(); n_fft];
-    let mut accum = vec![C32::default(); n_fft];
-    for s in 0..n_accum {
-        let off = acq.start_sample + s * sps;
-        if off + n_fft > iq.len() { break; }
-        cpr.process(&iq[off..], &mut time);
-        fft.process(&time, &mut freq);
-        for (a, &x) in accum.iter_mut().zip(freq.iter()) {
-            *a += C32::new(x.norm_sqr(), 0.0);
-        }
-    }
-    let k = dvb_t_integer_cfo(&accum, n_fft, 32).map(|e| e.bins).unwrap_or(0);
-    if k == 0 {
-        return iq.to_vec();
-    }
-    let mut corrected = vec![C32::default(); iq.len()];
-    Rotator::new(-(k as f32) * fs / n_fft as f32, fs).rotate_block(iq, &mut corrected);
-    corrected
-}
+// Single frame: enable correction once at construction, then decode raw IQ
+// (`raw` may carry a whole-subcarrier offset the demod removes internally).
+let rx = DvbTFrameDemod::new(params)
+    .with_integer_cfo_correction(true)
+    .decode(&raw, n_symbols, payload_len);
+
+// Streaming: the whole run shares the front-end offset, so set the flag once.
+let mut stream = DvbTFrameStreamDemod::new(params, n_symbols, payload_len)
+    .with_integer_cfo_correction(true);
+let frames = stream.feed(&raw);
 ```
 
-Then it sits in front of whichever receiver you use — the receivers themselves are
-unchanged:
-
-```rust
-# use orion_sdr::demodulate::{dvb_t_frame_demodulate, dvb_t_super_frame_demodulate, DvbTFrameStreamDemod};
-# use orion_sdr::modulate::{dvb_t_frame_modulate, dvb_t_super_frame_modulate, ConstellationOrder, DvbTSuperFrameParams};
-# use orion_sdr::fec::PunctureRate;
-# use orion_sdr::waveform::dvb_t::{DvbTFrameParams, GuardInterval, DVB_T_N_FFT};
-# use orion_sdr::sync::{dvb_t_gi_sync, dvb_t_integer_cfo};
-# use orion_sdr::dsp::Rotator;
-# use orion_sdr::multicarrier::{CyclicPrefixRemove, FftBlock};
-# use orion_sdr::core::Block;
-# use num_complex::Complex32 as C32;
-# fn integer_cfo_correct(iq: &[C32], guard_cp_len: usize, fs: f32, n_accum: usize) -> Vec<C32> { iq.to_vec() }
-# let params = DvbTFrameParams { guard: GuardInterval::G1_8,
-#     constellation: ConstellationOrder::Qpsk, code_rate: PunctureRate::R1_2, frame_number: 0, cell_id: 0 };
-# let payload: Vec<u8> = (0..184).map(|i| (i * 37 + 11) as u8).collect();
-# let frame = dvb_t_frame_modulate(params, &payload);
-# let mut raw = vec![C32::default(); 200];  // captured IQ (with lead-in)
-# raw.extend_from_slice(&frame.iq);
-# raw.extend(vec![C32::default(); frame.samples_per_symbol]);
-let cp_len = params.guard.cp_len_2k();
-let fs = params.config().fs;
-
-// Single frame:
-let fixed = integer_cfo_correct(&raw, cp_len, fs, 8);
-let _rx = dvb_t_frame_demodulate(params, &fixed, frame.n_symbols, payload.len());
-
-// Streaming: correct each incoming chunk (or the whole capture) before `feed`.
-# let mut stream = DvbTFrameStreamDemod::new(params, frame.n_symbols, payload.len());
-let fixed = integer_cfo_correct(&raw, cp_len, fs, 8);
-let _frames = stream.feed(&fixed);
-```
-
-For the **super-frame**, correct the whole capture once and pass it to
-`dvb_t_super_frame_demodulate` the same way. For **streaming**, a fixed front-end
-offset is constant across the capture, so correcting the whole buffer (or each
-chunk with the same estimate) up front is simplest; re-estimating per frame is
-only needed if the offset drifts. Under noise the pilot peak is modest (45 of 1705
-carriers, boosted ~1.78×), which is why the helper accumulates several symbols'
-pilot energy before estimating.
+For the **super-frame**, build
+`DvbTSuperFrameDemod::new(sf_params).with_integer_cfo_correction(true)` and decode
+as usual; the flag applies to every constituent frame. A fixed front-end offset is
+constant across a capture, which is exactly why the flag is set once rather than
+per call. Under noise the pilot peak is modest (45 of 1705 carriers, boosted
+~1.78×), so the demod accumulates several symbols' pilot energy before estimating.
+Always-on, the correction costs on the order of a few percent of the decode
+(continual-pilot search per frame; see [performance.md](performance.md)).

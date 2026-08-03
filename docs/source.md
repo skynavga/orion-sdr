@@ -48,8 +48,9 @@ src/
                         bpsk_soft_llr/qpsk_soft_llr/qam_soft_llr
     ofdm_frame.rs      — demodulate_frame (batch), OfdmFrameStreamDemod (streaming
                         feed/flush RX), RxFrame (COFDM frame demodulator)
-    dvb_t_frame.rs     — dvb_t_frame_demodulate, DvbTRxFrame (conformant preamble-less
-                        DVB-T RX: GI-acquire → equalize → soft-demap → TPS + FEC)
+    dvb_t_frame.rs     — DvbTFrameDemod, DvbTRxFrame (conformant preamble-less
+                        DVB-T RX: GI-acquire → equalize → soft-demap → TPS + FEC;
+                        optional integer-CFO builder flag)
     pm.rs             — PmQuadratureDemod
     psk31.rs          — Bpsk31Demod, Bpsk31Decider, Qpsk31Demod, Qpsk31Decider
     qam.rs            — QamDemod, QamDecider<BITS>, Qam16/64/256Decider
@@ -67,7 +68,7 @@ src/
                         (mapper → grid → IFFT → cyclic prefix → optional RF)
     ofdm_frame.rs      — OfdmFrameMod, Mcs, McsTable (COFDM frame modulator +
                         shared coding chain and block-size bookkeeping)
-    dvb_t_frame.rs     — dvb_t_frame_modulate, DvbTFrame (conformant preamble-less
+    dvb_t_frame.rs     — DvbTFrameMod, DvbTFrame (conformant preamble-less
                         DVB-T TX: TS + energy dispersal → FEC → map → scattered grid + TPS)
     pm.rs             — PmDirectPhaseMod
     psk31.rs          — Bpsk31Mod, Qpsk31Mod (DBPSK/DQPSK, 31.25 baud, Hann pulse shaping)

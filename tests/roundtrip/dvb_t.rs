@@ -268,18 +268,20 @@ fn dvb_t_scattered_needed_for_multipath() {
 // The full DVB-T on-air frame: MPEG-TS payload + energy dispersal + payload FEC,
 // Figure-9a soft-decision through the four-phase scattered-pilot grid, TPS on the
 // 17 carriers, and guard-interval acquisition — NO preamble, NO OrionSdr header.
-// TX: `modulate::dvb_t_frame_modulate`; RX: `demodulate::dvb_t_frame_demodulate`.
+// TX: `modulate::DvbTFrameMod`; RX: `demodulate::DvbTFrameDemod`.
 
-use orion_sdr::demodulate::dvb_t_frame_demodulate;
+use orion_sdr::demodulate::DvbTFrameDemod;
 use orion_sdr::fec::PunctureRate;
-use orion_sdr::modulate::{ConstellationOrder, dvb_t_frame_modulate};
-use orion_sdr::waveform::dvb_t::DvbTFrameParams;
+use orion_sdr::modulate::{ConstellationOrder, DvbTFrameMod};
+use orion_sdr::waveform::dvb_t::{DvbTFrameParams, DvbTLinkParams};
 
 fn capstone_params() -> DvbTFrameParams {
     DvbTFrameParams {
-        guard: GuardInterval::G1_32,
-        constellation: ConstellationOrder::Qpsk,
-        code_rate: PunctureRate::R1_2,
+        link: DvbTLinkParams {
+            guard: GuardInterval::G1_32,
+            constellation: ConstellationOrder::Qpsk,
+            code_rate: PunctureRate::R1_2,
+        },
         frame_number: 2,
         cell_id: 0x5A,
     }
@@ -292,20 +294,21 @@ fn roundtrip_dvb_t_2k_tps_end_to_end() {
     // recover BOTH the payload AND the TPS-signalled parameters.
     let params = capstone_params();
     let payload = sample_payload(184); // one RS(204,188) information block worth
-    let frame = dvb_t_frame_modulate(params, &payload);
+    let frame = DvbTFrameMod::new(params).modulate(&payload);
 
     let lead = 200usize;
     let mut buf = vec![C32::default(); lead];
     buf.extend_from_slice(&frame.iq);
     buf.extend(vec![C32::default(); frame.samples_per_symbol]);
 
-    let got = dvb_t_frame_demodulate(params, &buf, frame.n_symbols, payload.len())
+    let got = DvbTFrameDemod::new(params)
+        .decode(&buf, frame.n_symbols, payload.len())
         .expect("conformant DVB-T frame decode");
     assert_eq!(got.payload, payload, "recovered TS payload");
     assert_eq!(got.tps.frame_number, params.frame_number);
-    assert_eq!(got.tps.constellation, params.constellation);
-    assert_eq!(got.tps.code_rate_hp, params.code_rate);
-    assert_eq!(got.tps.guard, params.guard);
+    assert_eq!(got.tps.constellation, params.constellation());
+    assert_eq!(got.tps.code_rate_hp, params.code_rate());
+    assert_eq!(got.tps.guard, params.guard());
     assert_eq!(got.tps.cell_id, params.cell_id);
 }
 
@@ -315,7 +318,7 @@ fn dvb_t_tps_frame_survives_awgn() {
     // averaged, BCH-protected) and the soft-decision payload FEC both hold.
     let params = capstone_params();
     let payload = sample_payload(184);
-    let frame = dvb_t_frame_modulate(params, &payload);
+    let frame = DvbTFrameMod::new(params).modulate(&payload);
 
     let lead = 128usize;
     let mut buf = vec![C32::default(); lead];
@@ -324,10 +327,11 @@ fn dvb_t_tps_frame_survives_awgn() {
     let sig_power: f32 = frame.iq.iter().map(|s| s.norm_sqr()).sum::<f32>() / frame.iq.len() as f32;
     add_awgn(&mut buf, sig_power * 0.03, 0x0DB7_0777);
 
-    let got = dvb_t_frame_demodulate(params, &buf, frame.n_symbols, payload.len())
+    let got = DvbTFrameDemod::new(params)
+        .decode(&buf, frame.n_symbols, payload.len())
         .expect("DVB-T frame AWGN decode");
     assert_eq!(got.payload, payload);
-    assert_eq!(got.tps.constellation, params.constellation);
+    assert_eq!(got.tps.constellation, params.constellation());
 }
 
 // ── Equalizer channel-reference regression (the TPS-pilot bug) ──────────────
@@ -352,14 +356,16 @@ fn assert_noiseless_equalizer_is_clean(
     use orion_sdr::waveform::dvb_t::{DVB_T_DATA_CARRIERS, DVB_T_N_FFT, ScatteredPilotExtractor};
 
     let params = DvbTFrameParams {
-        guard,
-        constellation,
-        code_rate,
+        link: DvbTLinkParams {
+            guard,
+            constellation,
+            code_rate,
+        },
         frame_number: 0,
         cell_id: 0,
     };
     let payload = sample_payload(184);
-    let frame = dvb_t_frame_modulate(params, &payload);
+    let frame = DvbTFrameMod::new(params).modulate(&payload);
     let n_fft = DVB_T_N_FFT;
     let cp_len = guard.cp_len_2k();
     let sps = n_fft + cp_len;
@@ -457,15 +463,17 @@ fn dvb_t_short_frame_stuffs_all_carriers() {
         (ConstellationOrder::Qam16, PunctureRate::R3_4),
     ] {
         let params = DvbTFrameParams {
-            guard: GuardInterval::G1_8,
-            constellation: const_,
-            code_rate: rate,
+            link: DvbTLinkParams {
+                guard: GuardInterval::G1_8,
+                constellation: const_,
+                code_rate: rate,
+            },
             frame_number: 0,
             cell_id: 0,
         };
         // A tiny payload — far short of the frame, so most of it would be padding.
         let payload = sample_payload(184);
-        let frame = dvb_t_frame_modulate(params, &payload);
+        let frame = DvbTFrameMod::new(params).modulate(&payload);
         let n_fft = DVB_T_N_FFT;
         let cp_len = GuardInterval::G1_8.cp_len_2k();
         let sps = n_fft + cp_len;
@@ -494,7 +502,8 @@ fn dvb_t_short_frame_stuffs_all_carriers() {
         let mut buf = vec![C32::default(); lead];
         buf.extend_from_slice(&frame.iq);
         buf.extend(vec![C32::default(); frame.samples_per_symbol]);
-        let got = dvb_t_frame_demodulate(params, &buf, frame.n_symbols, payload.len())
+        let got = DvbTFrameDemod::new(params)
+            .decode(&buf, frame.n_symbols, payload.len())
             .expect("stuffed short frame decodes");
         assert_eq!(got.payload, payload, "payload recovered through stuffing");
     }
@@ -514,14 +523,16 @@ fn dvb_t_integer_cfo_recovers_known_shift() {
     use orion_sdr::waveform::dvb_t::DVB_T_N_FFT;
 
     let params = DvbTFrameParams {
-        guard: GuardInterval::G1_8,
-        constellation: ConstellationOrder::Qpsk,
-        code_rate: PunctureRate::R1_2,
+        link: DvbTLinkParams {
+            guard: GuardInterval::G1_8,
+            constellation: ConstellationOrder::Qpsk,
+            code_rate: PunctureRate::R1_2,
+        },
         frame_number: 0,
         cell_id: 0,
     };
     let payload = sample_payload(184);
-    let frame = dvb_t_frame_modulate(params, &payload);
+    let frame = DvbTFrameMod::new(params).modulate(&payload);
     let n_fft = DVB_T_N_FFT;
     let cp_len = GuardInterval::G1_8.cp_len_2k();
 
@@ -556,58 +567,51 @@ fn dvb_t_integer_cfo_recovers_known_shift() {
 }
 
 #[test]
-fn dvb_t_integer_cfo_end_to_end() {
-    // Apply a real integer-subcarrier CFO to the whole frame, recover it from the
-    // first symbol, correct, and decode.
+fn dvb_t_integer_cfo_builder_corrects_end_to_end() {
+    // Apply a real integer-subcarrier CFO to the whole frame and prove the demod's
+    // `with_integer_cfo_correction` builder flag toggles internal recovery: OFF
+    // (the default) fails to decode; ON auto-estimates and removes the offset.
     use orion_sdr::dsp::Rotator;
-    use orion_sdr::sync::dvb_t_integer_cfo;
     use orion_sdr::waveform::dvb_t::DVB_T_N_FFT;
 
     let params = DvbTFrameParams {
-        guard: GuardInterval::G1_8,
-        constellation: ConstellationOrder::Qpsk,
-        code_rate: PunctureRate::R1_2,
+        link: DvbTLinkParams {
+            guard: GuardInterval::G1_8,
+            constellation: ConstellationOrder::Qpsk,
+            code_rate: PunctureRate::R1_2,
+        },
         frame_number: 0,
         cell_id: 0,
     };
     let payload = sample_payload(184);
-    let frame = dvb_t_frame_modulate(params, &payload);
+    let frame = DvbTFrameMod::new(params).modulate(&payload);
     let n_fft = DVB_T_N_FFT;
     let cp_len = GuardInterval::G1_8.cp_len_2k();
     let sps = n_fft + cp_len;
     let fs = params.config().fs;
     let bin_hz = fs / n_fft as f32;
 
-    // Apply +5 subcarriers of CFO to the whole frame.
+    // Apply +5 subcarriers of CFO to the whole frame, placed with lead-in.
     let k_true = 5i32;
     let mut shifted = vec![C32::default(); frame.iq.len()];
     Rotator::new(k_true as f32 * bin_hz, fs).rotate_block(&frame.iq, &mut shifted);
+    let mut buf = vec![C32::default(); 200];
+    buf.extend_from_slice(&shifted);
+    buf.extend(vec![C32::default(); sps]);
 
-    // Uncorrected, the batch RX should fail (large CFO breaks the demap).
+    // Flag OFF (default): a large integer CFO breaks the demap.
     assert!(
-        dvb_t_frame_demodulate(params, &shifted, frame.n_symbols, payload.len()).is_err(),
+        DvbTFrameDemod::new(params)
+            .decode(&buf, frame.n_symbols, payload.len())
+            .is_err(),
         "an uncorrected integer CFO must break decode"
     );
 
-    // Estimate the integer CFO from symbol 0 and correct the whole frame.
-    let mut cpr = CyclicPrefixRemove::new(n_fft, cp_len);
-    let mut fft = FftBlock::new(n_fft);
-    let mut time = vec![C32::default(); n_fft];
-    let mut freq = vec![C32::default(); n_fft];
-    cpr.process(&shifted, &mut time);
-    fft.process(&time, &mut freq);
-    let est = dvb_t_integer_cfo(&freq, n_fft, 32).expect("estimate");
-    assert_eq!(est.bins, k_true, "estimated the applied integer CFO");
-
-    let mut corrected = vec![C32::default(); shifted.len()];
-    Rotator::new(-(est.bins as f32) * bin_hz, fs).rotate_block(&shifted, &mut corrected);
-
-    // Place with lead-in and decode.
-    let mut buf = vec![C32::default(); 200];
-    buf.extend_from_slice(&corrected);
-    buf.extend(vec![C32::default(); sps]);
-    let got = dvb_t_frame_demodulate(params, &buf, frame.n_symbols, payload.len())
-        .expect("decode after integer-CFO correction");
+    // Flag ON: the demod estimates and removes the offset internally, then decodes.
+    let got = DvbTFrameDemod::new(params)
+        .with_integer_cfo_correction(true)
+        .decode(&buf, frame.n_symbols, payload.len())
+        .expect("decode with internal integer-CFO correction");
     assert_eq!(got.payload, payload);
 }
 
@@ -620,14 +624,16 @@ fn dvb_t_integer_cfo_survives_awgn() {
     use orion_sdr::waveform::dvb_t::DVB_T_N_FFT;
 
     let params = DvbTFrameParams {
-        guard: GuardInterval::G1_8,
-        constellation: ConstellationOrder::Qpsk,
-        code_rate: PunctureRate::R1_2,
+        link: DvbTLinkParams {
+            guard: GuardInterval::G1_8,
+            constellation: ConstellationOrder::Qpsk,
+            code_rate: PunctureRate::R1_2,
+        },
         frame_number: 0,
         cell_id: 0,
     };
     let payload = sample_payload(184);
-    let frame = dvb_t_frame_modulate(params, &payload);
+    let frame = DvbTFrameMod::new(params).modulate(&payload);
     let n_fft = DVB_T_N_FFT;
     let cp_len = GuardInterval::G1_8.cp_len_2k();
     let sps = n_fft + cp_len;

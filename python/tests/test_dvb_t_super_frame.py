@@ -3,8 +3,8 @@
 """Tests for the DVB-T super-frame and streaming-receiver Python bindings.
 
 All tests are noiseless / synthetic. They exercise the four-frame super-frame
-(dvb_t_super_frame_modulate/demodulate, with the 16-bit cell-id split) and the
-streaming receiver (DvbTFrameStreamDemod feed/flush).
+objects (DvbTSuperFrameMod/DvbTSuperFrameDemod, with the 16-bit cell-id split) and
+the streaming receiver (DvbTFrameStreamDemod feed/flush).
 """
 
 import numpy as np
@@ -38,13 +38,13 @@ def test_super_frame_params_default_cell_id():
 def test_super_frame_roundtrip():
     p = sdr.DvbTSuperFrameParams("1/8", "qpsk", "1/2", cell_id=0xBEEF)
     payload = _payload(700)
-    sf = sdr.dvb_t_super_frame_modulate(p, payload)
+    sf = sdr.DvbTSuperFrameMod(p).modulate(payload)
     assert sf.n_symbols == 4 * sf.symbols_per_frame
     assert sum(sf.frame_payload_lens) == len(payload)
     assert sf.iq.shape == (sf.n_symbols * sf.samples_per_symbol,)
 
-    rx = sdr.dvb_t_super_frame_demodulate(
-        p, sf.iq, sf.symbols_per_frame, sf.frame_payload_lens
+    rx = sdr.DvbTSuperFrameDemod(p).decode(
+        sf.iq, sf.symbols_per_frame, sf.frame_payload_lens
     )
     assert rx.payload == payload.tobytes()
     assert rx.cell_id == 0xBEEF
@@ -54,9 +54,9 @@ def test_super_frame_cell_id_split():
     # A cell id whose two bytes differ, to prove the split/reassembly.
     p = sdr.DvbTSuperFrameParams("1/8", "qam16", "3/4", cell_id=0xABCD)
     payload = _payload(400)
-    sf = sdr.dvb_t_super_frame_modulate(p, payload)
-    rx = sdr.dvb_t_super_frame_demodulate(
-        p, sf.iq, sf.symbols_per_frame, sf.frame_payload_lens
+    sf = sdr.DvbTSuperFrameMod(p).modulate(payload)
+    rx = sdr.DvbTSuperFrameDemod(p).decode(
+        sf.iq, sf.symbols_per_frame, sf.frame_payload_lens
     )
     assert rx.cell_id == 0xABCD
     assert rx.payload == payload.tobytes()
@@ -65,10 +65,10 @@ def test_super_frame_cell_id_split():
 def test_super_frame_demodulate_garbage_raises():
     p = sdr.DvbTSuperFrameParams("1/8", "qpsk", "1/2")
     payload = _payload(400)
-    sf = sdr.dvb_t_super_frame_modulate(p, payload)
+    sf = sdr.DvbTSuperFrameMod(p).modulate(payload)
     with pytest.raises(ValueError):
-        sdr.dvb_t_super_frame_demodulate(
-            p, np.zeros(1000, dtype=np.complex64), sf.symbols_per_frame, sf.frame_payload_lens
+        sdr.DvbTSuperFrameDemod(p).decode(
+            np.zeros(1000, dtype=np.complex64), sf.symbols_per_frame, sf.frame_payload_lens
         )
 
 
@@ -80,7 +80,8 @@ def test_super_frame_demodulate_garbage_raises():
 def _stream_of(params, payloads):
     """Lead-in silence + the frames for `payloads` back to back + trailing
     silence. All frames share a symbol count (equal-size payloads)."""
-    frames = [sdr.dvb_t_frame_modulate(params, pl) for pl in payloads]
+    modulator = sdr.DvbTFrameMod(params)
+    frames = [modulator.modulate(pl) for pl in payloads]
     n = frames[0].n_symbols
     assert all(f.n_symbols == n for f in frames)
     parts = [np.zeros(200, dtype=np.complex64)]

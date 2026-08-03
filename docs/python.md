@@ -743,11 +743,10 @@ cfg = (
 
 The fully **conformant preamble-less DVB-T frame** (TS payload, TPS-on-carriers,
 scattered pilots, guard-interval acquisition — see [dvb.md](dvb.md)) is exposed
-directly through `dvb_t_frame_modulate` / `dvb_t_frame_demodulate`. The
-transmission parameters are a `DvbTFrameParams` (guard interval, constellation,
-and code rate as strings); the RX acquires the frame from its cyclic prefix (no
-preamble) and returns the payload plus the parameters recovered from the TPS
-carriers:
+through the `DvbTFrameMod` / `DvbTFrameDemod` objects. Build each with a
+`DvbTFrameParams` (guard interval, constellation, and code rate as strings); the RX
+acquires the frame from its cyclic prefix (no preamble) and returns the payload
+plus the parameters recovered from the TPS carriers:
 
 ```python
 import numpy as np
@@ -756,7 +755,7 @@ import orion_sdr as sdr
 params = sdr.DvbTFrameParams("1/8", "qpsk", "1/2", frame_number=2, cell_id=0x5A)
 
 payload = np.frombuffer(bytes(range(184)), dtype=np.uint8)   # MPEG-TS payload
-frame = sdr.dvb_t_frame_modulate(params, payload)
+frame = sdr.DvbTFrameMod(params).modulate(payload)
 # frame.iq (complex64), frame.n_symbols, frame.samples_per_symbol
 
 # Place at an unknown offset with lead-in/out silence; the RX GI-acquires it.
@@ -766,7 +765,7 @@ buf = np.concatenate([
     np.zeros(frame.samples_per_symbol, dtype=np.complex64),
 ])
 
-rx = sdr.dvb_t_frame_demodulate(params, buf, frame.n_symbols, len(payload))
+rx = sdr.DvbTFrameDemod(params).decode(buf, frame.n_symbols, len(payload))
 assert rx.payload == payload.tobytes()
 assert rx.tps.constellation == "qpsk" and rx.tps.cell_id == 0x5A
 # rx.tps also carries frame_number, code_rate, and guard.
@@ -774,21 +773,24 @@ assert rx.tps.constellation == "qpsk" and rx.tps.cell_id == 0x5A
 
 Narrowband DVB-T is a pure sample-rate scaling of the fixed 2K structure;
 `nb_bandwidth_fs("333khz" | "1mhz" | "2mhz")` gives the `fs` for each amateur mode
-(`nb_bandwidth_occupied_hz` the nominal channel width). `dvb_t_frame_demodulate`
-raises `ValueError` on an acquisition or decode failure.
+(`nb_bandwidth_occupied_hz` the nominal channel width). `DvbTFrameDemod.decode`
+raises `ValueError` on an acquisition or decode failure. If a capture may carry a
+whole-subcarrier (integer) CFO, build the demod with
+`sdr.DvbTFrameDemod(params).with_integer_cfo_correction(True)` — a link-constant
+flag that removes it internally.
 
 The **super-frame** (four frames with alternating TPS sync + a 16-bit cell id
-split across them) is `dvb_t_super_frame_modulate` / `dvb_t_super_frame_demodulate`.
+split across them) is `DvbTSuperFrameMod` / `DvbTSuperFrameDemod`.
 `DvbTSuperFrameParams` takes the full 16-bit cell id; the RX reassembles it and
 concatenates the four frames' payloads:
 
 ```python
 sp = sdr.DvbTSuperFrameParams("1/8", "qpsk", "1/2", cell_id=0xBEEF)
 payload = np.frombuffer(bytes((i * 37 + 11) & 0xFF for i in range(700)), np.uint8)
-sf = sdr.dvb_t_super_frame_modulate(sp, payload)
+sf = sdr.DvbTSuperFrameMod(sp).modulate(payload)
 # sf.iq, sf.symbols_per_frame, sf.samples_per_symbol, sf.frame_payload_lens
 
-rx = sdr.dvb_t_super_frame_demodulate(sp, sf.iq, sf.symbols_per_frame, sf.frame_payload_lens)
+rx = sdr.DvbTSuperFrameDemod(sp).decode(sf.iq, sf.symbols_per_frame, sf.frame_payload_lens)
 assert rx.payload == payload.tobytes()
 assert rx.cell_id == 0xBEEF
 ```
@@ -796,11 +798,12 @@ assert rx.cell_id == 0xBEEF
 The **streaming receiver** `DvbTFrameStreamDemod` decodes a continuous run of
 frames as their samples arrive (feed/flush, like `OfdmFrameStreamDemod`). Push IQ
 in any chunk sizes; each `feed` returns the frames that completed, `flush` runs a
-final pass:
+final pass. Pass `integer_cfo_correction=True` to the constructor to enable
+internal integer-CFO correction on each frame:
 
 ```python
 fp = sdr.DvbTFrameParams("1/8", "qpsk", "1/2")
-one = sdr.dvb_t_frame_modulate(fp, np.frombuffer(bytes(range(184)), np.uint8))
+one = sdr.DvbTFrameMod(fp).modulate(np.frombuffer(bytes(range(184)), np.uint8))
 stream = np.concatenate(
     [np.zeros(200, np.complex64)]
     + [one.iq, one.iq]                                   # two back-to-back frames
