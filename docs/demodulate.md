@@ -608,5 +608,67 @@ assert_eq!(rx.tps.guard, params.guard);
 ```
 
 This is a batch, single-frame entry point (the buffer holds one whole frame plus
-enough lead-in for the guard-interval search). Multi-frame/super-frame streaming
-and integer-CFO recovery are not yet provided.
+enough lead-in for the guard-interval search). The **super-frame** and
+**streaming** receivers below wrap it. (Only fractional CFO is recovered, from the
+guard interval; integer-CFO recovery is not yet provided.)
+
+### DVB-T super-frame demodulation
+
+`dvb_t_super_frame_demodulate` is the inverse of `modulate::
+dvb_t_super_frame_modulate`: it decodes the four frames, verifies the frame-number
+sequence `0,1,2,3` (which implies the correct alternating TPS sync word),
+reassembles the 16-bit cell id from its byte halves, and concatenates the
+payloads. `symbols_per_frame` and `frame_payload_lens` come from the paired
+modulator's `DvbTSuperFrame`.
+
+```rust
+use orion_sdr::demodulate::dvb_t_super_frame_demodulate;
+# use orion_sdr::modulate::{DvbTSuperFrameParams, dvb_t_super_frame_modulate, ConstellationOrder};
+# use orion_sdr::fec::PunctureRate;
+# use orion_sdr::waveform::dvb_t::GuardInterval;
+# let params = DvbTSuperFrameParams { guard: GuardInterval::G1_8,
+#     constellation: ConstellationOrder::Qpsk, code_rate: PunctureRate::R1_2, cell_id: 0xBEEF };
+# let payload: Vec<u8> = (0..700).map(|i| (i * 37 + 11) as u8).collect();
+# let sf = dvb_t_super_frame_modulate(params, &payload);
+
+let rx = dvb_t_super_frame_demodulate(params, &sf.iq, sf.symbols_per_frame, sf.frame_payload_lens)
+    .expect("super-frame decode");
+assert_eq!(rx.payload, payload);
+assert_eq!(rx.cell_id, 0xBEEF); // reassembled 16-bit cell id
+```
+
+### DVB-T streaming reception (`feed`/`flush`)
+
+`DvbTFrameStreamDemod` decodes a **continuous run of frames** as their samples
+arrive, mirroring `OfdmFrameStreamDemod`. It accumulates IQ across `feed` calls,
+guard-interval-acquires the next frame at the front of the buffer, decodes it,
+drains its samples, and loops — holding a partially-arrived frame until a later
+`feed` completes it. The frame geometry (`n_symbols`, `payload_len`) is fixed at
+construction (as the batch entry point takes it); `feed` is
+chunk-boundary-invariant.
+
+```rust
+use orion_sdr::demodulate::DvbTFrameStreamDemod;
+# use orion_sdr::modulate::{dvb_t_frame_modulate, ConstellationOrder};
+# use orion_sdr::fec::PunctureRate;
+# use orion_sdr::waveform::dvb_t::{DvbTFrameParams, GuardInterval};
+# use num_complex::Complex32 as C32;
+# let params = DvbTFrameParams { guard: GuardInterval::G1_8,
+#     constellation: ConstellationOrder::Qpsk, code_rate: PunctureRate::R1_2,
+#     frame_number: 0, cell_id: 0 };
+# let payload: Vec<u8> = (0..184).map(|i| (i * 37 + 11) as u8).collect();
+# let frame = dvb_t_frame_modulate(params, &payload);
+# let mut stream = vec![C32::default(); 200];
+# stream.extend_from_slice(&frame.iq);
+# stream.extend(vec![C32::default(); frame.samples_per_symbol]);
+
+let mut rx = DvbTFrameStreamDemod::new(params, frame.n_symbols, payload.len());
+let mut frames = Vec::new();
+for chunk in stream.chunks(4096) {
+    // `feed` returns the frames that completed on this call (decode errors are
+    // Err entries; `flush` runs a final pass over the residual buffer).
+    frames.extend(rx.feed(chunk));
+}
+frames.extend(rx.flush());
+assert_eq!(frames.iter().filter(|r| r.is_ok()).count(), 1);
+```

@@ -37,6 +37,9 @@ pub use dvb_t_super_frame::{
     DvbTRxSuperFrame, DvbTRxSuperFrameError, dvb_t_super_frame_demodulate,
 };
 
+pub mod dvb_t_stream;
+pub use dvb_t_stream::DvbTFrameStreamDemod;
+
 pub mod pm;
 pub use pm::PmQuadratureDemod;
 

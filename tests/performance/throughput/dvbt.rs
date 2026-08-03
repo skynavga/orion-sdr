@@ -15,7 +15,9 @@ use super::cofdm::frame_chain_with;
 use super::fec::random_bytes;
 use super::{measure_throughput, minsps_from_env};
 use num_complex::Complex32 as C32;
-use orion_sdr::demodulate::{dvb_t_frame_demodulate, dvb_t_super_frame_demodulate};
+use orion_sdr::demodulate::{
+    DvbTFrameStreamDemod, dvb_t_frame_demodulate, dvb_t_super_frame_demodulate,
+};
 use orion_sdr::fec::PunctureRate as DvbPunctureRate;
 use orion_sdr::modulate::{
     ConstellationOrder, DvbTSuperFrameParams, dvb_t_frame_modulate, dvb_t_super_frame_modulate,
@@ -208,4 +210,53 @@ fn throughput_dvb_t_super_frame() {
     println!("[DVB-T-SuperFrame-Roundtrip] {rt_msps:.4} Msps in {rt_dt:.3}s");
     let floor = minsps_from_env(0.02);
     assert!(mod_msps >= floor && demod_msps >= floor && rt_msps >= floor);
+}
+
+#[test]
+fn throughput_dvb_t_stream_demod() {
+    // The streaming DVB-T receiver (demodulate::dvb_t_stream): a continuous run of
+    // frames pushed through `feed`, which GI-acquires and decodes each frame as its
+    // samples arrive. Measures the decode side (buffer accumulation + repeated GI
+    // search + per-frame drain) over a multi-frame stream; "Msps" is total stream
+    // samples / wall time. The per-frame work is the batch RX's, plus the streaming
+    // buffer management.
+    let params = DvbTFrameParams {
+        guard: GuardInterval::G1_32,
+        constellation: ConstellationOrder::Qpsk,
+        code_rate: DvbPunctureRate::R1_2,
+        frame_number: 0,
+        cell_id: 0,
+    };
+    let payload = random_bytes(184, 0xD7B0);
+    let one = dvb_t_frame_modulate(params, &payload);
+    let n_symbols = one.n_symbols;
+
+    // A stream of NF back-to-back frames, no lead-in (each frame GI-locks at the
+    // front of the residual buffer).
+    const NF: usize = 4;
+    let mut stream: Vec<C32> = Vec::with_capacity(one.iq.len() * NF + one.samples_per_symbol);
+    for _ in 0..NF {
+        stream.extend_from_slice(&one.iq);
+    }
+    stream.extend(vec![C32::default(); one.samples_per_symbol]);
+    let stream_samples = stream.len();
+
+    let repeats = 20; // NF × 68 symbols of 2048-FFT per pass; keep it modest
+
+    let (demod_msps, demod_dt) = measure_throughput(
+        || {
+            let mut rx = DvbTFrameStreamDemod::new(black_box(params), n_symbols, 184);
+            let mut got = rx.feed(black_box(&stream));
+            got.extend(rx.flush());
+            let decoded = got.iter().filter(|r| r.is_ok()).count();
+            assert_eq!(decoded, NF, "stream decoded all frames");
+            black_box(decoded);
+            stream_samples
+        },
+        stream_samples,
+        repeats,
+    );
+    println!("[DVB-T-Stream-Demod] {demod_msps:.4} Msps in {demod_dt:.3}s");
+    let floor = minsps_from_env(0.02);
+    assert!(demod_msps >= floor);
 }

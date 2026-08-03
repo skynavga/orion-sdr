@@ -30,11 +30,16 @@ their generic modules and are configured/called by the DVB-T code.
 | Signalling | — (no generic equivalent) | `waveform::dvb_t_tps` (TPS + GF(2^7) BCH) |
 | Acquisition | `sync::dvb_t_gi_sync` (generic CP estimator) | called with the 2K `(n_fft, cp_len)` |
 | Frame assembly | `encode_chain`/`decode_chain` | `{modulate,demodulate}::dvb_t_frame` |
+| Super-frame | — (orchestrates the above) | `{modulate,demodulate}::dvb_t_super_frame` |
+| Streaming RX | `OfdmFrameStreamDemod` (feed/flush template) | `demodulate::dvb_t_stream` |
 
 The **frame assemblers are direction-split** to match the crate convention:
 `modulate::dvb_t_frame` (TX) and `demodulate::dvb_t_frame` (RX), sharing
 `DvbTFrameParams` and the FEC constants from `waveform::dvb_t` — the same way
-`{modulate,demodulate}::ofdm_frame` split while sharing `Mcs`/`BlockPlan`.
+`{modulate,demodulate}::ofdm_frame` split while sharing `Mcs`/`BlockPlan`. Two
+higher layers orchestrate the single frame: `{modulate,demodulate}::
+dvb_t_super_frame` (the four-frame super-frame) and `demodulate::dvb_t_stream` (a
+`feed`/`flush` receiver over a continuous frame run) — see **Frame transport**.
 
 ## 2K numerology (fixed)
 
@@ -151,6 +156,36 @@ conformant `DvbTps` frame is emitted/decoded by `{modulate,demodulate}::
 dvb_t_frame`, not the generic `OfdmFrameMod` (which is preamble + OrionSdr
 oriented).
 
+## Frame transport
+
+Three layers assemble the on-air stream, each over the one below:
+
+- **Single frame** — `{modulate,demodulate}::dvb_t_frame` (above). One 68-symbol
+  frame carrying a TS payload; a short payload is null-packet-stuffed so every
+  carrier is filled. `dvb_t_frame_modulate` returns the IQ plus `n_symbols` /
+  `samples_per_symbol`; `dvb_t_frame_demodulate` GI-acquires it at an unknown
+  offset and recovers the payload + TPS word.
+- **Super-frame** — `{modulate,demodulate}::dvb_t_super_frame` sequences **four**
+  consecutive frames (numbers 0–3) with the standard's super-frame structure: the
+  TPS sync word alternates each frame (frames 1 & 3 use `TPS_SYNC_WORD_13`, 2 & 4
+  use `TPS_SYNC_WORD_24`, §4.6.2.2), the **16-bit** cell id is split across the
+  frames (b15..b8 in 1 & 3, b7..b0 in 2 & 4, §4.6.2.10) and reassembled on RX, and
+  the frame-number sequence `0,1,2,3` is verified. `DvbTSuperFrameParams` carries
+  the full 16-bit cell id; the payload is split into four parts and the RX trims
+  each back and concatenates them. Each frame codes its own part independently;
+  the standard's byte-continuous stream (§4.7 Table 16 — an RS packet may straddle
+  a frame boundary for rates whose per-frame count is fractional, e.g. QPSK r3/4
+  = 94.5 packets/frame) is a continuous-FEC refinement left to a future streaming
+  super-frame path.
+- **Streaming RX** — `demodulate::dvb_t_stream::DvbTFrameStreamDemod` is a
+  `feed`/`flush` receiver over a continuous run of frames, mirroring
+  `OfdmFrameStreamDemod`: it accumulates IQ, GI-acquires the next frame at the
+  front of the buffer, decodes it, drains its samples, and loops — holding a
+  partially-arrived frame until a later `feed` completes it. The frame geometry
+  (`n_symbols`, `payload_len`) is fixed at construction, exactly as the batch
+  entry point takes it; `feed` is chunk-boundary-invariant (chunked input decodes
+  identically to one-shot).
+
 ## Conformance and testing
 
 **Spec-exact + self-verified**: every stage is bit-exact to EN 300 744 where a
@@ -162,5 +197,8 @@ into a preamble-less frame, GI-acquires it at an unknown offset, and recovers
 both the payload and every TPS-signalled parameter; `dvb_t_tps_frame_survives_
 awgn` repeats it through AWGN. Scattered-pilot channel tracking is proven
 load-bearing by a multipath pair (decodes with scattered pilots, fails on
-continual-only). External-IQ validation against published captures is an
-opportunistic, non-CI-gating follow-up.
+continual-only). The super-frame and streaming layers have their own roundtrips:
+`roundtrip_dvb_t_super_frame_end_to_end` (payload + 16-bit cell id + frame
+sequence) and the `dvb_t_stream_*` suite (chunk-boundary-invariance, a continuous
+multi-frame run, partial-frame holding). External-IQ validation against published
+captures is an opportunistic, non-CI-gating follow-up.

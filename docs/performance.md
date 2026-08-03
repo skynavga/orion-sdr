@@ -513,6 +513,20 @@ multi-frame sequencing and cross-frame checks (frame-number sequence, cell-id
 reassembly), which are negligible next to the per-frame FFT/FEC/equalize work — so
 its throughput tracks the conformant single frame's, with no new bottleneck.
 
+### DVB-T streaming receiver (4-frame stream, feed/flush, 20 passes)
+
+The streaming receiver (`demodulate::dvb_t_stream`, `feed`/`flush`) decoding a
+continuous run of frames: it accumulates IQ, guard-interval-acquires the next
+frame at the front of the buffer, decodes it, and drains its samples.
+
+| Path | Msps |
+| --- | ---: |
+| streaming demodulate (feed → decode → drain) | ~12 |
+
+Slightly below the batch conformant demodulate (~13): the per-frame decode work
+is identical, and the small gap is the streaming buffer management — the repeated
+front-of-buffer GI search and the per-frame `drain` of consumed samples.
+
 ### DVB-T conformant frame, decode-vs-SNR (GI 1/8, 30 trials/point)
 
 Frame-decode success and post-decode payload BER vs. per-sample SNR, for the

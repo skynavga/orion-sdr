@@ -777,6 +777,46 @@ Narrowband DVB-T is a pure sample-rate scaling of the fixed 2K structure;
 (`nb_bandwidth_occupied_hz` the nominal channel width). `dvb_t_frame_demodulate`
 raises `ValueError` on an acquisition or decode failure.
 
+The **super-frame** (four frames with alternating TPS sync + a 16-bit cell id
+split across them) is `dvb_t_super_frame_modulate` / `dvb_t_super_frame_demodulate`.
+`DvbTSuperFrameParams` takes the full 16-bit cell id; the RX reassembles it and
+concatenates the four frames' payloads:
+
+```python
+sp = sdr.DvbTSuperFrameParams("1/8", "qpsk", "1/2", cell_id=0xBEEF)
+payload = np.frombuffer(bytes((i * 37 + 11) & 0xFF for i in range(700)), np.uint8)
+sf = sdr.dvb_t_super_frame_modulate(sp, payload)
+# sf.iq, sf.symbols_per_frame, sf.samples_per_symbol, sf.frame_payload_lens
+
+rx = sdr.dvb_t_super_frame_demodulate(sp, sf.iq, sf.symbols_per_frame, sf.frame_payload_lens)
+assert rx.payload == payload.tobytes()
+assert rx.cell_id == 0xBEEF
+```
+
+The **streaming receiver** `DvbTFrameStreamDemod` decodes a continuous run of
+frames as their samples arrive (feed/flush, like `OfdmFrameStreamDemod`). Push IQ
+in any chunk sizes; each `feed` returns the frames that completed, `flush` runs a
+final pass:
+
+```python
+fp = sdr.DvbTFrameParams("1/8", "qpsk", "1/2")
+one = sdr.dvb_t_frame_modulate(fp, np.frombuffer(bytes(range(184)), np.uint8))
+stream = np.concatenate(
+    [np.zeros(200, np.complex64)]
+    + [one.iq, one.iq]                                   # two back-to-back frames
+    + [np.zeros(one.samples_per_symbol, np.complex64)]
+)
+
+rx = sdr.DvbTFrameStreamDemod(fp, one.n_symbols, 184)
+frames = []
+for chunk in np.array_split(stream, 5):                 # arbitrary chunking
+    frames += rx.feed(np.ascontiguousarray(chunk))
+frames += rx.flush()
+assert len(frames) == 2
+# frames[k].payload / .tps; rx.buffered is the residual sample count;
+# rx.feed_with_errors(...) surfaces decode failures as (frame_or_None, err_or_None).
+```
+
 ## Notes
 
 - All `process()` calls are synchronous and hold the GIL. For high-throughput pipelines,

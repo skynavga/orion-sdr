@@ -1060,3 +1060,98 @@ def nb_bandwidth_fs(mode: str) -> float:
 def nb_bandwidth_occupied_hz(mode: str) -> float:
     """Nominal occupied RF bandwidth (Hz) for a narrowband DVB-T mode."""
     ...
+
+# ---------------------------------------------------------------------------
+# Conformant DVB-T super-frame (four frames) and streaming receiver
+# ---------------------------------------------------------------------------
+
+class DvbTSuperFrameParams:
+    """Transmission parameters for a conformant DVB-T super-frame. Like
+    ``DvbTFrameParams`` but with the full 16-bit cell id (split across the four
+    frames)."""
+
+    def __init__(
+        self,
+        guard: str,
+        constellation: str,
+        code_rate: str,
+        cell_id: int = 0,
+    ) -> None: ...
+    @property
+    def guard(self) -> str: ...
+    @property
+    def constellation(self) -> str: ...
+    @property
+    def code_rate(self) -> str: ...
+    @property
+    def cell_id(self) -> int: ...
+
+class DvbTSuperFrame:
+    """A modulated DVB-T super-frame: the IQ of four consecutive frames plus the
+    numerology to re-slice them."""
+
+    @property
+    def iq(self) -> NDArray[np.complex64]: ...
+    @property
+    def symbols_per_frame(self) -> int: ...
+    @property
+    def samples_per_symbol(self) -> int: ...
+    @property
+    def frame_payload_lens(self) -> list[int]: ...
+    @property
+    def n_symbols(self) -> int: ...
+
+class DvbTRxSuperFrame:
+    """The recovered contents of a DVB-T super-frame: concatenated payload and the
+    reassembled 16-bit cell id."""
+
+    @property
+    def payload(self) -> bytes: ...
+    @property
+    def cell_id(self) -> int: ...
+
+def dvb_t_super_frame_modulate(
+    params: DvbTSuperFrameParams, payload: NDArray[np.uint8]
+) -> DvbTSuperFrame:
+    """Modulate *payload* into one conformant DVB-T super-frame (four frames,
+    alternating TPS sync + a 16-bit cell id split across them)."""
+    ...
+
+def dvb_t_super_frame_demodulate(
+    params: DvbTSuperFrameParams,
+    iq: NDArray[np.complex64],
+    symbols_per_frame: int,
+    frame_payload_lens: list[int],
+) -> DvbTRxSuperFrame:
+    """Demodulate one conformant DVB-T super-frame, verifying the frame-number
+    sequence 0,1,2,3 and reassembling the 16-bit cell id. *symbols_per_frame* and
+    *frame_payload_lens* come from the paired ``dvb_t_super_frame_modulate``
+    result. Raises ``ValueError`` on failure.
+    """
+    ...
+
+class DvbTFrameStreamDemod:
+    """Streaming DVB-T receiver. Push IQ with ``feed()``; it guard-interval-
+    acquires and decodes each fixed-size frame as its samples arrive, returning
+    the completed ones. ``flush()`` runs a final pass over the residual buffer.
+    """
+
+    def __init__(
+        self, params: DvbTFrameParams, n_symbols: int, payload_len: int
+    ) -> None: ...
+    def feed(self, iq: NDArray[np.complex64]) -> list[DvbTRxFrame]:
+        """Feed IQ; return the frames that completed. Failed decodes are omitted
+        (see ``feed_with_errors``)."""
+        ...
+    def feed_with_errors(
+        self, iq: NDArray[np.complex64]
+    ) -> list[tuple[DvbTRxFrame | None, str | None]]:
+        """Like ``feed``, but each result is ``(frame_or_None, error_or_None)`` so
+        decode failures are observable."""
+        ...
+    def flush(self) -> list[DvbTRxFrame]:
+        """Run a final decode pass over the residual buffer."""
+        ...
+    @property
+    def buffered(self) -> int: ...
+    def clear(self) -> None: ...

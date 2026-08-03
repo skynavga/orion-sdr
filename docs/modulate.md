@@ -472,3 +472,37 @@ let frame = dvb_t_frame_modulate(params, &payload);
 // `NbBandwidth::Bw1MHz.fs()` as the DAC/resampler rate.
 let _fs = NbBandwidth::Bw1MHz.fs();
 ```
+
+## DVB-T Super-Frame Modulator (four frames)
+
+`dvb_t_super_frame_modulate` sequences **four** consecutive conformant frames
+into one super-frame (§4.4/§4.6): the TPS sync word alternates each frame, the
+16-bit cell id is split across them (b15..b8 in frames 1 & 3, b7..b0 in 2 & 4),
+and the frame number counts 0..3. It drives the single-frame modulator above; the
+RX is `demodulate::dvb_t_super_frame_demodulate`. See [dvb.md](dvb.md) (Frame
+transport) for the structure.
+
+```rust
+use orion_sdr::{
+    fec::PunctureRate,
+    modulate::{ConstellationOrder, DvbTSuperFrameParams, dvb_t_super_frame_modulate},
+    waveform::dvb_t::GuardInterval,
+};
+
+// Like DvbTFrameParams, but with the FULL 16-bit cell id (split across frames).
+let params = DvbTSuperFrameParams {
+    guard: GuardInterval::G1_8,
+    constellation: ConstellationOrder::Qpsk,
+    code_rate: PunctureRate::R1_2,
+    cell_id: 0xBEEF,
+};
+
+// The payload is split into four contiguous parts, one per frame.
+let payload: Vec<u8> = (0..700).map(|i| (i * 37 + 11) as u8).collect();
+let sf = dvb_t_super_frame_modulate(params, &payload);
+
+// `sf.iq` is the four frames concatenated; `sf.symbols_per_frame` /
+// `sf.samples_per_symbol` and `sf.frame_payload_lens` (the per-frame byte counts)
+// are what the RX needs to re-slice and trim.
+let _n_symbols = sf.n_symbols(); // 4 · symbols_per_frame
+```
