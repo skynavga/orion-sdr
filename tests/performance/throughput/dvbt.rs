@@ -15,16 +15,19 @@ use super::cofdm::frame_chain_with;
 use super::fec::random_bytes;
 use super::{measure_throughput, minsps_from_env};
 use num_complex::Complex32 as C32;
+use orion_sdr::core::Block;
 use orion_sdr::demodulate::{
     DvbTFrameStreamDemod, dvb_t_frame_demodulate, dvb_t_super_frame_demodulate,
 };
+use orion_sdr::dsp::Rotator;
 use orion_sdr::fec::PunctureRate as DvbPunctureRate;
 use orion_sdr::modulate::{
     ConstellationOrder, DvbTSuperFrameParams, dvb_t_frame_modulate, dvb_t_super_frame_modulate,
 };
-use orion_sdr::sync::OfdmPreamble;
+use orion_sdr::multicarrier::{CyclicPrefixRemove, FftBlock};
+use orion_sdr::sync::{OfdmPreamble, dvb_t_integer_cfo};
 use orion_sdr::waveform::dvb_t::{
-    DvbTFrameParams, GuardInterval, NbBandwidth, dvb_t_config, dvb_t_mcs_table,
+    DVB_T_N_FFT, DvbTFrameParams, GuardInterval, NbBandwidth, dvb_t_config, dvb_t_mcs_table,
 };
 use std::hint::black_box;
 
@@ -259,4 +262,78 @@ fn throughput_dvb_t_stream_demod() {
     println!("[DVB-T-Stream-Demod] {demod_msps:.4} Msps in {demod_dt:.3}s");
     let floor = minsps_from_env(0.02);
     assert!(demod_msps >= floor);
+}
+
+#[test]
+fn throughput_dvb_t_integer_cfo() {
+    // Cost of the OPT-IN integer-CFO correction a caller adds ahead of decode:
+    // FFT one symbol → continual-pilot search (`dvb_t_integer_cfo`) → rotate the
+    // whole frame by the estimate → decode. Reported as (a) baseline decode and
+    // (b) estimate + full-buffer rotate + decode, so the delta is the added cost.
+    let params = DvbTFrameParams {
+        guard: GuardInterval::G1_32,
+        constellation: ConstellationOrder::Qpsk,
+        code_rate: DvbPunctureRate::R1_2,
+        frame_number: 0,
+        cell_id: 0,
+    };
+    let payload = random_bytes(184, 0xD7B0);
+    let frame = dvb_t_frame_modulate(params, &payload);
+    let n_fft = DVB_T_N_FFT;
+    let cp_len = GuardInterval::G1_32.cp_len_2k();
+    let sps = n_fft + cp_len;
+    let fs = params.config().fs;
+    let frame_samples = frame.iq.len();
+    let n_symbols = frame.n_symbols;
+
+    // Lead-in silence so the RX must GI-acquire.
+    let mut buf = vec![C32::default(); 200];
+    buf.extend_from_slice(&frame.iq);
+    buf.extend(vec![C32::default(); sps]);
+
+    let repeats = 50;
+
+    // (a) Baseline: decode only.
+    let (base_msps, base_dt) = measure_throughput(
+        || {
+            let got = dvb_t_frame_demodulate(black_box(params), black_box(&buf), n_symbols, 184)
+                .expect("decode");
+            black_box(got.payload[0]);
+            frame_samples
+        },
+        frame_samples,
+        repeats,
+    );
+    println!("[DVB-T-IntCFO-Baseline] {base_msps:.4} Msps in {base_dt:.3}s");
+
+    // (b) Integer-CFO-corrected: estimate from symbol 0, rotate the whole buffer,
+    //     then decode.
+    let mut cpr = CyclicPrefixRemove::new(n_fft, cp_len);
+    let mut fft = FftBlock::new(n_fft);
+    let (cfo_msps, cfo_dt) = measure_throughput(
+        || {
+            let mut time = vec![C32::default(); n_fft];
+            let mut freq = vec![C32::default(); n_fft];
+            cpr.process(black_box(&buf[200..]), &mut time);
+            fft.process(&time, &mut freq);
+            let est = dvb_t_integer_cfo(&freq, n_fft, 32).expect("estimate");
+            let bin_hz = fs / n_fft as f32;
+            let mut corrected = vec![C32::default(); buf.len()];
+            Rotator::new(-(est.bins as f32) * bin_hz, fs).rotate_block(&buf, &mut corrected);
+            let got =
+                dvb_t_frame_demodulate(black_box(params), black_box(&corrected), n_symbols, 184)
+                    .expect("decode");
+            black_box(got.payload[0]);
+            frame_samples
+        },
+        frame_samples,
+        repeats,
+    );
+    println!("[DVB-T-IntCFO-Corrected] {cfo_msps:.4} Msps in {cfo_dt:.3}s");
+    let overhead = (cfo_dt / base_dt - 1.0) * 100.0; // >0 means corrected is slower
+    println!(
+        "[DVB-T-IntCFO-Overhead] {overhead:.1}% (baseline {base_msps:.2} -> corrected {cfo_msps:.2} Msps)"
+    );
+    let floor = minsps_from_env(0.02);
+    assert!(base_msps >= floor && cfo_msps >= floor);
 }

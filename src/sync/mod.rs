@@ -22,8 +22,8 @@ pub mod waterfall;
 
 pub use costas::Candidate;
 pub use dvb_t_gi_sync::{
-    GiSyncConfig, GiSyncResult, dvb_t_gi_refine, dvb_t_gi_refine_with, dvb_t_gi_sync,
-    dvb_t_gi_sync_with,
+    GiSyncConfig, GiSyncResult, IntegerCfoResult, dvb_t_gi_refine, dvb_t_gi_refine_with,
+    dvb_t_gi_sync, dvb_t_gi_sync_with, dvb_t_integer_cfo,
 };
 pub use ft4_sync::{Ft4SyncResult, ft4_sync};
 pub use ft8_sync::{Ft8SyncResult, ft8_sync};

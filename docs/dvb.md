@@ -140,8 +140,28 @@ prefix using the **van de Beek ML estimator**: it maximizes `Λ(d) = |γ(d)| −
 strict single-symbol estimator; the default bounds coherent accumulation to a
 few symbols (gr-dtv-style) to sharpen a batch lock while staying robust to
 residual CFO (coherent summation over many symbols cancels under CFO). This
-estimator is generic (any CP-based OFDM waveform can call it); integer-CFO and
-frame lock come from the scattered pilots + TPS downstream.
+estimator is generic (any CP-based OFDM waveform can call it); frame/super-frame
+lock comes from the TPS word (frame number + alternating sync).
+
+**Integer CFO.** The guard-interval estimator resolves the CFO only within ±½ a
+subcarrier; a real front end can be off by whole subcarriers, which slides the
+entire spectrum by that integer `k`. `sync::dvb_t_integer_cfo` recovers `k` from
+the **45 continual pilots** — they sit at fixed carrier positions on every symbol
+(§4.5.4) and are boosted (16/9 power), so after fractional correction and symbol
+alignment it FFTs a symbol and, for each trial shift `k ∈ [−max, max]`, sums the
+energy landing at the continual-pilot bins shifted by `k`; the maximizing `k` is
+the integer CFO. This is the DVB-T-native counterpart to the OFDM preamble path's
+training-symbol integer-CFO recovery, which a preamble-less frame cannot use. It
+is **opt-in**: the estimator returns `k` (and a confidence ratio) and the caller
+rotates the buffer by `−k·fs/n_fft` before decoding — it is not wired into
+`dvb_t_frame_demodulate`, since a clean link needs no correction and mirroring the
+generic `OfdmSyncResult::integer_cfo_bins` "estimate-then-correct" split keeps the
+common no-offset path free. (Measured, the estimate + correction is within
+run-to-run noise of the decode cost even when run on every frame.) The pilot peak
+is modest — 45 of 1705 carriers, boosted only ~1.78× — so the winning shift sits
+~1.7× above the all-shifts mean; accumulating the pilot energy over several
+symbols (sum `|X|²` per bin) firms it up under noise. See
+[demodulate.md](demodulate.md) for the opt-in usage.
 
 ## Header formats
 
