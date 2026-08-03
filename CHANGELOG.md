@@ -9,6 +9,28 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.53] - 2026-08-03
+
+COFDM Phase 6: replaces the batch COFDM frame demodulator free function with a
+stateful `OfdmFrameDemod` object, the exact counterpart of `OfdmFrameMod`. This
+was the crate's last mod/demod free-function outlier — with it converted, every
+waveform's modulator and demodulator paths (batch and streaming) are objects. It
+is an API-shape change; the object bodies are the former free-function body
+verbatim, so decoded output is byte-identical, and throughput is unchanged
+(measured neutral vs. the free function).
+
+### Changed
+
+- **Breaking:** the batch COFDM frame demodulator is now an object.
+  `demodulate_frame(&cfg, &table, iq, cache)` becomes
+  `OfdmFrameDemod::new(cfg, table).decode(iq)`; the former optional
+  `Option<&CodecCache>` argument becomes the object's owned `Arc<CodecCache>`,
+  built by `new` or shared with a modulator via
+  `OfdmFrameDemod::with_cache(cfg, table, cache)` — the same construction pattern
+  `OfdmFrameMod` and `OfdmFrameStreamDemod` already use. The Python binding is
+  rebound as an `OfdmFrameDemod` class (the `cache=` keyword moves from the call
+  to the constructor).
+
 ## [0.0.52] - 2026-08-03
 
 NB-DVB-T Phase 5: replaces the DVB-T batch frame and super-frame free functions
