@@ -476,44 +476,43 @@ signalling, and guard-interval acquisition on RX.
 
 | Path | Msps |
 | --- | ---: |
-| modulate | ~75 |
-| demodulate (incl. GI acquisition) | ~4.0 |
+| modulate | ~90 |
+| demodulate (incl. GI acquisition) | ~13 |
 
-Decode is ~30% slower than the generic 2K frame layer (~5.7 → ~4.0 Msps): the
-conformant RX adds per-symbol scattered-pilot equalization, DVB-T-exact soft
-LLRs, TPS DBPSK recovery, and the guard-interval correlation search. All are
-correctness-first, not yet optimized.
+The conformant RX adds per-symbol scattered-pilot equalization, DVB-T-exact soft
+LLRs, TPS DBPSK recovery, and the guard-interval correlation search on top of the
+FFT chain. The per-symbol pilot interpolation is the dominant RX cost: it locates
+each data carrier's bracketing pilots by binary search over the sorted pilot set
+(O(data·log pilots) per symbol, for 1512 data carriers × ~176 reference pilots)
+and reuses its ratio scratch buffer across symbols, so the estimate costs a
+fraction of the FFT rather than an O(data·pilots) scan.
 
 ### DVB-T conformant frame, decode-vs-SNR (GI 1/8, 30 trials/point)
 
 Frame-decode success and post-decode payload BER vs. per-sample SNR, for the
-conformant frame. QPSK r1/2 and 16-QAM r3/4 payloads, both padded to a full
-68-symbol TPS frame.
+conformant frame. QPSK r1/2 and 16-QAM r3/4 payloads.
 
 | SNR (dB) | QPSK r1/2 decode% | 16-QAM r3/4 decode% |
 | ---: | ---: | ---: |
-| 6 | 10% | 7% |
-| 8 | 17% | 97% |
-| 10 | 20% | 100% |
-| 12 | 37% | 100% |
-| 15 | 77% | 100% |
+| 0 | 100% | 0% |
+| 4 | 100% | 0% |
+| 6 | 100% | 67% |
+| 8 | 100% | 100% |
+| 10 | 100% | 100% |
 
 Payload BER is 0 whenever a frame decodes at all (the FEC either clears the
-channel or the frame fails as a unit). **Known limitation — the curves are
-erratic and NOT ordered by nominal robustness** (QPSK r1/2, the *more* redundant
-config, trails 16-QAM r3/4). Root cause, isolated by diagnostics (it is **not**
-acquisition — GI-sync locks the exact symbol offset 30/30 at these SNRs — and
-**not** a QPSK bug): a small payload is padded to the full 68-symbol frame, so
-the real coded data occupies only **~5–13 of 68 symbols** (the rest are zero).
-With so few data-bearing symbols, the per-symbol scattered-pilot equalizer's
-**band-edge residual** (data carriers beyond the outermost scattered pilot hold
-the nearest pilot's estimate — a documented Phase-2 limitation) can spoil a
-whole decode, and the outcome is dominated by which few symbols got an unlucky
-noise draw. Candidate fixes (a dedicated optimization pass): **multi-codeword
-frame packing** so the payload fills the frame instead of padding it, and/or an
-**MMSE / band-edge-aware equalizer**. At a longer guard interval (GI 1/8,
-cp_len = 256) both configs reach a clean waterfall (16-QAM: 97% at 8 dB, 100% by
-10 dB); the effect is worst at the short GI 1/32 CP.
+channel or the frame fails as a unit). The waterfall is ordered by nominal
+robustness: the redundant QPSK r1/2 config locks from the bottom of the sweep,
+while the denser 16-QAM r3/4 needs ~8 dB.
+
+Channel estimation excludes the 17 TPS carriers from the equalizer's pilot
+reference set: the modulator transmits data-power DBPSK on them, not the boosted
+`w_k` pilot value the grid records, so using them as references would divide the
+received cell by the wrong known value and corrupt the interpolated estimate on
+the data carriers straddling each TPS carrier. The equalizer interpolates its
+estimate across the TPS bins from the true continual + scattered pilots instead;
+the noiseless correctness guard is
+`roundtrip::dvb_t::dvb_t_equalizer_noiseless_clean_*`.
 
 ## Running the Benchmarks
 

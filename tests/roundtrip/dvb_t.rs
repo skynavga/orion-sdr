@@ -329,3 +329,112 @@ fn dvb_t_tps_frame_survives_awgn() {
     assert_eq!(got.payload, payload);
     assert_eq!(got.tps.constellation, params.constellation);
 }
+
+// ── Equalizer channel-reference regression (the TPS-pilot bug) ──────────────
+//
+// Guards a subtle correctness property: the RX scattered-pilot equalizer must NOT
+// use the 17 TPS carriers as channel references. The modulator transmits data-
+// power DBPSK (±1.0) on the TPS bins, but the grid records them as boosted `w_k`
+// pilots (±4/3); feeding them to the estimator would yield `h = ±1.0/±4/3 = ∓0.75`
+// (wrong magnitude AND sign), which `interpolate_at` then smears onto the ~3 data
+// carriers straddling each TPS carrier — a deterministic, SNR-invariant pre-FEC
+// error floor. A payload-only decode assertion at zero noise can pass on a thin
+// single-codeword RS margin without exercising this, so the test checks the
+// equalizer directly: noiselessly, every EQUALIZED data carrier must equal the
+// transmitted one (pre-FEC coded-bit error exactly zero) — for both a robust and a
+// dense config, at every guard interval.
+fn assert_noiseless_equalizer_is_clean(
+    constellation: ConstellationOrder,
+    code_rate: PunctureRate,
+    guard: GuardInterval,
+) {
+    use orion_sdr::demodulate::ofdm::{EqualizerMethod, OfdmEqualizer};
+    use orion_sdr::waveform::dvb_t::{DVB_T_DATA_CARRIERS, DVB_T_N_FFT, ScatteredPilotExtractor};
+
+    let params = DvbTFrameParams {
+        guard,
+        constellation,
+        code_rate,
+        frame_number: 0,
+        cell_id: 0,
+    };
+    let payload = sample_payload(184);
+    let frame = dvb_t_frame_modulate(params, &payload);
+    let n_fft = DVB_T_N_FFT;
+    let cp_len = guard.cp_len_2k();
+    let sps = n_fft + cp_len;
+
+    // Reconstruct each symbol's transmitted frequency-domain data carriers by
+    // re-running the mapper isn't necessary: the transmitted data-carrier values
+    // are recoverable by FFT-ing each TX symbol (noiseless) and gathering the data
+    // bins. Compare those against the RX equalizer's output over a NOISELESS
+    // channel — they must match to floating-point precision.
+    let mut tx_cpr = CyclicPrefixRemove::new(n_fft, cp_len);
+    let mut tx_fft = FftBlock::new(n_fft);
+    let mut tx_time = vec![C32::default(); n_fft];
+    let mut tx_freq = vec![C32::default(); n_fft];
+
+    let mut ext = ScatteredPilotExtractor::new(guard);
+    let mut tx_ext = ScatteredPilotExtractor::new(guard); // phase-tracks the TX gather
+    let base = params.config();
+    let mut eq = OfdmEqualizer::new(&base, EqualizerMethod::PerSymbolPilotInterp);
+    let mut rx_cpr = CyclicPrefixRemove::new(n_fft, cp_len);
+    let mut rx_fft = FftBlock::new(n_fft);
+    let mut rx_time = vec![C32::default(); n_fft];
+    let mut rx_freq = vec![C32::default(); n_fft];
+    let mut equalized = vec![C32::default(); n_fft];
+    let mut rx_data = vec![C32::default(); DVB_T_DATA_CARRIERS];
+    let mut tx_data = vec![C32::default(); DVB_T_DATA_CARRIERS];
+
+    let mut max_err = 0.0f32;
+    for s in 0..frame.n_symbols {
+        let off = s * sps;
+        // TX truth: FFT the noiseless transmitted symbol, gather its data bins.
+        tx_cpr.process(&frame.iq[off..], &mut tx_time);
+        tx_fft.process(&tx_time, &mut tx_freq);
+        tx_ext.extract_symbol(&tx_freq, &mut tx_data);
+        // RX: same noiseless samples through CP-remove → FFT → equalize → extract.
+        rx_cpr.process(&frame.iq[off..], &mut rx_time);
+        rx_fft.process(&rx_time, &mut rx_freq);
+        let pilots = ext.current_pilot_bins().to_vec();
+        let data_bins = ext.data_bins().to_vec();
+        eq.set_pilot_bins(&pilots, &data_bins);
+        eq.process(&rx_freq, &mut equalized);
+        ext.extract_symbol(&equalized, &mut rx_data);
+        for (a, b) in rx_data.iter().zip(tx_data.iter()) {
+            max_err = max_err.max((a - b).norm());
+        }
+    }
+    // Flat unit channel: the equalizer divides by h≈1, so equalized == transmitted
+    // to float precision. A TPS carrier admitted as a channel reference instead
+    // corrupts the estimate on its neighbours by order-1 (the bogus ratio, or a
+    // near-null blow-up through EQUALIZER_FLOOR), so 1e-3 cleanly separates the two.
+    assert!(
+        max_err < 1e-3,
+        "noiseless equalized data carriers must equal transmitted ({constellation:?} {code_rate:?} {guard:?}): max |Δ| = {max_err}"
+    );
+}
+
+#[test]
+fn dvb_t_equalizer_noiseless_clean_qpsk() {
+    for guard in [
+        GuardInterval::G1_32,
+        GuardInterval::G1_16,
+        GuardInterval::G1_8,
+        GuardInterval::G1_4,
+    ] {
+        assert_noiseless_equalizer_is_clean(ConstellationOrder::Qpsk, PunctureRate::R1_2, guard);
+    }
+}
+
+#[test]
+fn dvb_t_equalizer_noiseless_clean_qam16() {
+    for guard in [
+        GuardInterval::G1_32,
+        GuardInterval::G1_16,
+        GuardInterval::G1_8,
+        GuardInterval::G1_4,
+    ] {
+        assert_noiseless_equalizer_is_clean(ConstellationOrder::Qam16, PunctureRate::R3_4, guard);
+    }
+}

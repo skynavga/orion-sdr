@@ -498,17 +498,39 @@ pub fn dvb_t_2k_plans(guard: GuardInterval) -> [CarrierPlan; DVB_T_SCATTERED_PHA
 /// mapper and RX extractor. `l = 0` is defined at the first frame symbol (the
 /// caller [`reset`](Self::reset)s per frame), matching the scattered-pilot phase
 /// `l mod 4`.
+///
+/// Each grid reserves the 17 TPS carriers as pilots (so they are non-data and the
+/// 1512-data invariant holds), but the TPS bins are **not** channel-estimation
+/// references: the modulator overwrites them with data-power DBPSK cells, not the
+/// boosted `w_k` pilot value the grid records. `ref_pilots` therefore holds each
+/// phase's channel-reference pilots — the continual + scattered pilots **only**,
+/// with the 17 TPS bins removed — for the RX equalizer to interpolate the channel
+/// from. Feeding TPS bins to the estimator instead would divide the transmitted
+/// ±1.0 DBPSK cell by the grid's ±4/3 known value, yielding a bogus `h = ∓0.75`
+/// that smears onto the data carriers straddling each TPS carrier.
 #[derive(Debug, Clone)]
 struct ScatteredGridCycle {
     grids: [CarrierGrid; DVB_T_SCATTERED_PHASES],
+    /// Per-phase channel-reference pilots: grid pilots minus the TPS bins.
+    ref_pilots: [Vec<(usize, C32)>; DVB_T_SCATTERED_PHASES],
     phase: usize,
 }
 
 impl ScatteredGridCycle {
     fn new(guard: GuardInterval) -> Self {
         let plans = dvb_t_2k_plans(guard);
+        let grids = plans.each_ref().map(CarrierGrid::from_plan);
+        let tps: std::collections::HashSet<usize> = tps_carrier_bins().into_iter().collect();
+        let ref_pilots = grids.each_ref().map(|g| {
+            g.pilot_bins()
+                .iter()
+                .copied()
+                .filter(|&(bin, _)| !tps.contains(&bin))
+                .collect::<Vec<_>>()
+        });
         Self {
-            grids: plans.each_ref().map(CarrierGrid::from_plan),
+            grids,
+            ref_pilots,
             phase: 0,
         }
     }
@@ -516,6 +538,12 @@ impl ScatteredGridCycle {
     /// The grid for the current symbol phase.
     fn current(&self) -> &CarrierGrid {
         &self.grids[self.phase]
+    }
+
+    /// The current phase's channel-reference pilots (continual + scattered,
+    /// **excluding** the TPS carriers).
+    fn current_ref_pilots(&self) -> &[(usize, C32)] {
+        &self.ref_pilots[self.phase]
     }
 
     /// Advances to the next symbol phase (`l mod 4`).
@@ -618,10 +646,16 @@ impl ScatteredPilotExtractor {
         self.cycle.reset();
     }
 
-    /// The current phase's pilot bins (rustfft bin index + known boosted TX
-    /// value), for installing on the equalizer before this symbol.
+    /// The current phase's **channel-reference** pilot bins (rustfft bin index +
+    /// known boosted TX value), for installing on the equalizer before this
+    /// symbol. These are the continual + scattered pilots **only** — the 17 TPS
+    /// carriers are deliberately excluded, because the modulator transmits
+    /// data-power DBPSK on them rather than the boosted `w_k` value the grid
+    /// records, so they are not valid channel references (see
+    /// [`ScatteredGridCycle`]). The equalizer interpolates its estimate for the
+    /// TPS bins from the surrounding real pilots instead.
     pub fn current_pilot_bins(&self) -> &[(usize, C32)] {
-        self.cycle.current().pilot_bins()
+        self.cycle.current_ref_pilots()
     }
 
     /// The current phase's data-carrier bins (rustfft bin indices), for the

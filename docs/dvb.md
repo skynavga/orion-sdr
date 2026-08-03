@@ -68,6 +68,17 @@ reserved). `ScatteredPilotMapper`/`ScatteredPilotExtractor` own the four grids +
 a symbol-phase counter (frame-layer orchestrators, **not** `Block`s), and the
 equalizer's `set_pilot_bins` installs each symbol's pilot set before `process`.
 
+The **17 TPS carriers are reserved as non-data but are not channel-estimation
+references.** The four grids record them as boosted `w_k` pilots so the 1512-data
+invariant holds, but the modulator overwrites those bins with data-power DBPSK TPS
+cells (§4.6), not the boosted value — so dividing the received cell by the grid's
+known `w_k` would give a wrong channel ratio that the interpolator then smears onto
+the data carriers straddling each TPS carrier. `ScatteredPilotExtractor::
+current_pilot_bins()` therefore returns the continual + scattered pilots **only**;
+the equalizer interpolates its estimate across the TPS bins from those real
+references. (TPS is demodulated separately and differentially, off the raw
+pre-equalization bins, so it needs no channel estimate of its own.)
+
 ## Payload FEC chain
 
 Bit-exact to EN 300 744 §4.3: MPEG-TS → energy dispersal → RS(204,188) t=8 →

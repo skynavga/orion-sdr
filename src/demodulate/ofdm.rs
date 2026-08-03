@@ -286,8 +286,15 @@ pub struct OfdmEqualizer {
     /// Per-bin channel estimate; `1.0 + 0j` (no correction) until an
     /// estimate is available.
     estimate: Vec<C32>,
+    /// Pilot bins with known TX values, kept **sorted by bin** so the per-symbol
+    /// pilot interpolation can binary-search for a data bin's bracketing pilots
+    /// instead of scanning the whole set.
     pilot_bins: Vec<(usize, C32)>,
     data_bins: Vec<usize>,
+    /// Reused scratch for the per-symbol pilot ratios (`received/known`, in the
+    /// sorted `pilot_bins` order), so `interpolate_from_pilots` allocates nothing
+    /// per `process()` call.
+    pilot_ratios: Vec<(usize, C32)>,
 }
 
 /// Floor on `|estimate|²` before division, guarding against near-zero
@@ -298,12 +305,16 @@ impl OfdmEqualizer {
     pub fn new(cfg: &OfdmConfig, method: EqualizerMethod) -> Self {
         let grid = CarrierGrid::from_plan(&cfg.carrier_plan);
         let n_fft = cfg.carrier_plan.n_fft();
+        let mut pilot_bins = grid.pilot_bins().to_vec();
+        pilot_bins.sort_by_key(|&(bin, _)| bin);
+        let n_pilots = pilot_bins.len();
         Self {
             method,
             n_fft,
             estimate: vec![C32::new(1.0, 0.0); n_fft],
-            pilot_bins: grid.pilot_bins().to_vec(),
+            pilot_bins,
             data_bins: grid.data_bins().to_vec(),
+            pilot_ratios: Vec::with_capacity(n_pilots),
         }
     }
 
@@ -326,8 +337,11 @@ impl OfdmEqualizer {
     /// a separate pre-`process` call that sets up the estimate, not a change to
     /// the per-symbol `Block` contract.
     pub fn set_pilot_bins(&mut self, pilots: &[(usize, C32)], data_bins: &[usize]) {
-        self.pilot_bins = pilots.to_vec();
-        self.data_bins = data_bins.to_vec();
+        self.pilot_bins.clear();
+        self.pilot_bins.extend_from_slice(pilots);
+        self.pilot_bins.sort_by_key(|&(bin, _)| bin);
+        self.data_bins.clear();
+        self.data_bins.extend_from_slice(data_bins);
     }
 
     /// Computes and holds the channel estimate from a received training
@@ -350,66 +364,66 @@ impl OfdmEqualizer {
     /// the complex frequency domain) between the pilot bins' known-vs-
     /// received ratios. Requires at least one pilot; with zero pilots the
     /// held estimate (`1.0 + 0j` if never set) is left unchanged.
+    ///
+    /// `pilot_bins` is kept sorted by bin (at construction and in
+    /// `set_pilot_bins`), so the per-data-bin bracketing pilots are found by
+    /// binary search rather than a full scan, and the ratio buffer is reused
+    /// across calls — no per-symbol allocation.
     fn interpolate_from_pilots(&mut self, received_freq: &[C32]) {
         if self.pilot_bins.is_empty() {
             return;
         }
 
-        let mut pilots: Vec<(usize, C32)> = self
-            .pilot_bins
-            .iter()
-            .map(|&(bin, known)| (bin, received_freq[bin] / known))
-            .collect();
-        pilots.sort_by_key(|&(bin, _)| bin);
+        // Pilot ratios in the (already sorted) pilot-bin order — reused scratch.
+        self.pilot_ratios.clear();
+        self.pilot_ratios.extend(
+            self.pilot_bins
+                .iter()
+                .map(|&(bin, known)| (bin, received_freq[bin] / known)),
+        );
 
         for &bin in &self.data_bins {
-            self.estimate[bin] = interpolate_at(&pilots, bin);
+            self.estimate[bin] = interpolate_at(&self.pilot_ratios, bin);
         }
-        for &(bin, ratio) in &pilots {
+        for &(bin, ratio) in &self.pilot_ratios {
             self.estimate[bin] = ratio;
         }
     }
 }
 
-/// Estimates the channel ratio at `bin` from the (bin-sorted) `pilots`:
+/// Estimates the channel ratio at `bin` from the **bin-sorted** `pilots`:
 /// linear interpolation between the two pilots bracketing `bin`, or a hold of
 /// the nearest pilot when `bin` lies outside the pilot span on one side (no
 /// circular wrap across bin 0 — the band edges hold their nearest pilot).
-/// `pilots` must be non-empty.
+/// `pilots` must be non-empty and sorted ascending by bin.
+///
+/// The bracketing pilots are located by binary search (`partition_point`), so
+/// this is O(log P) per data bin — keeping the equalizer's per-symbol interpolation
+/// at O(data·log pilots), which matters for the DVB-T RX (1512 data × ~193 pilots
+/// per symbol).
 fn interpolate_at(pilots: &[(usize, C32)], bin: usize) -> C32 {
     if pilots.len() == 1 {
         return pilots[0].1;
     }
 
-    // Find the pilots bracketing `bin` in linear bin order: `lower` is the
-    // greatest pilot bin <= `bin`, `upper` the least pilot bin >= `bin`.
-    let mut lower: Option<(usize, C32)> = None;
-    let mut upper: Option<(usize, C32)> = None;
-    for &(pbin, ratio) in pilots {
-        if pbin <= bin {
-            lower = Some((pbin, ratio));
-        }
-        if pbin >= bin && upper.is_none() {
-            upper = Some((pbin, ratio));
-        }
+    // `hi` = index of the first pilot with bin >= `bin` (the "upper" bracket).
+    let hi = pilots.partition_point(|&(pbin, _)| pbin < bin);
+    if hi == 0 {
+        // Every pilot is above `bin`: hold the nearest (lowest) pilot.
+        return pilots[0].1;
     }
-
-    // `pilots` is non-empty, so at least one of `lower`/`upper` is always
-    // `Some`: if every pilot is above `bin`, `upper` is set; if every pilot is
-    // below, `lower` is set; otherwise both bracket it. (No `(None, None)`
-    // case can occur.)
-    match (lower, upper) {
-        (Some((lb, lr)), Some((ub, ur))) if lb != ub => {
-            let t = (bin - lb) as f32 / (ub - lb) as f32;
-            lr + (ur - lr) * t
-        }
-        // Bin sits on a pilot (lb == ub), or lies outside the span on one
-        // side — hold the nearest pilot's ratio.
-        (Some((_, r)), _) | (None, Some((_, r))) => r,
-        // Unreachable for non-empty `pilots` (see above); present only to
-        // satisfy match exhaustiveness.
-        (None, None) => unreachable!("interpolate_at requires non-empty pilots"),
+    if hi == pilots.len() {
+        // Every pilot is below `bin`: hold the nearest (highest) pilot.
+        return pilots[pilots.len() - 1].1;
     }
+    let (ub, ur) = pilots[hi];
+    if ub == bin {
+        // Bin sits exactly on a pilot.
+        return ur;
+    }
+    let (lb, lr) = pilots[hi - 1];
+    let t = (bin - lb) as f32 / (ub - lb) as f32;
+    lr + (ur - lr) * t
 }
 
 impl Block for OfdmEqualizer {
