@@ -22,10 +22,10 @@
 
 use crate::common::add_awgn;
 use num_complex::Complex32 as C32;
-use orion_sdr::demodulate::dvb_t_frame_demodulate;
+use orion_sdr::demodulate::DvbTFrameDemod;
 use orion_sdr::fec::PunctureRate;
-use orion_sdr::modulate::{ConstellationOrder, dvb_t_frame_modulate};
-use orion_sdr::waveform::dvb_t::{DvbTFrameParams, GuardInterval};
+use orion_sdr::modulate::{ConstellationOrder, DvbTFrameMod};
+use orion_sdr::waveform::dvb_t::{DvbTFrameParams, DvbTLinkParams, GuardInterval};
 
 const TRIALS: usize = 30;
 const SNR_DB_POINTS: &[f32] = &[0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 15.0];
@@ -34,9 +34,11 @@ fn params(constellation: ConstellationOrder, code_rate: PunctureRate) -> DvbTFra
     DvbTFrameParams {
         // GI 1/8 (cp_len = 256). GI-sync locks the exact symbol offset regardless
         // of guard interval (verified 30/30).
-        guard: GuardInterval::G1_8,
-        constellation,
-        code_rate,
+        link: DvbTLinkParams {
+            guard: GuardInterval::G1_8,
+            constellation,
+            code_rate,
+        },
         frame_number: 0,
         cell_id: 0,
     }
@@ -50,7 +52,8 @@ fn measure_at_snr(
     snr_db: f32,
     seed_base: u64,
 ) -> (f32, f32) {
-    let frame = dvb_t_frame_modulate(params, payload);
+    let demod = DvbTFrameDemod::new(params);
+    let frame = DvbTFrameMod::new(params).modulate(payload);
     let sig_power: f32 = frame.iq.iter().map(|s| s.norm_sqr()).sum::<f32>() / frame.iq.len() as f32;
     let noise_power = sig_power / 10f32.powf(snr_db / 10.0);
 
@@ -69,7 +72,7 @@ fn measure_at_snr(
         // SNR is defined against the signal, not the padding.
         add_awgn(&mut buf[200..200 + frame.iq.len()], noise_power, seed);
 
-        if let Ok(rx) = dvb_t_frame_demodulate(params, &buf, frame.n_symbols, payload.len()) {
+        if let Ok(rx) = demod.decode(&buf, frame.n_symbols, payload.len()) {
             decoded += 1;
             for (a, b) in rx.payload.iter().zip(payload.iter()) {
                 err_bits += (a ^ b).count_ones() as usize;

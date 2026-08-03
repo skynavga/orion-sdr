@@ -9,8 +9,8 @@ use crate::common::add_awgn;
 use num_complex::Complex32 as C32;
 use orion_sdr::demodulate::DvbTFrameStreamDemod;
 use orion_sdr::fec::PunctureRate;
-use orion_sdr::modulate::{ConstellationOrder, dvb_t_frame_modulate};
-use orion_sdr::waveform::dvb_t::{DvbTFrameParams, GuardInterval};
+use orion_sdr::modulate::{ConstellationOrder, DvbTFrameMod};
+use orion_sdr::waveform::dvb_t::{DvbTFrameParams, DvbTLinkParams, GuardInterval};
 
 fn sample_payload(len: usize) -> Vec<u8> {
     (0..len).map(|i| ((i * 37 + 11) & 0xff) as u8).collect()
@@ -18,9 +18,11 @@ fn sample_payload(len: usize) -> Vec<u8> {
 
 fn params() -> DvbTFrameParams {
     DvbTFrameParams {
-        guard: GuardInterval::G1_8,
-        constellation: ConstellationOrder::Qpsk,
-        code_rate: PunctureRate::R1_2,
+        link: DvbTLinkParams {
+            guard: GuardInterval::G1_8,
+            constellation: ConstellationOrder::Qpsk,
+            code_rate: PunctureRate::R1_2,
+        },
         frame_number: 0,
         cell_id: 0,
     }
@@ -30,7 +32,7 @@ fn params() -> DvbTFrameParams {
 fn dvb_t_stream_single_frame() {
     let p = params();
     let payload = sample_payload(184);
-    let frame = dvb_t_frame_modulate(p, &payload);
+    let frame = DvbTFrameMod::new(p).modulate(&payload);
 
     // Lead-in silence + frame + trailing silence, fed in one shot.
     let mut iq = vec![C32::default(); 200];
@@ -51,7 +53,7 @@ fn dvb_t_stream_chunked_feed_matches_oneshot() {
     // frame as feeding it all at once.
     let p = params();
     let payload = sample_payload(184);
-    let frame = dvb_t_frame_modulate(p, &payload);
+    let frame = DvbTFrameMod::new(p).modulate(&payload);
     let mut iq = vec![C32::default(); 200];
     iq.extend_from_slice(&frame.iq);
     iq.extend(vec![C32::default(); frame.samples_per_symbol]);
@@ -92,13 +94,14 @@ fn dvb_t_stream_multiple_frames() {
                 .collect()
         })
         .collect();
-    let frame0 = dvb_t_frame_modulate(p, &payloads[0]);
+    let modulator = DvbTFrameMod::new(p);
+    let frame0 = modulator.modulate(&payloads[0]);
     let n_symbols = frame0.n_symbols;
 
     // Lead-in, then three frames back to back, then trailing silence.
     let mut iq = vec![C32::default(); 200];
     for pl in &payloads {
-        let f = dvb_t_frame_modulate(p, pl);
+        let f = modulator.modulate(pl);
         assert_eq!(f.n_symbols, n_symbols, "frames share a symbol count");
         iq.extend_from_slice(&f.iq);
     }
@@ -121,7 +124,7 @@ fn dvb_t_stream_multiple_frames() {
 fn dvb_t_stream_survives_awgn() {
     let p = params();
     let payload = sample_payload(184);
-    let frame = dvb_t_frame_modulate(p, &payload);
+    let frame = DvbTFrameMod::new(p).modulate(&payload);
     let mut iq = vec![C32::default(); 200];
     iq.extend_from_slice(&frame.iq);
     iq.extend(vec![C32::default(); frame.samples_per_symbol]);
@@ -145,7 +148,7 @@ fn dvb_t_stream_holds_partial_frame() {
     // Feeding less than a full frame yields nothing until the rest arrives.
     let p = params();
     let payload = sample_payload(184);
-    let frame = dvb_t_frame_modulate(p, &payload);
+    let frame = DvbTFrameMod::new(p).modulate(&payload);
     let mut iq = vec![C32::default(); 200];
     iq.extend_from_slice(&frame.iq);
     iq.extend(vec![C32::default(); frame.samples_per_symbol]);

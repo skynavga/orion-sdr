@@ -30,12 +30,10 @@ pub use crate::modulate::CodecCache;
 pub use ofdm_frame::{OfdmFrameStreamDemod, RxFrame, demodulate_frame};
 
 pub mod dvb_t_frame;
-pub use dvb_t_frame::{DvbTRxError, DvbTRxFrame, dvb_t_frame_demodulate};
+pub use dvb_t_frame::{DvbTFrameDemod, DvbTRxError, DvbTRxFrame};
 
 pub mod dvb_t_super_frame;
-pub use dvb_t_super_frame::{
-    DvbTRxSuperFrame, DvbTRxSuperFrameError, dvb_t_super_frame_demodulate,
-};
+pub use dvb_t_super_frame::{DvbTRxSuperFrame, DvbTRxSuperFrameError, DvbTSuperFrameDemod};
 
 pub mod dvb_t_stream;
 pub use dvb_t_stream::DvbTFrameStreamDemod;

@@ -5,7 +5,7 @@
 //
 // The conformant DVB-T OFDM SUPER-FRAME modulator (ETSI EN 300 744 §4.4/§4.6):
 // four consecutive 68-symbol frames (frame numbers 0..3) emitted back to back.
-// This is the multi-frame driver over the single-frame `dvb_t_frame_modulate`; it
+// This is the multi-frame driver over the single-frame `DvbTFrameMod`; it
 // sequences the four frames so a receiver observes the standard's super-frame
 // structure:
 //   • the TPS synchronization word alternates every frame — frames 1 & 3 (frame
@@ -19,7 +19,7 @@
 //
 // SCOPE. The payload is split into four contiguous parts, one per frame, each
 // carried by a self-contained conformant frame (per-frame FEC, with null-packet
-// stuffing where a part does not fill its frame — see `dvb_t_frame_modulate`).
+// stuffing where a part does not fill its frame — see `DvbTFrameMod`).
 // This reproduces the frame-level super-frame structure a receiver locks onto.
 // The standard's stronger byte-continuous stream (§4.7 Table 16: an integer
 // number of RS packets per super-frame, with a packet free to straddle a frame
@@ -27,36 +27,47 @@
 // 94.5 packets/frame) is a streaming refinement left to a future continuous-FEC
 // super-frame path; here each frame codes its own part independently.
 
-use super::dvb_t_frame::{DvbTFrame, dvb_t_frame_modulate};
+use super::dvb_t_frame::{DvbTFrame, DvbTFrameMod};
 use crate::fec::PunctureRate;
 use crate::modulate::ConstellationOrder;
-use crate::waveform::dvb_t::{DvbTFrameParams, GuardInterval};
+use crate::waveform::dvb_t::{DvbTFrameParams, DvbTLinkParams, GuardInterval};
 use num_complex::Complex32 as C32;
 
 /// Number of OFDM frames in one DVB-T super-frame (§4.4).
 pub const DVB_T_FRAMES_PER_SUPER_FRAME: usize = 4;
 
-/// Transmission parameters for a conformant DVB-T super-frame. Unlike the
-/// single-frame [`DvbTFrameParams`], the cell identifier is the **full 16-bit**
-/// value (§4.6.2.10); the driver splits it across the four frames.
+/// Transmission parameters for a conformant DVB-T super-frame: the shared link
+/// parameters ([`DvbTLinkParams`]) plus the **full 16-bit** cell identifier
+/// (§4.6.2.10), which the driver splits across the four frames. Unlike
+/// [`DvbTFrameParams`] there is no per-frame number — the driver derives 0..3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DvbTSuperFrameParams {
-    /// Guard interval (constant across the super-frame).
-    pub guard: GuardInterval,
-    /// Payload constellation (constant across the super-frame).
-    pub constellation: ConstellationOrder,
-    /// Inner code rate (constant across the super-frame).
-    pub code_rate: PunctureRate,
+    /// Guard interval, constellation, and code rate (constant across the link).
+    pub link: DvbTLinkParams,
     /// The full 16-bit cell identifier: b15..b8 ride frames 1 & 3, b7..b0 frames
     /// 2 & 4.
     pub cell_id: u16,
 }
 
 impl DvbTSuperFrameParams {
+    /// The guard interval (from the link parameters).
+    pub fn guard(self) -> GuardInterval {
+        self.link.guard
+    }
+
+    /// The constellation (from the link parameters).
+    pub fn constellation(self) -> ConstellationOrder {
+        self.link.constellation
+    }
+
+    /// The inner code rate (from the link parameters).
+    pub fn code_rate(self) -> PunctureRate {
+        self.link.code_rate
+    }
+
     /// The single-frame parameters for frame `frame_number` (0..3): the shared
-    /// guard/constellation/rate, this frame's number, and the appropriate byte
-    /// of the 16-bit cell id (MSB in the even frames 1 & 3, LSB in the odd frames
-    /// 2 & 4).
+    /// link parameters, this frame's number, and the appropriate byte of the
+    /// 16-bit cell id (MSB in the even frames 1 & 3, LSB in the odd frames 2 & 4).
     pub fn frame(self, frame_number: u8) -> DvbTFrameParams {
         let cell_id = if frame_number.is_multiple_of(2) {
             (self.cell_id >> 8) as u8 // frames 1 & 3 → high byte
@@ -64,9 +75,7 @@ impl DvbTSuperFrameParams {
             (self.cell_id & 0xFF) as u8 // frames 2 & 4 → low byte
         };
         DvbTFrameParams {
-            guard: self.guard,
-            constellation: self.constellation,
-            code_rate: self.code_rate,
+            link: self.link,
             frame_number,
             cell_id,
         }
@@ -96,57 +105,80 @@ impl DvbTSuperFrame {
     }
 }
 
-/// Modulates `payload` into one conformant DVB-T super-frame: four consecutive
-/// frames (frame numbers 0..3) with the alternating TPS sync word and the 16-bit
-/// cell id split across them. The payload is divided into four contiguous parts
-/// (as even as possible), each carried by a self-contained conformant frame; the
-/// parts are zero-padded to a common length so all four frames share one symbol
-/// count and the super-frame is a clean `4 × symbols_per_frame` block.
-pub fn dvb_t_super_frame_modulate(params: DvbTSuperFrameParams, payload: &[u8]) -> DvbTSuperFrame {
-    // Split the payload into four contiguous parts as evenly as possible: the
-    // first `rem` parts get one extra byte. `frame_payload_lens` records each
-    // real part length so the RX trims back to it.
-    let n = DVB_T_FRAMES_PER_SUPER_FRAME;
-    let base = payload.len() / n;
-    let rem = payload.len() % n;
-    let mut parts: Vec<Vec<u8>> = Vec::with_capacity(n);
-    let mut off = 0usize;
-    let mut frame_payload_lens = [0usize; DVB_T_FRAMES_PER_SUPER_FRAME];
-    for (i, len_slot) in frame_payload_lens.iter_mut().enumerate() {
-        let len = base + usize::from(i < rem);
-        parts.push(payload[off..off + len].to_vec());
-        *len_slot = len;
-        off += len;
-    }
-    // Zero-pad every part to the longest so all four frames modulate to an
-    // identical symbol count — the super-frame is then a uniform
-    // `4 × symbols_per_frame` block the receiver re-slices by offset. Padding
-    // bytes sit past each frame's real payload length, so the RX (which trims to
-    // `frame_payload_lens`) discards them.
-    let part_len = frame_payload_lens.iter().copied().max().unwrap_or(0);
-    for part in &mut parts {
-        part.resize(part_len, 0);
+/// A conformant DVB-T super-frame modulator: the multi-frame driver over
+/// [`DvbTFrameMod`]. Constructed with the super-frame parameters (guard interval,
+/// constellation, rate, and the full 16-bit cell id); [`modulate`](Self::modulate)
+/// emits one four-frame super-frame per call.
+#[derive(Debug, Clone)]
+pub struct DvbTSuperFrameMod {
+    params: DvbTSuperFrameParams,
+}
+
+impl DvbTSuperFrameMod {
+    /// Builds a super-frame modulator with the given parameters.
+    pub fn new(params: DvbTSuperFrameParams) -> Self {
+        Self { params }
     }
 
-    let frames: Vec<DvbTFrame> = (0..n)
-        .map(|f| dvb_t_frame_modulate(params.frame(f as u8), &parts[f]))
-        .collect();
-    let symbols_per_frame = frames[0].n_symbols;
-    let samples_per_symbol = frames[0].samples_per_symbol;
-    debug_assert!(
-        frames.iter().all(|f| f.n_symbols == symbols_per_frame),
-        "equal-length parts must modulate to equal symbol counts"
-    );
-
-    let mut iq = Vec::with_capacity(symbols_per_frame * samples_per_symbol * n);
-    for frame in &frames {
-        iq.extend_from_slice(&frame.iq);
+    /// The super-frame parameters this modulator was built with.
+    pub fn params(&self) -> DvbTSuperFrameParams {
+        self.params
     }
 
-    DvbTSuperFrame {
-        iq,
-        symbols_per_frame,
-        samples_per_symbol,
-        frame_payload_lens,
+    /// Modulates `payload` into one conformant DVB-T super-frame: four consecutive
+    /// frames (frame numbers 0..3) with the alternating TPS sync word and the
+    /// 16-bit cell id split across them. The payload is divided into four
+    /// contiguous parts (as even as possible), each carried by a self-contained
+    /// conformant frame; the parts are zero-padded to a common length so all four
+    /// frames share one symbol count and the super-frame is a clean
+    /// `4 × symbols_per_frame` block.
+    pub fn modulate(&self, payload: &[u8]) -> DvbTSuperFrame {
+        let params = self.params;
+        // Split the payload into four contiguous parts as evenly as possible: the
+        // first `rem` parts get one extra byte. `frame_payload_lens` records each
+        // real part length so the RX trims back to it.
+        let n = DVB_T_FRAMES_PER_SUPER_FRAME;
+        let base = payload.len() / n;
+        let rem = payload.len() % n;
+        let mut parts: Vec<Vec<u8>> = Vec::with_capacity(n);
+        let mut off = 0usize;
+        let mut frame_payload_lens = [0usize; DVB_T_FRAMES_PER_SUPER_FRAME];
+        for (i, len_slot) in frame_payload_lens.iter_mut().enumerate() {
+            let len = base + usize::from(i < rem);
+            parts.push(payload[off..off + len].to_vec());
+            *len_slot = len;
+            off += len;
+        }
+        // Zero-pad every part to the longest so all four frames modulate to an
+        // identical symbol count — the super-frame is then a uniform
+        // `4 × symbols_per_frame` block the receiver re-slices by offset. Padding
+        // bytes sit past each frame's real payload length, so the RX (which trims
+        // to `frame_payload_lens`) discards them.
+        let part_len = frame_payload_lens.iter().copied().max().unwrap_or(0);
+        for part in &mut parts {
+            part.resize(part_len, 0);
+        }
+
+        let frames: Vec<DvbTFrame> = (0..n)
+            .map(|f| DvbTFrameMod::new(params.frame(f as u8)).modulate(&parts[f]))
+            .collect();
+        let symbols_per_frame = frames[0].n_symbols;
+        let samples_per_symbol = frames[0].samples_per_symbol;
+        debug_assert!(
+            frames.iter().all(|f| f.n_symbols == symbols_per_frame),
+            "equal-length parts must modulate to equal symbol counts"
+        );
+
+        let mut iq = Vec::with_capacity(symbols_per_frame * samples_per_symbol * n);
+        for frame in &frames {
+            iq.extend_from_slice(&frame.iq);
+        }
+
+        DvbTSuperFrame {
+            iq,
+            symbols_per_frame,
+            samples_per_symbol,
+            frame_payload_lens,
+        }
     }
 }

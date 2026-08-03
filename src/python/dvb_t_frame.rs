@@ -4,12 +4,14 @@
 // src/python/dvb_t_frame.rs — PyO3 bindings for the conformant, preamble-less
 // DVB-T on-air frame (ETSI EN 300 744).
 //
-// Exposes the batch frame modulator/demodulator
-// (`modulate::dvb_t_frame_modulate` / `demodulate::dvb_t_frame_demodulate`),
+// Exposes the stateful frame/super-frame modulator and demodulator objects
+// (`modulate::{DvbTFrameMod, DvbTSuperFrameMod}` /
+// `demodulate::{DvbTFrameDemod, DvbTSuperFrameDemod}`) and the streaming receiver,
 // the shared `DvbTFrameParams`, the recovered `DvbTRxFrame`/`TpsWord`, and the
 // `NbBandwidth` sample-rate helper. Transmission parameters (guard interval,
 // constellation, code rate) are passed as strings, matching the convention used
-// by the config-level DVB-T bindings in `python/ofdm.rs`.
+// by the config-level DVB-T bindings in `python/ofdm.rs`. Integer-CFO correction
+// is a construction-time flag on the demod objects (`with_integer_cfo_correction`).
 
 use num_complex::Complex32;
 use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
@@ -17,14 +19,10 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
-use crate::demodulate::{
-    DvbTFrameStreamDemod, dvb_t_frame_demodulate, dvb_t_super_frame_demodulate,
-};
+use crate::demodulate::{DvbTFrameDemod, DvbTFrameStreamDemod, DvbTSuperFrameDemod};
 use crate::fec::PunctureRate;
-use crate::modulate::{
-    ConstellationOrder, DvbTSuperFrameParams, dvb_t_frame_modulate, dvb_t_super_frame_modulate,
-};
-use crate::waveform::dvb_t::{DvbTFrameParams, GuardInterval, NbBandwidth};
+use crate::modulate::{ConstellationOrder, DvbTFrameMod, DvbTSuperFrameMod, DvbTSuperFrameParams};
+use crate::waveform::dvb_t::{DvbTFrameParams, DvbTLinkParams, GuardInterval, NbBandwidth};
 use crate::waveform::dvb_t_tps::TpsWord;
 
 // ── String <-> enum helpers (crate Python convention) ───────────────────────
@@ -120,9 +118,11 @@ impl PyDvbTFrameParams {
     ) -> PyResult<Self> {
         Ok(Self {
             inner: DvbTFrameParams {
-                guard: parse_guard(guard)?,
-                constellation: parse_dvb_t_constellation(constellation)?,
-                code_rate: parse_rate(code_rate)?,
+                link: DvbTLinkParams {
+                    guard: parse_guard(guard)?,
+                    constellation: parse_dvb_t_constellation(constellation)?,
+                    code_rate: parse_rate(code_rate)?,
+                },
                 frame_number,
                 cell_id,
             },
@@ -131,15 +131,15 @@ impl PyDvbTFrameParams {
 
     #[getter]
     fn guard(&self) -> &'static str {
-        guard_str(self.inner.guard)
+        guard_str(self.inner.guard())
     }
     #[getter]
     fn constellation(&self) -> PyResult<&'static str> {
-        constellation_str(self.inner.constellation)
+        constellation_str(self.inner.constellation())
     }
     #[getter]
     fn code_rate(&self) -> &'static str {
-        rate_str(self.inner.code_rate)
+        rate_str(self.inner.code_rate())
     }
     #[getter]
     fn frame_number(&self) -> u8 {
@@ -153,9 +153,9 @@ impl PyDvbTFrameParams {
     fn __repr__(&self) -> PyResult<String> {
         Ok(format!(
             "DvbTFrameParams(guard={:?}, constellation={:?}, code_rate={:?}, frame_number={}, cell_id={})",
-            guard_str(self.inner.guard),
-            constellation_str(self.inner.constellation)?,
-            rate_str(self.inner.code_rate),
+            guard_str(self.inner.guard()),
+            constellation_str(self.inner.constellation())?,
+            rate_str(self.inner.code_rate()),
             self.inner.frame_number,
             self.inner.cell_id,
         ))
@@ -247,46 +247,95 @@ impl PyDvbTRxFrame {
     }
 }
 
-// ── Free functions ──────────────────────────────────────────────────────────
+// ── DvbTFrameMod / DvbTFrameDemod ───────────────────────────────────────────
 
-/// Modulates `payload` (the MPEG-TS payload bytes) into one conformant,
-/// preamble-less DVB-T frame. Returns a `DvbTFrame` (`.iq`, `.n_symbols`,
-/// `.samples_per_symbol`).
-#[pyfunction]
-#[pyo3(name = "dvb_t_frame_modulate")]
-fn dvb_t_frame_modulate_py(
-    params: &PyDvbTFrameParams,
-    payload: PyReadonlyArray1<'_, u8>,
-) -> PyResult<PyDvbTFrame> {
-    let frame = dvb_t_frame_modulate(params.inner, payload.as_slice()?);
-    Ok(PyDvbTFrame {
-        iq: frame.iq,
-        n_symbols: frame.n_symbols,
-        samples_per_symbol: frame.samples_per_symbol,
-    })
+/// A conformant, preamble-less DVB-T frame modulator. Built from
+/// `DvbTFrameParams`; `modulate(payload)` produces one `DvbTFrame` per call.
+#[pyclass(name = "DvbTFrameMod")]
+pub struct PyDvbTFrameMod {
+    inner: DvbTFrameMod,
 }
 
-/// Demodulates one conformant DVB-T frame from `iq`, acquiring the symbol grid
-/// from the guard interval (no preamble). `params` supplies the cold-start MCS;
-/// `n_symbols` is the frame's symbol count (from the paired modulate call's
-/// `DvbTFrame.n_symbols`); `payload_len` is the original payload byte count for
-/// trimming. Raises `ValueError` on any acquisition/decode failure. The returned
-/// `DvbTRxFrame` exposes `.payload` (bytes) and `.tps` (the recovered `TpsWord`).
-#[pyfunction]
-#[pyo3(name = "dvb_t_frame_demodulate")]
-fn dvb_t_frame_demodulate_py(
-    params: &PyDvbTFrameParams,
-    iq: PyReadonlyArray1<'_, Complex32>,
-    n_symbols: usize,
-    payload_len: usize,
-) -> PyResult<PyDvbTRxFrame> {
-    let rx = dvb_t_frame_demodulate(params.inner, iq.as_slice()?, n_symbols, payload_len)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    Ok(PyDvbTRxFrame {
-        payload: rx.payload,
-        tps: PyTpsWord { inner: rx.tps },
-    })
+#[pymethods]
+impl PyDvbTFrameMod {
+    #[new]
+    fn new(params: &PyDvbTFrameParams) -> Self {
+        Self {
+            inner: DvbTFrameMod::new(params.inner),
+        }
+    }
+
+    /// Modulates `payload` (the MPEG-TS payload bytes) into one conformant,
+    /// preamble-less DVB-T frame. Returns a `DvbTFrame` (`.iq`, `.n_symbols`,
+    /// `.samples_per_symbol`).
+    fn modulate(&self, payload: PyReadonlyArray1<'_, u8>) -> PyResult<PyDvbTFrame> {
+        let frame = self.inner.modulate(payload.as_slice()?);
+        Ok(PyDvbTFrame {
+            iq: frame.iq,
+            n_symbols: frame.n_symbols,
+            samples_per_symbol: frame.samples_per_symbol,
+        })
+    }
 }
+
+/// A conformant, preamble-less DVB-T frame demodulator. Built from
+/// `DvbTFrameParams`; `decode(iq, n_symbols, payload_len)` recovers one frame.
+/// Integer-CFO correction is off by default — enable it with
+/// `with_integer_cfo_correction(True)` (a link-constant builder that returns a new
+/// demod).
+#[pyclass(name = "DvbTFrameDemod")]
+pub struct PyDvbTFrameDemod {
+    inner: DvbTFrameDemod,
+}
+
+#[pymethods]
+impl PyDvbTFrameDemod {
+    #[new]
+    fn new(params: &PyDvbTFrameParams) -> Self {
+        Self {
+            inner: DvbTFrameDemod::new(params.inner),
+        }
+    }
+
+    /// Returns a demod with internal integer-CFO correction enabled (or disabled).
+    /// A link-constant knob: when on, `decode` estimates the whole-subcarrier
+    /// offset from the continual pilots and rotates it out before demapping.
+    fn with_integer_cfo_correction(&self, on: bool) -> Self {
+        Self {
+            inner: self.inner.clone().with_integer_cfo_correction(on),
+        }
+    }
+
+    /// Whether internal integer-CFO correction is enabled.
+    #[getter]
+    fn integer_cfo_correction(&self) -> bool {
+        self.inner.integer_cfo_correction()
+    }
+
+    /// Demodulates one conformant DVB-T frame from `iq`, acquiring the symbol grid
+    /// from the guard interval (no preamble). `n_symbols` is the frame's symbol
+    /// count (from the paired `DvbTFrameMod.modulate` result's `DvbTFrame`);
+    /// `payload_len` is the original payload byte count for trimming. Raises
+    /// `ValueError` on any acquisition/decode failure. The returned `DvbTRxFrame`
+    /// exposes `.payload` (bytes) and `.tps` (the recovered `TpsWord`).
+    fn decode(
+        &self,
+        iq: PyReadonlyArray1<'_, Complex32>,
+        n_symbols: usize,
+        payload_len: usize,
+    ) -> PyResult<PyDvbTRxFrame> {
+        let rx = self
+            .inner
+            .decode(iq.as_slice()?, n_symbols, payload_len)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(PyDvbTRxFrame {
+            payload: rx.payload,
+            tps: PyTpsWord { inner: rx.tps },
+        })
+    }
+}
+
+// ── NB bandwidth helpers ────────────────────────────────────────────────────
 
 /// The sample rate (S/s) for a narrowband DVB-T bandwidth mode: `"333khz"`,
 /// `"1mhz"`, or `"2mhz"`. NB-DVB-T is a pure fs-scaling of the fixed 2K
@@ -334,9 +383,11 @@ impl PyDvbTSuperFrameParams {
     fn new(guard: &str, constellation: &str, code_rate: &str, cell_id: u16) -> PyResult<Self> {
         Ok(Self {
             inner: DvbTSuperFrameParams {
-                guard: parse_guard(guard)?,
-                constellation: parse_dvb_t_constellation(constellation)?,
-                code_rate: parse_rate(code_rate)?,
+                link: DvbTLinkParams {
+                    guard: parse_guard(guard)?,
+                    constellation: parse_dvb_t_constellation(constellation)?,
+                    code_rate: parse_rate(code_rate)?,
+                },
                 cell_id,
             },
         })
@@ -344,15 +395,15 @@ impl PyDvbTSuperFrameParams {
 
     #[getter]
     fn guard(&self) -> &'static str {
-        guard_str(self.inner.guard)
+        guard_str(self.inner.guard())
     }
     #[getter]
     fn constellation(&self) -> PyResult<&'static str> {
-        constellation_str(self.inner.constellation)
+        constellation_str(self.inner.constellation())
     }
     #[getter]
     fn code_rate(&self) -> &'static str {
-        rate_str(self.inner.code_rate)
+        rate_str(self.inner.code_rate())
     }
     #[getter]
     fn cell_id(&self) -> u16 {
@@ -409,70 +460,129 @@ impl PyDvbTRxSuperFrame {
     }
 }
 
-/// Modulates `payload` into one conformant DVB-T super-frame (four frames,
-/// alternating TPS sync + a 16-bit cell id split across them). Returns a
-/// `DvbTSuperFrame` (`.iq`, `.symbols_per_frame`, `.samples_per_symbol`,
-/// `.frame_payload_lens`).
-#[pyfunction]
-#[pyo3(name = "dvb_t_super_frame_modulate")]
-fn dvb_t_super_frame_modulate_py(
-    params: &PyDvbTSuperFrameParams,
-    payload: PyReadonlyArray1<'_, u8>,
-) -> PyResult<PyDvbTSuperFrame> {
-    let sf = dvb_t_super_frame_modulate(params.inner, payload.as_slice()?);
-    Ok(PyDvbTSuperFrame {
-        iq: sf.iq,
-        symbols_per_frame: sf.symbols_per_frame,
-        samples_per_symbol: sf.samples_per_symbol,
-        frame_payload_lens: sf.frame_payload_lens,
-    })
+/// A conformant DVB-T super-frame modulator (four frames, alternating TPS sync +
+/// a 16-bit cell id split across them). Built from `DvbTSuperFrameParams`;
+/// `modulate(payload)` produces one `DvbTSuperFrame` per call.
+#[pyclass(name = "DvbTSuperFrameMod")]
+pub struct PyDvbTSuperFrameMod {
+    inner: DvbTSuperFrameMod,
 }
 
-/// Demodulates one conformant DVB-T super-frame from `iq`. `symbols_per_frame`
-/// and `frame_payload_lens` come from the paired `dvb_t_super_frame_modulate`
-/// result. Verifies the frame-number sequence 0,1,2,3, reassembles the 16-bit
-/// cell id, and concatenates the payloads. Raises `ValueError` on failure. The
-/// returned `DvbTRxSuperFrame` exposes `.payload` (bytes) and `.cell_id`.
-#[pyfunction]
-#[pyo3(name = "dvb_t_super_frame_demodulate")]
-fn dvb_t_super_frame_demodulate_py(
-    params: &PyDvbTSuperFrameParams,
-    iq: PyReadonlyArray1<'_, Complex32>,
-    symbols_per_frame: usize,
-    frame_payload_lens: [usize; 4],
-) -> PyResult<PyDvbTRxSuperFrame> {
-    let rx = dvb_t_super_frame_demodulate(
-        params.inner,
-        iq.as_slice()?,
-        symbols_per_frame,
-        frame_payload_lens,
-    )
-    .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    Ok(PyDvbTRxSuperFrame {
-        payload: rx.payload,
-        cell_id: rx.cell_id,
-    })
+#[pymethods]
+impl PyDvbTSuperFrameMod {
+    #[new]
+    fn new(params: &PyDvbTSuperFrameParams) -> Self {
+        Self {
+            inner: DvbTSuperFrameMod::new(params.inner),
+        }
+    }
+
+    /// Modulates `payload` into one conformant DVB-T super-frame. Returns a
+    /// `DvbTSuperFrame` (`.iq`, `.symbols_per_frame`, `.samples_per_symbol`,
+    /// `.frame_payload_lens`).
+    fn modulate(&self, payload: PyReadonlyArray1<'_, u8>) -> PyResult<PyDvbTSuperFrame> {
+        let sf = self.inner.modulate(payload.as_slice()?);
+        Ok(PyDvbTSuperFrame {
+            iq: sf.iq,
+            symbols_per_frame: sf.symbols_per_frame,
+            samples_per_symbol: sf.samples_per_symbol,
+            frame_payload_lens: sf.frame_payload_lens,
+        })
+    }
+}
+
+/// A conformant DVB-T super-frame demodulator. Built from `DvbTSuperFrameParams`;
+/// `decode(iq, symbols_per_frame, frame_payload_lens)` recovers one super-frame.
+/// Integer-CFO correction is off by default — enable it with
+/// `with_integer_cfo_correction(True)` (delegated to each constituent frame).
+#[pyclass(name = "DvbTSuperFrameDemod")]
+pub struct PyDvbTSuperFrameDemod {
+    inner: DvbTSuperFrameDemod,
+}
+
+#[pymethods]
+impl PyDvbTSuperFrameDemod {
+    #[new]
+    fn new(params: &PyDvbTSuperFrameParams) -> Self {
+        Self {
+            inner: DvbTSuperFrameDemod::new(params.inner),
+        }
+    }
+
+    /// Returns a super-frame demod with internal integer-CFO correction enabled
+    /// (or disabled) on every constituent frame.
+    fn with_integer_cfo_correction(&self, on: bool) -> Self {
+        Self {
+            inner: self.inner.clone().with_integer_cfo_correction(on),
+        }
+    }
+
+    /// Whether internal integer-CFO correction is enabled.
+    #[getter]
+    fn integer_cfo_correction(&self) -> bool {
+        self.inner.integer_cfo_correction()
+    }
+
+    /// Demodulates one conformant DVB-T super-frame from `iq`. `symbols_per_frame`
+    /// and `frame_payload_lens` come from the paired `DvbTSuperFrameMod.modulate`
+    /// result. Verifies the frame-number sequence 0,1,2,3, reassembles the 16-bit
+    /// cell id, and concatenates the payloads. Raises `ValueError` on failure. The
+    /// returned `DvbTRxSuperFrame` exposes `.payload` (bytes) and `.cell_id`.
+    fn decode(
+        &self,
+        iq: PyReadonlyArray1<'_, Complex32>,
+        symbols_per_frame: usize,
+        frame_payload_lens: [usize; 4],
+    ) -> PyResult<PyDvbTRxSuperFrame> {
+        let rx = self
+            .inner
+            .decode(iq.as_slice()?, symbols_per_frame, frame_payload_lens)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(PyDvbTRxSuperFrame {
+            payload: rx.payload,
+            cell_id: rx.cell_id,
+        })
+    }
 }
 
 // ── Streaming receiver ──────────────────────────────────────────────────────
 
 /// A streaming DVB-T receiver. Push IQ with `feed()`; it guard-interval-acquires
 /// and decodes each fixed-size frame as its samples arrive, returning the
-/// completed ones. `flush()` runs a final pass over the residual buffer.
+/// completed ones. `flush()` runs a final pass over the residual buffer. Pass
+/// `integer_cfo_correction=True` to enable internal integer-CFO correction on each
+/// decoded frame (a link-constant knob, set once here).
 #[pyclass(name = "DvbTFrameStreamDemod")]
 pub struct PyDvbTFrameStreamDemod {
     inner: DvbTFrameStreamDemod,
+    integer_cfo: bool,
 }
 
 #[pymethods]
 impl PyDvbTFrameStreamDemod {
     /// Builds a receiver for a link whose frames are `n_symbols` OFDM symbols
-    /// carrying `payload_len` payload bytes each, under `params`.
+    /// carrying `payload_len` payload bytes each, under `params`. When
+    /// `integer_cfo_correction` is `True`, each frame's whole-subcarrier CFO is
+    /// estimated and removed internally before decoding.
     #[new]
-    fn new(params: &PyDvbTFrameParams, n_symbols: usize, payload_len: usize) -> Self {
+    #[pyo3(signature = (params, n_symbols, payload_len, integer_cfo_correction = false))]
+    fn new(
+        params: &PyDvbTFrameParams,
+        n_symbols: usize,
+        payload_len: usize,
+        integer_cfo_correction: bool,
+    ) -> Self {
         Self {
-            inner: DvbTFrameStreamDemod::new(params.inner, n_symbols, payload_len),
+            inner: DvbTFrameStreamDemod::new(params.inner, n_symbols, payload_len)
+                .with_integer_cfo_correction(integer_cfo_correction),
+            integer_cfo: integer_cfo_correction,
         }
+    }
+
+    /// Whether internal integer-CFO correction is enabled.
+    #[getter]
+    fn integer_cfo_correction(&self) -> bool {
+        self.integer_cfo
     }
 
     /// Feeds IQ and returns the frames that completed. Frames that failed to
@@ -545,14 +655,14 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDvbTFrame>()?;
     m.add_class::<PyDvbTRxFrame>()?;
     m.add_class::<PyTpsWord>()?;
+    m.add_class::<PyDvbTFrameMod>()?;
+    m.add_class::<PyDvbTFrameDemod>()?;
     m.add_class::<PyDvbTSuperFrameParams>()?;
     m.add_class::<PyDvbTSuperFrame>()?;
     m.add_class::<PyDvbTRxSuperFrame>()?;
+    m.add_class::<PyDvbTSuperFrameMod>()?;
+    m.add_class::<PyDvbTSuperFrameDemod>()?;
     m.add_class::<PyDvbTFrameStreamDemod>()?;
-    m.add_function(wrap_pyfunction!(dvb_t_frame_modulate_py, m)?)?;
-    m.add_function(wrap_pyfunction!(dvb_t_frame_demodulate_py, m)?)?;
-    m.add_function(wrap_pyfunction!(dvb_t_super_frame_modulate_py, m)?)?;
-    m.add_function(wrap_pyfunction!(dvb_t_super_frame_demodulate_py, m)?)?;
     m.add_function(wrap_pyfunction!(nb_bandwidth_fs, m)?)?;
     m.add_function(wrap_pyfunction!(nb_bandwidth_occupied_hz, m)?)?;
     Ok(())

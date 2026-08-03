@@ -1032,25 +1032,43 @@ class DvbTRxFrame:
     @property
     def tps(self) -> TpsWord: ...
 
-def dvb_t_frame_modulate(
-    params: DvbTFrameParams, payload: NDArray[np.uint8]
-) -> DvbTFrame:
-    """Modulate *payload* (MPEG-TS payload bytes) into one conformant,
-    preamble-less DVB-T frame."""
-    ...
+class DvbTFrameMod:
+    """A conformant, preamble-less DVB-T frame modulator. Built from
+    ``DvbTFrameParams``; ``modulate`` produces one frame per call."""
 
-def dvb_t_frame_demodulate(
-    params: DvbTFrameParams,
-    iq: NDArray[np.complex64],
-    n_symbols: int,
-    payload_len: int,
-) -> DvbTRxFrame:
-    """Demodulate one conformant DVB-T frame, acquiring the symbol grid from the
-    guard interval (no preamble). *n_symbols* comes from the paired
-    ``dvb_t_frame_modulate`` result; *payload_len* is the original payload byte
-    count. Raises ``ValueError`` on any acquisition/decode failure.
-    """
-    ...
+    def __init__(self, params: DvbTFrameParams) -> None: ...
+    def modulate(self, payload: NDArray[np.uint8]) -> DvbTFrame:
+        """Modulate *payload* (MPEG-TS payload bytes) into one conformant,
+        preamble-less DVB-T frame."""
+        ...
+
+class DvbTFrameDemod:
+    """A conformant, preamble-less DVB-T frame demodulator. Built from
+    ``DvbTFrameParams``; ``decode`` recovers one frame per call. Integer-CFO
+    correction is off by default — enable it with
+    ``with_integer_cfo_correction(True)`` (a link-constant builder returning a new
+    demod)."""
+
+    def __init__(self, params: DvbTFrameParams) -> None: ...
+    def with_integer_cfo_correction(self, on: bool) -> DvbTFrameDemod:
+        """Return a demod with internal integer-CFO correction enabled/disabled.
+        When on, ``decode`` estimates the whole-subcarrier offset from the
+        continual pilots and rotates it out before demapping."""
+        ...
+    @property
+    def integer_cfo_correction(self) -> bool: ...
+    def decode(
+        self,
+        iq: NDArray[np.complex64],
+        n_symbols: int,
+        payload_len: int,
+    ) -> DvbTRxFrame:
+        """Demodulate one conformant DVB-T frame, acquiring the symbol grid from
+        the guard interval (no preamble). *n_symbols* comes from the paired
+        ``DvbTFrameMod.modulate`` result; *payload_len* is the original payload
+        byte count. Raises ``ValueError`` on any acquisition/decode failure.
+        """
+        ...
 
 def nb_bandwidth_fs(mode: str) -> float:
     """Sample rate (S/s) for a narrowband DVB-T mode: ``"333khz" | "1mhz" |
@@ -1110,35 +1128,59 @@ class DvbTRxSuperFrame:
     @property
     def cell_id(self) -> int: ...
 
-def dvb_t_super_frame_modulate(
-    params: DvbTSuperFrameParams, payload: NDArray[np.uint8]
-) -> DvbTSuperFrame:
-    """Modulate *payload* into one conformant DVB-T super-frame (four frames,
-    alternating TPS sync + a 16-bit cell id split across them)."""
-    ...
+class DvbTSuperFrameMod:
+    """A conformant DVB-T super-frame modulator (four frames, alternating TPS sync
+    + a 16-bit cell id split across them). Built from ``DvbTSuperFrameParams``;
+    ``modulate`` produces one super-frame per call."""
 
-def dvb_t_super_frame_demodulate(
-    params: DvbTSuperFrameParams,
-    iq: NDArray[np.complex64],
-    symbols_per_frame: int,
-    frame_payload_lens: list[int],
-) -> DvbTRxSuperFrame:
-    """Demodulate one conformant DVB-T super-frame, verifying the frame-number
-    sequence 0,1,2,3 and reassembling the 16-bit cell id. *symbols_per_frame* and
-    *frame_payload_lens* come from the paired ``dvb_t_super_frame_modulate``
-    result. Raises ``ValueError`` on failure.
-    """
-    ...
+    def __init__(self, params: DvbTSuperFrameParams) -> None: ...
+    def modulate(self, payload: NDArray[np.uint8]) -> DvbTSuperFrame:
+        """Modulate *payload* into one conformant DVB-T super-frame."""
+        ...
+
+class DvbTSuperFrameDemod:
+    """A conformant DVB-T super-frame demodulator. Built from
+    ``DvbTSuperFrameParams``; ``decode`` recovers one super-frame per call.
+    Integer-CFO correction is off by default — enable it with
+    ``with_integer_cfo_correction(True)`` (delegated to each constituent frame)."""
+
+    def __init__(self, params: DvbTSuperFrameParams) -> None: ...
+    def with_integer_cfo_correction(self, on: bool) -> DvbTSuperFrameDemod:
+        """Return a super-frame demod with internal integer-CFO correction
+        enabled/disabled on every constituent frame."""
+        ...
+    @property
+    def integer_cfo_correction(self) -> bool: ...
+    def decode(
+        self,
+        iq: NDArray[np.complex64],
+        symbols_per_frame: int,
+        frame_payload_lens: list[int],
+    ) -> DvbTRxSuperFrame:
+        """Demodulate one conformant DVB-T super-frame, verifying the frame-number
+        sequence 0,1,2,3 and reassembling the 16-bit cell id. *symbols_per_frame*
+        and *frame_payload_lens* come from the paired ``DvbTSuperFrameMod.modulate``
+        result. Raises ``ValueError`` on failure.
+        """
+        ...
 
 class DvbTFrameStreamDemod:
     """Streaming DVB-T receiver. Push IQ with ``feed()``; it guard-interval-
     acquires and decodes each fixed-size frame as its samples arrive, returning
     the completed ones. ``flush()`` runs a final pass over the residual buffer.
+    Pass ``integer_cfo_correction=True`` to remove each frame's whole-subcarrier
+    CFO internally (a link-constant knob, set once here).
     """
 
     def __init__(
-        self, params: DvbTFrameParams, n_symbols: int, payload_len: int
+        self,
+        params: DvbTFrameParams,
+        n_symbols: int,
+        payload_len: int,
+        integer_cfo_correction: bool = False,
     ) -> None: ...
+    @property
+    def integer_cfo_correction(self) -> bool: ...
     def feed(self, iq: NDArray[np.complex64]) -> list[DvbTRxFrame]:
         """Feed IQ; return the frames that completed. Failed decodes are omitted
         (see ``feed_with_errors``)."""

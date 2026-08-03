@@ -436,36 +436,41 @@ let iq = modu.modulate_frame(&frame, per_frame_seed);
 
 ## DVB-T Frame Modulator (conformant, preamble-less)
 
-`dvb_t_frame_modulate` emits a fully conformant DVB-T on-air frame (ETSI
-EN 300 744): no Schmidl & Cox preamble and no `OrionSdr` header — the
-transmission parameters ride on the TPS carriers, and the receiver acquires from
-the guard interval. It is a dedicated per-standard assembler (not `OfdmFrameMod`,
-which is preamble + header oriented); the RX is `demodulate::dvb_t_frame_demodulate`.
-See [dvb.md](dvb.md) for the waveform design.
+`DvbTFrameMod` emits a fully conformant DVB-T on-air frame (ETSI EN 300 744): no
+Schmidl & Cox preamble and no `OrionSdr` header — the transmission parameters ride
+on the TPS carriers, and the receiver acquires from the guard interval. It is a
+dedicated per-standard assembler (not `OfdmFrameMod`, which is preamble + header
+oriented): construct it once with the link's `DvbTFrameParams`, then call
+`modulate` per frame. The RX is `demodulate::DvbTFrameDemod`. See [dvb.md](dvb.md)
+for the waveform design.
 
 ```rust
 use orion_sdr::{
     fec::PunctureRate,
-    modulate::{ConstellationOrder, dvb_t_frame_modulate},
-    waveform::dvb_t::{DvbTFrameParams, GuardInterval, NbBandwidth},
+    modulate::{ConstellationOrder, DvbTFrameMod},
+    waveform::dvb_t::{DvbTFrameParams, DvbTLinkParams, GuardInterval, NbBandwidth},
 };
 
-// The transmission parameters — everything the TPS word signals. NB-DVB-T is a
-// pure fs-scaling of the fixed 2K structure, so the bandwidth mode
-// (NbBandwidth::Bw333kHz / Bw1MHz / Bw2MHz) only sets the sample rate for RF
-// upconversion; the baseband frame is identical.
+// The transmission parameters — everything the TPS word signals. The link set
+// (guard, constellation, code rate) is shared with the super-frame via
+// DvbTLinkParams. NB-DVB-T is a pure fs-scaling of the fixed 2K structure, so the
+// bandwidth mode (NbBandwidth::Bw333kHz / Bw1MHz / Bw2MHz) only sets the sample
+// rate for RF upconversion; the baseband frame is identical.
 let params = DvbTFrameParams {
-    guard: GuardInterval::G1_8,
-    constellation: ConstellationOrder::Qpsk,   // QPSK / 16-QAM / 64-QAM
-    code_rate: PunctureRate::R1_2,             // K=7 punctured conv rate
-    frame_number: 0,                            // 0..=3 within the super-frame
-    cell_id: 0,
+    link: DvbTLinkParams {
+        guard: GuardInterval::G1_8,
+        constellation: ConstellationOrder::Qpsk,   // QPSK / 16-QAM / 64-QAM
+        code_rate: PunctureRate::R1_2,             // K=7 punctured conv rate
+    },
+    frame_number: 0,                                // 0..=3 within the super-frame
+    cell_id: 0,                                     // this frame's cell-id byte
 };
+let modulator = DvbTFrameMod::new(params);
 
 // `payload` is treated as the MPEG-TS payload bytes (packetized + energy-
 // dispersed inside). One frame spans at least 68 symbols (a full TPS block).
 let payload: Vec<u8> = (0..184).map(|i| (i * 37 + 11) as u8).collect();
-let frame = dvb_t_frame_modulate(params, &payload);
+let frame = modulator.modulate(&payload);
 
 // `frame.iq` is baseband time-domain IQ; `frame.n_symbols` / `samples_per_symbol`
 // describe its layout. To place it on air at a bandwidth mode's sample rate, use
@@ -475,31 +480,34 @@ let _fs = NbBandwidth::Bw1MHz.fs();
 
 ## DVB-T Super-Frame Modulator (four frames)
 
-`dvb_t_super_frame_modulate` sequences **four** consecutive conformant frames
-into one super-frame (§4.4/§4.6): the TPS sync word alternates each frame, the
-16-bit cell id is split across them (b15..b8 in frames 1 & 3, b7..b0 in 2 & 4),
-and the frame number counts 0..3. It drives the single-frame modulator above; the
-RX is `demodulate::dvb_t_super_frame_demodulate`. See [dvb.md](dvb.md) (Frame
-transport) for the structure.
+`DvbTSuperFrameMod` sequences **four** consecutive conformant frames into one
+super-frame (§4.4/§4.6): the TPS sync word alternates each frame, the 16-bit cell
+id is split across them (b15..b8 in frames 1 & 3, b7..b0 in 2 & 4), and the frame
+number counts 0..3. It drives the single-frame modulator above; the RX is
+`demodulate::DvbTSuperFrameDemod`. See [dvb.md](dvb.md) (Frame transport) for the
+structure.
 
 ```rust
 use orion_sdr::{
     fec::PunctureRate,
-    modulate::{ConstellationOrder, DvbTSuperFrameParams, dvb_t_super_frame_modulate},
-    waveform::dvb_t::GuardInterval,
+    modulate::{ConstellationOrder, DvbTSuperFrameMod, DvbTSuperFrameParams},
+    waveform::dvb_t::{DvbTLinkParams, GuardInterval},
 };
 
-// Like DvbTFrameParams, but with the FULL 16-bit cell id (split across frames).
+// Same shared link set as DvbTFrameParams, but with the FULL 16-bit cell id
+// (split across the four frames) and no per-frame number — the driver derives it.
 let params = DvbTSuperFrameParams {
-    guard: GuardInterval::G1_8,
-    constellation: ConstellationOrder::Qpsk,
-    code_rate: PunctureRate::R1_2,
+    link: DvbTLinkParams {
+        guard: GuardInterval::G1_8,
+        constellation: ConstellationOrder::Qpsk,
+        code_rate: PunctureRate::R1_2,
+    },
     cell_id: 0xBEEF,
 };
 
 // The payload is split into four contiguous parts, one per frame.
 let payload: Vec<u8> = (0..700).map(|i| (i * 37 + 11) as u8).collect();
-let sf = dvb_t_super_frame_modulate(params, &payload);
+let sf = DvbTSuperFrameMod::new(params).modulate(&payload);
 
 // `sf.iq` is the four frames concatenated; `sf.symbols_per_frame` /
 // `sf.samples_per_symbol` and `sf.frame_payload_lens` (the per-frame byte counts)
