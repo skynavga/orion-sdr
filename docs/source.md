@@ -46,7 +46,7 @@ src/
     ofdm.rs            — OfdmDemod, OfdmDecider, OfdmEqualizer, EqualizerMethod,
                         OfdmSoftDemod, OfdmRxFrame, build_ofdm_rx_frame,
                         bpsk_soft_llr/qpsk_soft_llr/qam_soft_llr
-    ofdm_frame.rs      — demodulate_frame (batch), OfdmFrameStreamDemod (streaming
+    ofdm_frame.rs      — OfdmFrameDemod (batch), OfdmFrameStreamDemod (streaming
                         feed/flush RX), RxFrame (COFDM frame demodulator)
     dvb_t_frame.rs     — DvbTFrameDemod, DvbTRxFrame (conformant preamble-less
                         DVB-T RX: GI-acquire → equalize → soft-demap → TPS + FEC;
@@ -135,7 +135,7 @@ src/
     modulate.rs       — Python wrappers for analog + BPSK/QPSK/QAM modulators
     ofdm.rs            — Python wrappers for OFDM config, mod, demod, RX frame, sync
     ofdm_frame.rs      — Python wrappers for the COFDM frame layer (FramePacket,
-                        McsTable, OfdmFrameMod, OfdmFrameStreamDemod, demodulate_frame)
+                        McsTable, OfdmFrameMod, OfdmFrameStreamDemod, OfdmFrameDemod)
     psk31.rs          — Python wrappers for PSK31 mod/demod, Varicode, and psk31_sync
 
 tests/

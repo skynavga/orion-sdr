@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // Throughput benchmarks for the COFDM frame (MAC) chain: the real
-// `OfdmFrameMod::modulate_frame` + batch `demodulate_frame` per-link path, where
+// `OfdmFrameMod::modulate_frame` + batch `OfdmFrameDemod::decode` per-link path, where
 // the per-instance `CodecCache` amortizes FEC-code construction across frames.
 // This is the frame/MAC layer over the OFDM modem (whose raw mod/demod
 // throughput lives in `ofdm.rs`) and the concatenated FEC (whose per-block
@@ -15,11 +15,9 @@
 use super::fec::random_bytes;
 use super::{measure_throughput, minsps_from_env};
 use num_complex::Complex32 as C32;
-use orion_sdr::demodulate::demodulate_frame;
+use orion_sdr::demodulate::OfdmFrameDemod;
 use orion_sdr::fec::{ConvCode, FrameMetadata, FramePacket, InnerFec, OuterFec, PunctureRate};
-use orion_sdr::modulate::{
-    CodecCache, ConstellationOrder, Mcs, McsTable, OfdmConfig, OfdmFrameMod,
-};
+use orion_sdr::modulate::{ConstellationOrder, Mcs, McsTable, OfdmConfig, OfdmFrameMod};
 use orion_sdr::multicarrier::CarrierPlan;
 use orion_sdr::sync::OfdmPreamble;
 use std::hint::black_box;
@@ -40,8 +38,8 @@ fn frame_preamble(cfg: &OfdmConfig) -> OfdmPreamble {
 }
 
 /// Measures mod (`modulate_frame`, cache warm across frames) and batch demod
-/// (`demodulate_frame` with a persistent cache) for one concatenation over the
-/// default small (n_fft=64) plan, printing both Msps. `mcs_index` selects the
+/// (`OfdmFrameDemod::decode` with a persistent cache) for one concatenation over
+/// the default small (n_fft=64) plan, printing both Msps. `mcs_index` selects the
 /// entry from `table` to exercise.
 fn frame_chain(table: McsTable, mcs_index: u8, label: &str) {
     let cfg = frame_config();
@@ -90,14 +88,14 @@ pub(crate) fn frame_chain_with(
     );
     println!("[Frame-Chain-Mod {label}] {mod_msps:.4} Msps in {mod_dt:.3}s");
 
-    // Demodulate path: batch entry point with a caller-owned cache reused across
-    // all passes, so decode throughput is measured on the SAME warm-cache footing
-    // as the modulate path (not dominated by per-call code construction). Asserts
-    // correctness each pass.
-    let demod_cache = CodecCache::new();
+    // Demodulate path: one batch demodulator whose persistent cache is reused
+    // across all passes, so decode throughput is measured on the SAME warm-cache
+    // footing as the modulate path (not dominated by per-call code construction).
+    // Asserts correctness each pass.
+    let demod = OfdmFrameDemod::new(cfg.clone(), table.clone());
     let (demod_msps, demod_dt) = measure_throughput(
         || {
-            let got = demodulate_frame(&cfg, &table, &body, Some(&demod_cache)).expect("decode");
+            let got = demod.decode(&body).expect("decode");
             assert_eq!(got.payload, payload, "frame chain: payload recovered");
             black_box(got.payload[0]);
             frame_samples
@@ -116,7 +114,7 @@ pub(crate) fn frame_chain_with(
             seed = seed.wrapping_add(1);
             let iq = modu.modulate_frame(black_box(&frame), black_box(seed));
             let body: Vec<C32> = iq[pre_len..].to_vec();
-            let got = demodulate_frame(&cfg, &table, &body, Some(&demod_cache)).expect("decode");
+            let got = demod.decode(&body).expect("decode");
             assert_eq!(
                 got.payload, payload,
                 "frame chain roundtrip: payload recovered"

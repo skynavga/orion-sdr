@@ -785,7 +785,7 @@ pub fn dvb_t_mcs_table() -> McsTable {
 /// the 2K carrier plan (with continual pilots) at `fs = occupied_hz·2048/1705`,
 /// DVB-T energy dispersal (before the outer FEC), and the Forney I=12/M=17 outer
 /// interleaver. Pair with [`dvb_t_mcs_table`] and drive it through the COFDM
-/// frame layer (`OfdmFrameMod`/`demodulate_frame`).
+/// frame layer (`OfdmFrameMod`/`OfdmFrameDemod`).
 ///
 /// The payload FEC is DVB-T-conformant (K=7 conv + Forney + RS(204,188) + exact
 /// energy dispersal); the symbol mapping through the frame layer is the generic

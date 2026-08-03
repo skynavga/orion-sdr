@@ -117,7 +117,7 @@ class TestFrameRoundtrip:
         # Batch demod expects IQ starting after the preamble+training.
         preamble = sdr.generate_ofdm_preamble(cfg, 4, 16, N_FFT, CP_LEN)
         body = iq[len(preamble):]
-        got = sdr.demodulate_frame(cfg, table, body)
+        got = sdr.OfdmFrameDemod(cfg, table).decode(body)
         assert np.array_equal(got.payload, payload)
         assert got.sequence_num == 0x1234
 
@@ -131,7 +131,7 @@ class TestFrameRoundtrip:
         iq = mod.modulate_frame(frame)
         preamble = sdr.generate_ofdm_preamble(cfg, 4, 16, N_FFT, CP_LEN)
         body = iq[len(preamble):]
-        got = sdr.demodulate_frame(cfg, table, body)
+        got = sdr.OfdmFrameDemod(cfg, table).decode(body)
         assert np.array_equal(got.payload, payload)
 
     def test_unknown_decode_rule_rejected(self):
@@ -157,8 +157,8 @@ class TestFrameRoundtrip:
         body = iq[len(preamble):]
 
         # Shared-cache batch decode, and the no-cache path, agree.
-        got_shared = sdr.demodulate_frame(cfg, table, body, cache=cache)
-        got_default = sdr.demodulate_frame(cfg, table, body)
+        got_shared = sdr.OfdmFrameDemod(cfg, table, cache=cache).decode(body)
+        got_default = sdr.OfdmFrameDemod(cfg, table).decode(body)
         assert np.array_equal(got_shared.payload, payload)
         assert np.array_equal(got_default.payload, got_shared.payload)
         assert got_shared.sequence_num == 0x55AA

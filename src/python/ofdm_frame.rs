@@ -16,7 +16,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use super::ofdm::PyOfdmConfig;
-use crate::demodulate::{OfdmFrameStreamDemod, demodulate_frame};
+use crate::demodulate::{OfdmFrameDemod, OfdmFrameStreamDemod};
 use crate::fec::{
     ConvCode, FrameMetadata, FramePacket, InnerFec, LdpcCode, OuterFec, PunctureRate,
 };
@@ -245,7 +245,7 @@ fn build_preamble(
 /// Building a code — the LDPC parity-check matrix above all — costs
 /// milliseconds and is a pure function of its parameters, so it need only be
 /// done once per link. Pass one `CodecCache` to an `OfdmFrameMod`, an
-/// `OfdmFrameStreamDemod`, and/or `demodulate_frame` (via their `cache=`
+/// `OfdmFrameStreamDemod`, and/or an `OfdmFrameDemod` (via their `cache=`
 /// argument) to build each code once and reuse it across all of them — e.g. a
 /// transmitter and receiver on the same MCS then share the built codes. Omitting
 /// `cache=` gives each object its own private cache, which still amortizes
@@ -411,30 +411,44 @@ impl PyOfdmFrameStreamDemod {
     }
 }
 
-// ── demodulate_frame (batch) ────────────────────────────────────────────────
+// ── OfdmFrameDemod (batch) ──────────────────────────────────────────────────
 
-/// Batch-demodulates a single frame at a known start (`iq[0]` is the first
-/// sample after the preamble+training, already synchronized). Raises
-/// `ValueError` on a decode failure. Pass `cache=` a `CodecCache` to reuse built
-/// FEC codes across a batch of calls (or share them with a modulator).
-#[pyfunction]
-#[pyo3(name = "demodulate_frame", signature = (cfg, mcs_table, iq, cache = None))]
-fn demodulate_frame_py(
-    cfg: &PyOfdmConfig,
-    mcs_table: &PyMcsTable,
-    iq: PyReadonlyArray1<'_, Complex32>,
-    cache: Option<&PyCodecCache>,
-) -> PyResult<PyFramePacket> {
-    let config = cfg.inner_config();
-    let table = mcs_table.to_table()?;
-    let frame = demodulate_frame(
-        &config,
-        &table,
-        iq.as_slice()?,
-        cache.map(|c| c.inner.as_ref()),
-    )
-    .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    Ok(PyFramePacket::from_frame(frame))
+/// The batch COFDM frame demodulator — decodes a single frame at a known start
+/// (`iq[0]` is the first sample after the preamble+training, already
+/// synchronized). The counterpart of `OfdmFrameMod`. Pass `cache=` a `CodecCache`
+/// to reuse built FEC codes across calls (or share them with a modulator).
+#[pyclass(name = "OfdmFrameDemod")]
+pub struct PyOfdmFrameDemod {
+    inner: OfdmFrameDemod,
+}
+
+#[pymethods]
+impl PyOfdmFrameDemod {
+    #[new]
+    #[pyo3(signature = (cfg, mcs_table, cache = None))]
+    fn new(
+        cfg: &PyOfdmConfig,
+        mcs_table: &PyMcsTable,
+        cache: Option<&PyCodecCache>,
+    ) -> PyResult<Self> {
+        let config = cfg.inner_config();
+        let cache = cache
+            .map(|c| Arc::clone(&c.inner))
+            .unwrap_or_else(|| Arc::new(CodecCache::new()));
+        Ok(Self {
+            inner: OfdmFrameDemod::with_cache(config, mcs_table.to_table()?, cache),
+        })
+    }
+
+    /// Decodes one frame whose IQ begins at the first post-preamble sample.
+    /// Raises `ValueError` on a decode failure.
+    fn decode(&self, iq: PyReadonlyArray1<'_, Complex32>) -> PyResult<PyFramePacket> {
+        let frame = self
+            .inner
+            .decode(iq.as_slice()?)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(PyFramePacket::from_frame(frame))
+    }
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -443,6 +457,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMcsTable>()?;
     m.add_class::<PyOfdmFrameMod>()?;
     m.add_class::<PyOfdmFrameStreamDemod>()?;
-    m.add_function(wrap_pyfunction!(demodulate_frame_py, m)?)?;
+    m.add_class::<PyOfdmFrameDemod>()?;
     Ok(())
 }

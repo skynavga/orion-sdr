@@ -54,10 +54,10 @@
     sub-0.3 dB coding-gain cost on the payload; the header always uses sum-product)
   - Per-link `CodecCache` sharing constructed FEC codes across frames (and,
     optionally, across a modulator/demodulator pair), with a process-wide
-    `Gf256`; the batch `demodulate_frame` takes an optional caller-owned cache
+    `Gf256`; every frame object owns a persistent cache or accepts a shared one
   - Frame TX (`OfdmFrameMod`) and streaming RX (`OfdmFrameStreamDemod`,
     feed/flush) with in-band header, acquisition, CFO correction, equalization,
-    concatenated decode, and CRC check; batch `demodulate_frame` for a known start
+    concatenated decode, and CRC check; batch `OfdmFrameDemod` for a known start
 - Unit, roundtrip, throughput, and SNR-sensitivity tests (292 default `cargo
   test --release`, 360 total including `--features throughput`)
 - Python bindings (51 classes/functions total, including full PSK31, OFDM, and
