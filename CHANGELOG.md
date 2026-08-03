@@ -9,6 +9,70 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.51] - 2026-08-03
+
+NB-DVB-T Phase 4b: adds the capture-readiness pieces on top of the conformant
+single frame — a four-frame super-frame driver, a streaming receiver, and an
+integer-CFO estimator — and exposes the super-frame and streaming paths to
+Python. All three are self-verified in-repo; the external-IQ capture harness
+(the fourth audited gap) remains deferred pending a published capture. Folding
+the integer-CFO correction into the receivers as a construction-time flag is
+left to a follow-up that makes the DVB-T frame/super-frame paths stateful
+objects.
+
+### Added
+
+- DVB-T super-frame orchestration (`modulate::dvb_t_super_frame` +
+  `demodulate::dvb_t_super_frame`): the multi-frame driver over the single-frame
+  conformant path (EN 300 744 §4.4/§4.6). It emits and recovers a four-frame
+  super-frame (frame numbers 0..3) with the standard's super-frame structure —
+  the TPS synchronization word alternates every frame (frames 1&3 use
+  `TPS_SYNC_WORD_13`, frames 2&4 use `TPS_SYNC_WORD_24`, §4.6.2.2) so a receiver
+  can find the super-frame boundary, and the 16-bit cell identifier is split
+  across the super-frame (b15..b8 in frames 1&3, b7..b0 in frames 2&4,
+  §4.6.2.10) and reassembled on RX. `DvbTSuperFrameParams` carries the full
+  16-bit cell id; the payload is split into four contiguous parts (zero-padded to
+  a common length) and the RX trims each back to its recorded length. Each frame
+  codes its own part independently; the standard's byte-continuous stream (an RS
+  packet straddling a frame boundary for fractional-per-frame rates, e.g. QPSK
+  r3/4 = 94.5 pkts/frame) is left to a future streaming path.
+- Streaming DVB-T receiver (`demodulate::dvb_t_stream::DvbTFrameStreamDemod`):
+  `feed` / `flush` / `clear` accumulate-and-drain over the batch conformant
+  decoder, chunk-boundary-invariant, mirroring `OfdmFrameStreamDemod` — the
+  conformant path is no longer batch-only.
+- DVB-T integer-CFO estimator (`sync::dvb_t_integer_cfo`): the guard-interval
+  acquisition resolves the CFO only within ±½ a subcarrier, so a capture with a
+  larger front-end offset is shifted by whole subcarriers and will not demap. The
+  45 continual pilots (fixed positions, boosted 16/9) anchor that integer offset —
+  given an aligned symbol's FFT bins, the estimator searches trial shifts and
+  returns the one maximizing the continual-pilot energy (`IntegerCfoResult
+  { bins, confidence }`). This is the DVB-T-native counterpart to the OFDM
+  preamble path's training-symbol integer-CFO recovery, which a preamble-less
+  frame cannot use. Correction is caller-driven for now (rotate by −k·fs/n_fft
+  before decoding); adds a `waveform::dvb_t::continual_pilot_bins` helper. Because
+  the pilot peak is modest (45 of 1705 carriers, ~1.7× over the all-shifts mean),
+  accumulate `|X|²` per bin over several symbols under noise.
+- Python bindings for the super-frame and streaming paths
+  (`src/python/dvb_t_frame.rs`): `DvbTSuperFrameParams`,
+  `dvb_t_super_frame_modulate` → `DvbTSuperFrame`, `dvb_t_super_frame_demodulate`
+  → `DvbTRxSuperFrame` (`.payload` / `.cell_id`), and `DvbTFrameStreamDemod`
+  (`feed` / `feed_with_errors` / `flush` / `clear` / `buffered`), with `.pyi`
+  stubs and worked examples in `docs/python.md`.
+
+### Changed
+
+- Reorganized the throughput benches by waveform layer: new
+  `tests/performance/throughput/cofdm.rs` (COFDM frame-chain benches + the
+  `frame_chain` driver) and `dvbt.rs` (DVB-T bandwidth sweep, conformant frame,
+  super-frame, and integer-CFO benches); `fec.rs` is now pure FEC-block kernels +
+  construction costs. `docs/performance.md` gains super-frame and integer-CFO
+  subsections and per-waveform run commands.
+- Documentation: `docs/modulate.md` and `docs/demodulate.md` gain super-frame and
+  streaming RX sections (replacing the stale "not yet provided" note),
+  `docs/dvb.md` documents the three frame-transport layers and the integer-CFO
+  acquisition step, and `docs/demodulate.md` carries a worked integer-CFO wiring
+  example.
+
 ## [0.0.50] - 2026-08-02
 
 NB-DVB-T Phase 4a: fixes the conformant DVB-T frame's channel estimation, packs
