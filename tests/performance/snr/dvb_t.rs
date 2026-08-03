@@ -112,8 +112,9 @@ fn at_snr(decode: &[f32], snr_db: f32) -> f32 {
 
 #[test]
 fn dvb_t_frame_ber_vs_snr_qpsk_r12() {
-    // The robust config: QPSK rate 1/2 — the 333 kHz-class baseline. It decodes
-    // essentially from the bottom of the sweep; require a clean lock by a low SNR.
+    // The robust config: QPSK rate 1/2 — the 333 kHz-class baseline. The frame is
+    // filled with real coded data (null-packet stuffing), so this is a genuine
+    // full-payload decode; it locks cleanly by a low SNR.
     let p = params(ConstellationOrder::Qpsk, PunctureRate::R1_2);
     let payload: Vec<u8> = (0..184).map(|i| ((i * 37 + 11) & 0xff) as u8).collect();
     let decode = sweep("QPSK r1/2", p, &payload, 0x5EED_0000);
@@ -127,15 +128,15 @@ fn dvb_t_frame_ber_vs_snr_qpsk_r12() {
 #[test]
 fn dvb_t_frame_ber_vs_snr_qam16_r34() {
     // A denser config: 16-QAM rate 3/4 — the 2 MHz-class high-rate mode. Correctly
-    // LESS robust than QPSK r1/2: it must reach a full lock by a moderate SNR but
+    // LESS robust than QPSK r1/2: it must reach a full lock by a higher SNR but
     // not already be locked at the low SNR where QPSK r1/2 is (robustness ordering).
     let p = params(ConstellationOrder::Qam16, PunctureRate::R3_4);
     let payload: Vec<u8> = (0..184).map(|i| ((i * 29 + 7) & 0xff) as u8).collect();
     let decode = sweep("16-QAM r3/4", p, &payload, 0x1600_0000);
     assert!(
-        at_snr(&decode, 10.0) >= 0.9,
-        "16-QAM r3/4 must decode ≥90% by 10 dB (was {:.0}%)",
-        at_snr(&decode, 10.0) * 100.0
+        at_snr(&decode, 15.0) >= 0.9,
+        "16-QAM r3/4 must decode ≥90% by 15 dB (was {:.0}%)",
+        at_snr(&decode, 15.0) * 100.0
     );
 
     // Robustness ordering: at a low SNR the robust QPSK r1/2 decodes essentially

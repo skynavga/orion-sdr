@@ -27,7 +27,7 @@
 // continuous TS). Multi-frame streaming and super-frame sync-word alternation are
 // left for a future streaming path.
 
-use super::ofdm_frame::{CodecCache, encode_chain, symbols_for_coded_bits};
+use super::ofdm_frame::{CodecCache, block_plan, encode_chain, symbols_for_coded_bits};
 use crate::core::Block;
 use crate::fec::{CrcKind, InterleaverKind, ScramblerKind, ScramblerPos};
 use crate::multicarrier::{CyclicPrefixInsert, IfftBlock};
@@ -36,7 +36,9 @@ use crate::waveform::dvb_t::{
     ScatteredPilotMapper, dvb_t_map_symbol, tps_carrier_bins,
 };
 use crate::waveform::dvb_t_tps::{TPS_SYMBOLS_PER_FRAME, TpsEncoder};
-use crate::waveform::dvb_t_ts::{ts_energy_disperse, ts_packetize};
+use crate::waveform::dvb_t_ts::{
+    TS_PACKET_LEN, ts_energy_disperse, ts_packetize, ts_stuff_null_packets,
+};
 use num_complex::Complex32 as C32;
 
 /// A modulated DVB-T frame: the time-domain IQ plus the numerology a receiver
@@ -57,7 +59,15 @@ pub struct DvbTFrame {
 /// through the four-phase scattered-pilot grid, and the TPS word DBPSK-woven onto
 /// the 17 TPS carriers across the symbols. `payload` is the TS payload (packetized
 /// here). The frame spans `max(payload symbols, 68)` OFDM symbols so a full TPS
-/// block is present; unused data carriers in the final symbols are zero-filled.
+/// block is present.
+///
+/// A short payload that does not fill the frame is **stuffed with MPEG-2 null
+/// packets** (PID `0x1FFF`) so the coded stream reaches every data carrier —
+/// §4.4 ("all symbols contain data") and §4.3.1 (randomization stays active with
+/// no program input): a compliant DVB-T signal never leaves data carriers zeroed.
+/// The RX trims the recovered payload back to `payload_len`, so the stuffing is
+/// transparent. (Exact-fit with no stuffing is a super-frame property — §4.7,
+/// Table 16 — handled by the future super-frame path, not here.)
 pub fn dvb_t_frame_modulate(params: DvbTFrameParams, payload: &[u8]) -> DvbTFrame {
     let cache = CodecCache::new();
     let base = params.config();
@@ -65,12 +75,46 @@ pub fn dvb_t_frame_modulate(params: DvbTFrameParams, payload: &[u8]) -> DvbTFram
     let n_fft = DVB_T_N_FFT;
     let sps = n_fft + cp_len;
     let vbits = params.constellation.bits_per_symbol();
+    let bits_per_sym = DVB_T_DATA_CARRIERS * vbits;
 
-    // 1. TS-packetize + DVB-T energy dispersal (byte domain).
+    // Coded-bit count the FEC chain produces from a whole number of TS packets
+    // (`n_pkt` × 188-byte info), via the shared block plan.
+    let coded_bits_for_packets = |n_pkt: usize| -> usize {
+        block_plan(
+            n_pkt * TS_PACKET_LEN,
+            CrcKind::None,
+            DVB_T_FRAME_OUTER,
+            params.inner(),
+            DVB_T_FRAME_OUTER_IL,
+            InterleaverKind::None,
+            &cache,
+        )
+        .coded_bits
+    };
+
+    // 1. TS-packetize the real payload; decide the frame's symbol count from it,
+    //    padded to a full 68-symbol TPS block.
     let mut ts = ts_packetize(payload);
+    let n_real_packets = ts.len() / TS_PACKET_LEN;
+    let payload_syms = symbols_for_coded_bits(
+        &base,
+        params.constellation,
+        coded_bits_for_packets(n_real_packets),
+    );
+    let n_symbols = payload_syms.max(TPS_SYMBOLS_PER_FRAME);
+
+    // 2. Stuff null packets until the coded stream fills the frame's data
+    //    carriers (so no carrier is left zeroed), then apply energy dispersal to
+    //    the whole (payload + null) stream.
+    let capacity_bits = n_symbols * bits_per_sym;
+    let mut target_packets = n_real_packets.max(1);
+    while coded_bits_for_packets(target_packets) < capacity_bits {
+        target_packets += 1;
+    }
+    ts_stuff_null_packets(&mut ts, target_packets);
     ts_energy_disperse(&mut ts);
 
-    // 2. Payload FEC: RS(204,188) + K=7 conv + Forney interleaver. No extra
+    // 3. Payload FEC: RS(204,188) + K=7 conv + Forney interleaver. No extra
     //    scrambler here — energy dispersal was applied at the TS layer.
     let coded_bits = encode_chain(
         &ts,
@@ -84,10 +128,10 @@ pub fn dvb_t_frame_modulate(params: DvbTFrameParams, payload: &[u8]) -> DvbTFram
         0,
         &cache,
     );
-
-    // 3. Symbol count, padded to a full TPS frame (68 symbols).
-    let payload_syms = symbols_for_coded_bits(&base, params.constellation, coded_bits.len());
-    let n_symbols = payload_syms.max(TPS_SYMBOLS_PER_FRAME);
+    debug_assert!(
+        coded_bits.len() >= capacity_bits,
+        "null-packet stuffing must fill every data carrier"
+    );
 
     // 4. Map symbols: data via the scattered grid + DVB-T constellation, then
     //    overwrite the TPS carriers with the DBPSK cells for that symbol.
@@ -103,9 +147,11 @@ pub fn dvb_t_frame_modulate(params: DvbTFrameParams, payload: &[u8]) -> DvbTFram
     let mut time = vec![C32::default(); n_fft];
     let mut iq = vec![C32::default(); n_symbols * sps];
 
-    let bits_per_sym = DVB_T_DATA_CARRIERS * vbits;
     for s in 0..n_symbols {
         for (c, slot) in data_syms.iter_mut().enumerate() {
+            // Stuffing guarantees the coded stream reaches every carrier; a short
+            // final overrun (coded bits past the last carrier) is simply unused,
+            // as in a continuous transmission crossing a frame boundary.
             let bit_base = s * bits_per_sym + c * vbits;
             *slot = if bit_base + vbits <= coded_bits.len() {
                 dvb_t_map_symbol(&coded_bits[bit_base..bit_base + vbits]).expect("DVB-T order")

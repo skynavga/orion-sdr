@@ -438,3 +438,64 @@ fn dvb_t_equalizer_noiseless_clean_qam16() {
         assert_noiseless_equalizer_is_clean(ConstellationOrder::Qam16, PunctureRate::R3_4, guard);
     }
 }
+
+// ── Null-packet stuffing: every data carrier is filled (EN 300 744 §4.4) ─────
+//
+// A short payload is padded to a full 68-symbol frame; the modulator stuffs the
+// TS stream with null packets so the coded stream reaches every data carrier
+// (§4.4: "all symbols contain data"; §4.3.1: randomization stays active with no
+// program input) — a compliant DVB-T signal never leaves data carriers zeroed.
+// The stuffing must also be transparent: the RX still recovers the real payload.
+#[test]
+fn dvb_t_short_frame_stuffs_all_carriers() {
+    use orion_sdr::multicarrier::CyclicPrefixRemove;
+    use orion_sdr::waveform::dvb_t::{DVB_T_DATA_CARRIERS, DVB_T_N_FFT, ScatteredPilotExtractor};
+
+    for (const_, rate) in [
+        (ConstellationOrder::Qpsk, PunctureRate::R1_2),
+        (ConstellationOrder::Qpsk, PunctureRate::R3_4), // non-integer RS pkts / frame
+        (ConstellationOrder::Qam16, PunctureRate::R3_4),
+    ] {
+        let params = DvbTFrameParams {
+            guard: GuardInterval::G1_8,
+            constellation: const_,
+            code_rate: rate,
+            frame_number: 0,
+            cell_id: 0,
+        };
+        // A tiny payload — far short of the frame, so most of it would be padding.
+        let payload = sample_payload(184);
+        let frame = dvb_t_frame_modulate(params, &payload);
+        let n_fft = DVB_T_N_FFT;
+        let cp_len = GuardInterval::G1_8.cp_len_2k();
+        let sps = n_fft + cp_len;
+
+        // Every data carrier of every symbol must be a real (non-zero) cell.
+        let mut ext = ScatteredPilotExtractor::new(GuardInterval::G1_8);
+        let mut cpr = CyclicPrefixRemove::new(n_fft, cp_len);
+        let mut fft = FftBlock::new(n_fft);
+        let mut time = vec![C32::default(); n_fft];
+        let mut freq = vec![C32::default(); n_fft];
+        let mut data = vec![C32::default(); DVB_T_DATA_CARRIERS];
+        let mut zeroed = 0usize;
+        for s in 0..frame.n_symbols {
+            cpr.process(&frame.iq[s * sps..], &mut time);
+            fft.process(&time, &mut freq);
+            ext.extract_symbol(&freq, &mut data);
+            zeroed += data.iter().filter(|v| v.norm() < 1e-6).count();
+        }
+        assert_eq!(
+            zeroed, 0,
+            "no data carrier may be zeroed after null-packet stuffing ({const_:?} {rate:?})"
+        );
+
+        // Stuffing is transparent: the payload still round-trips.
+        let lead = 200usize;
+        let mut buf = vec![C32::default(); lead];
+        buf.extend_from_slice(&frame.iq);
+        buf.extend(vec![C32::default(); frame.samples_per_symbol]);
+        let got = dvb_t_frame_demodulate(params, &buf, frame.n_symbols, payload.len())
+            .expect("stuffed short frame decodes");
+        assert_eq!(got.payload, payload, "payload recovered through stuffing");
+    }
+}
