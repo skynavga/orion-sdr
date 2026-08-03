@@ -9,6 +9,43 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.52] - 2026-08-03
+
+NB-DVB-T Phase 5: replaces the DVB-T batch frame and super-frame free functions
+with stateful modulator/demodulator objects, making DVB-T consistent with every
+other waveform in the crate, and folds the integer-CFO correction into the demod
+as a construction-time flag. This is an API-shape change (the object bodies are
+the former free-function bodies verbatim), so decoded output is byte-identical.
+
+### Changed
+
+- **Breaking:** the DVB-T frame and super-frame paths are now objects, not free
+  functions. `dvb_t_frame_modulate` / `dvb_t_frame_demodulate` become
+  `DvbTFrameMod::new(params).modulate(payload)` /
+  `DvbTFrameDemod::new(params).decode(iq, n_symbols, payload_len)`; likewise
+  `dvb_t_super_frame_modulate` / `dvb_t_super_frame_demodulate` become
+  `DvbTSuperFrameMod` / `DvbTSuperFrameDemod`. These were the crate's last
+  mod/demod free-function outliers; every other waveform (and COFDM's own
+  modulator and streaming receiver) was already an object.
+- Integer-CFO correction is now a construction-time builder flag on the
+  demodulator, `DvbTFrameDemod::new(params).with_integer_cfo_correction(true)`
+  (and the same on `DvbTSuperFrameDemod` and, via a constructor argument on the
+  Python `DvbTFrameStreamDemod`). When enabled, the demod estimates the
+  whole-subcarrier offset from the continual pilots after its own guard-interval
+  acquisition and rotates it out internally, replacing the previous
+  caller-assembled pre-pass. The estimator `sync::dvb_t_integer_cfo` remains
+  public for standalone use. Always-on, the correction costs a few percent of the
+  decode (~4–6%, `throughput_dvb_t_integer_cfo`).
+- **Breaking:** the shared modulation-and-coding fields (guard interval,
+  constellation, code rate) are extracted into a `DvbTLinkParams` that both
+  `DvbTFrameParams` and `DvbTSuperFrameParams` embed as a `link` field.
+  `DvbTFrameParams` keeps its `frame_number` and an 8-bit `cell_id` (the byte a
+  frame's TPS carriers actually transmit); `DvbTSuperFrameParams` keeps the full
+  16-bit `cell_id` (split across the four frames). Delegating
+  `guard()` / `constellation()` / `code_rate()` accessors are provided on both.
+  The Python string constructors are unchanged (they build the link set
+  internally).
+
 ## [0.0.51] - 2026-08-03
 
 NB-DVB-T Phase 4b: adds the capture-readiness pieces on top of the conformant
