@@ -499,3 +499,162 @@ fn dvb_t_short_frame_stuffs_all_carriers() {
         assert_eq!(got.payload, payload, "payload recovered through stuffing");
     }
 }
+
+// ── Integer-CFO estimation (continual-pilot spectral correlation) ───────────
+//
+// `dvb_t_gi_sync` recovers only the fractional CFO (±½ subcarrier); a large
+// front-end offset shifts the whole spectrum by whole subcarriers. The continual
+// pilots (fixed positions, boosted) anchor that integer offset. These tests apply
+// a KNOWN integer-subcarrier CFO and check `dvb_t_integer_cfo` recovers it — and
+// that correcting by the estimate restores an end-to-end decode.
+
+#[test]
+fn dvb_t_integer_cfo_recovers_known_shift() {
+    use orion_sdr::sync::dvb_t_integer_cfo;
+    use orion_sdr::waveform::dvb_t::DVB_T_N_FFT;
+
+    let params = DvbTFrameParams {
+        guard: GuardInterval::G1_8,
+        constellation: ConstellationOrder::Qpsk,
+        code_rate: PunctureRate::R1_2,
+        frame_number: 0,
+        cell_id: 0,
+    };
+    let payload = sample_payload(184);
+    let frame = dvb_t_frame_modulate(params, &payload);
+    let n_fft = DVB_T_N_FFT;
+    let cp_len = GuardInterval::G1_8.cp_len_2k();
+
+    // FFT symbol 0 (skip its CP) to get its true frequency-domain bins.
+    let mut cpr = CyclicPrefixRemove::new(n_fft, cp_len);
+    let mut fft = FftBlock::new(n_fft);
+    let mut time = vec![C32::default(); n_fft];
+    let mut freq = vec![C32::default(); n_fft];
+    cpr.process(&frame.iq, &mut time);
+    fft.process(&time, &mut freq);
+
+    // No shift → estimate 0. Confidence is the pilot-position energy over the
+    // all-shifts mean; the continual pilots are boosted only ~1.78× and are 45 of
+    // 1705 carriers, so the true peak sits modestly (~1.7×) above the mean — enough
+    // to win the search, but not a large ratio.
+    let z = dvb_t_integer_cfo(&freq, n_fft, 32).expect("estimate");
+    assert_eq!(z.bins, 0, "no CFO → 0 bins (confidence {})", z.confidence);
+    assert!(
+        z.confidence > 1.3,
+        "true pilots peak above the mean (got {})",
+        z.confidence
+    );
+
+    // A spectrum shifted by k bins (circular) must be estimated as +k.
+    for k in [-7i32, -1, 3, 12] {
+        let shifted: Vec<C32> = (0..n_fft)
+            .map(|b| freq[(b as i32 - k).rem_euclid(n_fft as i32) as usize])
+            .collect();
+        let est = dvb_t_integer_cfo(&shifted, n_fft, 32).expect("estimate");
+        assert_eq!(est.bins, k, "shift {k} recovered (got {})", est.bins);
+    }
+}
+
+#[test]
+fn dvb_t_integer_cfo_end_to_end() {
+    // Apply a real integer-subcarrier CFO to the whole frame, recover it from the
+    // first symbol, correct, and decode.
+    use orion_sdr::dsp::Rotator;
+    use orion_sdr::sync::dvb_t_integer_cfo;
+    use orion_sdr::waveform::dvb_t::DVB_T_N_FFT;
+
+    let params = DvbTFrameParams {
+        guard: GuardInterval::G1_8,
+        constellation: ConstellationOrder::Qpsk,
+        code_rate: PunctureRate::R1_2,
+        frame_number: 0,
+        cell_id: 0,
+    };
+    let payload = sample_payload(184);
+    let frame = dvb_t_frame_modulate(params, &payload);
+    let n_fft = DVB_T_N_FFT;
+    let cp_len = GuardInterval::G1_8.cp_len_2k();
+    let sps = n_fft + cp_len;
+    let fs = params.config().fs;
+    let bin_hz = fs / n_fft as f32;
+
+    // Apply +5 subcarriers of CFO to the whole frame.
+    let k_true = 5i32;
+    let mut shifted = vec![C32::default(); frame.iq.len()];
+    Rotator::new(k_true as f32 * bin_hz, fs).rotate_block(&frame.iq, &mut shifted);
+
+    // Uncorrected, the batch RX should fail (large CFO breaks the demap).
+    assert!(
+        dvb_t_frame_demodulate(params, &shifted, frame.n_symbols, payload.len()).is_err(),
+        "an uncorrected integer CFO must break decode"
+    );
+
+    // Estimate the integer CFO from symbol 0 and correct the whole frame.
+    let mut cpr = CyclicPrefixRemove::new(n_fft, cp_len);
+    let mut fft = FftBlock::new(n_fft);
+    let mut time = vec![C32::default(); n_fft];
+    let mut freq = vec![C32::default(); n_fft];
+    cpr.process(&shifted, &mut time);
+    fft.process(&time, &mut freq);
+    let est = dvb_t_integer_cfo(&freq, n_fft, 32).expect("estimate");
+    assert_eq!(est.bins, k_true, "estimated the applied integer CFO");
+
+    let mut corrected = vec![C32::default(); shifted.len()];
+    Rotator::new(-(est.bins as f32) * bin_hz, fs).rotate_block(&shifted, &mut corrected);
+
+    // Place with lead-in and decode.
+    let mut buf = vec![C32::default(); 200];
+    buf.extend_from_slice(&corrected);
+    buf.extend(vec![C32::default(); sps]);
+    let got = dvb_t_frame_demodulate(params, &buf, frame.n_symbols, payload.len())
+        .expect("decode after integer-CFO correction");
+    assert_eq!(got.payload, payload);
+}
+
+#[test]
+fn dvb_t_integer_cfo_survives_awgn() {
+    // The continual-pilot peak is modest (~1.7×), so confirm the estimate still
+    // holds under moderate noise. Accumulating the pilot energy over several
+    // symbols sharpens it; here a single symbol at a decodable SNR already works.
+    use orion_sdr::sync::dvb_t_integer_cfo;
+    use orion_sdr::waveform::dvb_t::DVB_T_N_FFT;
+
+    let params = DvbTFrameParams {
+        guard: GuardInterval::G1_8,
+        constellation: ConstellationOrder::Qpsk,
+        code_rate: PunctureRate::R1_2,
+        frame_number: 0,
+        cell_id: 0,
+    };
+    let payload = sample_payload(184);
+    let frame = dvb_t_frame_modulate(params, &payload);
+    let n_fft = DVB_T_N_FFT;
+    let cp_len = GuardInterval::G1_8.cp_len_2k();
+    let sps = n_fft + cp_len;
+
+    // Sum pilot-position energy over the first few symbols for a firmer estimate,
+    // under AWGN at a decodable SNR (noise_scale 0.03 ≈ 15 dB).
+    let sig_power: f32 = frame.iq.iter().map(|s| s.norm_sqr()).sum::<f32>() / frame.iq.len() as f32;
+    let mut noisy = frame.iq.clone();
+    add_awgn(&mut noisy, sig_power * 0.03, 0x1CF0_0777);
+
+    let mut cpr = CyclicPrefixRemove::new(n_fft, cp_len);
+    let mut fft = FftBlock::new(n_fft);
+    let mut time = vec![C32::default(); n_fft];
+    let mut freq = vec![C32::default(); n_fft];
+    let mut accum = vec![C32::default(); n_fft];
+    // Coherent-magnitude accumulation across 8 symbols: sum |X|² per bin.
+    for s in 0..8 {
+        cpr.process(&noisy[s * sps..], &mut time);
+        fft.process(&time, &mut freq);
+        for (a, &x) in accum.iter_mut().zip(freq.iter()) {
+            *a += C32::new(x.norm_sqr(), 0.0);
+        }
+    }
+    let est = dvb_t_integer_cfo(&accum, n_fft, 32).expect("estimate");
+    assert_eq!(
+        est.bins, 0,
+        "integer CFO 0 recovered under AWGN (got {})",
+        est.bins
+    );
+}

@@ -8,6 +8,8 @@ mod roundtrip {
     pub mod bpsk;
     pub mod cw;
     pub mod dvb_t;
+    pub mod dvb_t_stream;
+    pub mod dvb_t_super_frame;
     pub mod fm;
     pub mod ft4;
     pub mod ft8;

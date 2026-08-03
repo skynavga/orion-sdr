@@ -432,6 +432,18 @@ pub fn tps_carrier_bins() -> [usize; DVB_T_TPS_CARRIERS_2K.len()] {
     })
 }
 
+/// The rustfft bin index for each of the 45 continual pilots in the 2K plan, in
+/// the order of [`DVB_T_CONTINUAL_PILOTS_2K`]: `bin = (active − 852).rem_euclid(
+/// 2048)`. These sit at fixed positions on every symbol (unlike the scattered
+/// pilots), so they anchor integer-CFO estimation: an integer offset of `k`
+/// subcarriers slides the whole spectrum, landing the continual pilots at
+/// `bin + k` (see `sync::dvb_t_integer_cfo`).
+pub fn continual_pilot_bins() -> [usize; DVB_T_CONTINUAL_PILOTS_2K.len()] {
+    core::array::from_fn(|i| {
+        active_to_signed(DVB_T_CONTINUAL_PILOTS_2K[i]).rem_euclid(DVB_T_N_FFT as i32) as usize
+    })
+}
+
 /// Builds the four symbol-phase carrier plans for the conformant 2K frame
 /// structure (EN 300 744 §4.5). Plan `p` (for symbols with `l mod 4 == p`)
 /// reserves the following as boosted, `w_k`-valued pilots:

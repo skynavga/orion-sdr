@@ -227,3 +227,82 @@ pub fn dvb_t_gi_refine_with(
     r.start_sample += start;
     Some(r)
 }
+
+// ── Integer-CFO estimation (continual-pilot spectral correlation) ────────────
+//
+// The guard-interval estimator above resolves the CFO only within ±½ a
+// subcarrier spacing; a real front end can be off by whole subcarriers, which
+// slides the entire spectrum by that integer `k`. DVB-T's 45 continual pilots sit
+// at FIXED carrier positions on every symbol (§4.5.4) and are boosted (16/9
+// power), so they anchor the integer offset: after fractional correction and
+// symbol alignment, FFT one symbol and, for each trial shift `k`, sum the energy
+// landing at the continual-pilot bins shifted by `k`. The `k` that maximizes that
+// pilot-position energy is the integer CFO — the boosted pilots dominate any
+// coincidental data energy at the same 45 positions. This is the DVB-T-native
+// counterpart to the OFDM preamble path's training-symbol integer-CFO recovery
+// (`sync::ofdm_sync`), which a preamble-less frame cannot use.
+
+use crate::waveform::dvb_t::continual_pilot_bins;
+
+/// One integer-CFO estimate: the offset in whole subcarrier spacings and a
+/// confidence ratio.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IntegerCfoResult {
+    /// Integer CFO in subcarrier spacings (the spectrum is shifted by this many
+    /// bins). `cfo_hz = bins · fs / n_fft`; correct by rotating the time domain by
+    /// `−cfo_hz`.
+    pub bins: i32,
+    /// Confidence: the winning shift's continual-pilot energy divided by the mean
+    /// over all trial shifts (`1.0` = no discrimination; higher is a clearer
+    /// lock). Useful for thresholding whether an integer offset is present.
+    pub confidence: f32,
+}
+
+/// Estimates the integer carrier-frequency offset of a DVB-T symbol from its
+/// **frequency-domain** bins `freq` (one symbol's FFT output, `n_fft` long, in
+/// rustfft bin order — i.e. already CP-removed, FFT'd, and ideally fractional-CFO
+/// corrected). Searches trial shifts `k ∈ [−max_bins, max_bins]` and returns the
+/// one maximizing the energy at the 45 continual-pilot bins shifted by `k`.
+///
+/// Returns `None` if `freq.len() < n_fft` or `max_bins == 0`. `max_bins` bounds
+/// the search; the continual pilots span the active band, so shifts larger than
+/// the guard-band margin slide pilots out of the band and lose discrimination —
+/// a few tens of subcarriers is a generous front-end range.
+pub fn dvb_t_integer_cfo(freq: &[C32], n_fft: usize, max_bins: i32) -> Option<IntegerCfoResult> {
+    if freq.len() < n_fft || n_fft == 0 || max_bins <= 0 {
+        return None;
+    }
+    let pilot_bins = continual_pilot_bins();
+
+    // Pilot-position energy for a trial shift `k` (bins wrap mod n_fft).
+    let energy_at = |k: i32| -> f32 {
+        pilot_bins
+            .iter()
+            .map(|&b| {
+                let idx = (b as i32 + k).rem_euclid(n_fft as i32) as usize;
+                freq[idx].norm_sqr()
+            })
+            .sum()
+    };
+
+    let mut best_k = 0i32;
+    let mut best_energy = f32::NEG_INFINITY;
+    let mut sum_energy = 0.0f32;
+    let mut count = 0u32;
+    for k in -max_bins..=max_bins {
+        let e = energy_at(k);
+        sum_energy += e;
+        count += 1;
+        if e > best_energy {
+            best_energy = e;
+            best_k = k;
+        }
+    }
+
+    let mean = sum_energy / count as f32;
+    let confidence = if mean > 0.0 { best_energy / mean } else { 0.0 };
+    Some(IntegerCfoResult {
+        bins: best_k,
+        confidence,
+    })
+}

@@ -9,7 +9,7 @@ Measurements taken on Apple M2 Pro, release build (`opt-level=3`, `lto=fat`,
 `codegen-units=1`), no SIMD.  Results are ordered by throughput (descending)
 within each table.
 
-## v0.0.50 Results
+## v0.0.51 Results
 
 ### Analog modes (65536 samples × 30 passes)
 
@@ -496,6 +496,37 @@ and reusing a ratio scratch buffer across symbols, so the estimate is a fraction
 of the FFT rather than an O(data·pilots) scan. The roundtrip (~9.5 Msps) is set by
 the two directions in series.
 
+### DVB-T super-frame, end to end (700-byte payload, 4 frames, 20 passes)
+
+The conformant super-frame (`modulate::dvb_t_super_frame` ↔
+`demodulate::dvb_t_super_frame`): four consecutive frames (numbers 0–3) with the
+alternating TPS sync word and the 16-bit cell id split across them.
+
+| Path | Msps |
+| --- | ---: |
+| modulate | ~32 |
+| demodulate | ~13 |
+| roundtrip | ~9.5 |
+
+A super-frame is the single-frame conformant path run four times plus the
+multi-frame sequencing and cross-frame checks (frame-number sequence, cell-id
+reassembly), which are negligible next to the per-frame FFT/FEC/equalize work — so
+its throughput tracks the conformant single frame's, with no new bottleneck.
+
+### DVB-T streaming receiver (4-frame stream, feed/flush, 20 passes)
+
+The streaming receiver (`demodulate::dvb_t_stream`, `feed`/`flush`) decoding a
+continuous run of frames: it accumulates IQ, guard-interval-acquires the next
+frame at the front of the buffer, decodes it, and drains its samples.
+
+| Path | Msps |
+| --- | ---: |
+| streaming demodulate (feed → decode → drain) | ~12 |
+
+Slightly below the batch conformant demodulate (~13): the per-frame decode work
+is identical, and the small gap is the streaming buffer management — the repeated
+front-of-buffer GI search and the per-frame `drain` of consumed samples.
+
 ### DVB-T conformant frame, decode-vs-SNR (GI 1/8, 30 trials/point)
 
 Frame-decode success and post-decode payload BER vs. per-sample SNR, for the
@@ -554,6 +585,13 @@ To run only the COFDM FEC/interleave/scrambler block benchmarks:
 
 ```bash
 cargo test --release --features throughput "throughput::fec" -- --nocapture --test-threads=1
+```
+
+To run only the DVB-T / NB-DVB-T waveform benchmarks (bandwidth sweep, conformant
+frame, super-frame):
+
+```bash
+cargo test --release --features throughput "throughput::dvbt" -- --nocapture --test-threads=1
 ```
 
 To run the SNR sensitivity / acquisition-probability sweeps (prints full
