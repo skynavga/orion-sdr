@@ -142,19 +142,24 @@ impl DvbTFrameDemod {
         let acq = dvb_t_gi_sync(iq, n_fft, cp_len, fs, sps)?;
         let mut symbol_fft = SymbolFft::new(n_fft, cp_len);
         let mut accum = vec![C32::default(); n_fft];
-        // `freq_hold` preserves the prior symbol's spectrum so a trailing
-        // partial symbol (guard passes but CP-remove is a no-op) accumulates
-        // the previous value — matching the pre-refactor inline behavior.
-        let mut freq_hold = vec![C32::default(); n_fft];
         for s in 0..INTEGER_CFO_ACCUM_SYMBOLS {
             let off = acq.start_sample + s * sps;
-            if off + n_fft > iq.len() {
+            // Accumulate only fully-present symbols. CP-remove reads
+            // `iq[off+cp_len .. off+cp_len+n_fft]`, so a full symbol needs
+            // `off + sps` samples; guarding on that, `demod_symbol` always
+            // succeeds. (The earlier `off + n_fft` guard was too loose — a
+            // symbol whose core fit but whose CP did not made CP-remove a
+            // no-op, and the loop then double-counted the previous symbol's
+            // spectrum into `accum`. Unreachable for a real frame, which always
+            // carries far more than the few accumulated symbols, but a latent
+            // correctness bug regardless.)
+            if off + sps > iq.len() {
                 break;
             }
-            if let Some(freq) = symbol_fft.demod_symbol(&iq[off..]) {
-                freq_hold.copy_from_slice(freq);
-            }
-            for (a, &x) in accum.iter_mut().zip(freq_hold.iter()) {
+            let Some(freq) = symbol_fft.demod_symbol(&iq[off..]) else {
+                break;
+            };
+            for (a, &x) in accum.iter_mut().zip(freq.iter()) {
                 *a += C32::new(x.norm_sqr(), 0.0);
             }
         }
