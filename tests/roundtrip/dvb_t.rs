@@ -974,3 +974,47 @@ fn dvb_t_integer_cfo_survives_awgn() {
         est.bins
     );
 }
+
+#[test]
+fn dvb_t_shaped_frame_acquires_with_no_lead_in() {
+    // The regression this estimator change exists for. Symbol windowing biases
+    // the guard-interval ML timing estimate EARLY (roughly a third of
+    // `roll_off`), because the taper attenuates each symbol's leading
+    // cyclic-prefix samples but not their unwindowed copies in the interior. A
+    // negative phase is not representable in a `[0, period)` search, so a plain
+    // argmax reported `period − δ` — the right phase but the next symbol.
+    //
+    // Buffers that start exactly at the frame are not a corner case: it is how
+    // `DvbTSuperFrameDemod` slices every constituent frame, and roughly how
+    // `DvbTFrameStreamDemod` re-acquires inside a slice it just acquired. See
+    // `GiSyncConfig::origin_score_ratio`.
+    let params = g1_8_params();
+    let payload = sample_payload(184);
+    let backoff = 32usize; // free of the pilot-interpolation penalty
+
+    let shapings: [(&str, usize, usize); 5] = [
+        ("unshaped", 0, 0),
+        ("taper 8", 8, 0),
+        ("taper 32", 32, 0),
+        ("mask 45", 0, 45),
+        ("taper 8 + mask 45", 8, 45),
+    ];
+    for (label, roll_off, taps) in shapings {
+        let mut modu = DvbTFrameMod::new(params);
+        if roll_off > 0 {
+            modu = modu.with_symbol_window(roll_off);
+        }
+        if taps > 0 {
+            modu = modu.with_tx_lowpass(DvbTFrameMod::tx_lowpass_for_2k(taps, 60.0));
+        }
+        let frame = modu.modulate(&payload);
+
+        // No lead-in at all: the frame's first sample IS the buffer's first.
+        let got = DvbTFrameDemod::new(params)
+            .with_rx_window_backoff(backoff)
+            .decode(&frame.iq, frame.n_symbols, payload.len())
+            .unwrap_or_else(|e| panic!("{label}: zero-lead-in decode failed: {e}"));
+        assert_eq!(got.payload, payload, "{label}: payload");
+        assert_eq!(got.tps.guard, params.guard(), "{label}: TPS guard");
+    }
+}

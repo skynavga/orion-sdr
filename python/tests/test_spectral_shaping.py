@@ -21,7 +21,9 @@ the sizing helpers a caller uses to pick the numbers, that every lever is off by
 default (byte-identical output), that a shaped stream still round-trips, and —
 the load-bearing part — that the mask measurably attenuates the stop band.
 
-All tests are noiseless / synthetic.
+Mostly noiseless / synthetic. ``TestDvbTBackOffSensitivity`` deliberately adds
+AWGN, because the back-off's real cost is invisible without it: a noiseless round
+trip passes at back-offs that cost 6 dB or never close under noise.
 """
 
 import numpy as np
@@ -410,14 +412,20 @@ class TestDvbTShaping:
         assert sdr.DvbTFrameDemod(p).with_rx_window_backoff(64).rx_window_backoff == 64
 
     @pytest.mark.parametrize(
-        "guard,backoff,roll_off,taps",
+        "guard,backoff,roll_off,taps,lead",
         [
-            ("1/32", 32, 0, 45),  # mask alone, group delay 22 <= 32
-            ("1/8", 64, 16, 89),  # mask + taper, 44 + 16 <= 64
-            ("1/8", 64, 32, 0),  # taper alone
+            ("1/32", 32, 0, 45, 200),  # mask alone, group delay 22 <= 32
+            ("1/8", 32, 8, 45, 200),  # mask + taper, 22 + 8 <= 32
+            ("1/8", 32, 24, 0, 200),  # taper alone
+            # Zero lead-in: the frame's first sample is the buffer's first. This
+            # is how DvbTSuperFrameDemod slices every constituent frame, and it
+            # used to fail for any taper — the ML timing peak wrapped to nearly a
+            # symbol late. See TestDvbTZeroLeadInAcquisition's removal.
+            ("1/8", 32, 24, 0, 0),
+            ("1/8", 32, 8, 45, 0),
         ],
     )
-    def test_shaped_frame_round_trips(self, guard, backoff, roll_off, taps):
+    def test_shaped_frame_round_trips(self, guard, backoff, roll_off, taps, lead):
         p = sdr.DvbTFrameParams(guard, "qpsk", "1/2", frame_number=1, cell_id=0x33)
         assert backoff <= sdr.dvb_t_max_rx_window_backoff()
         mod = sdr.DvbTFrameMod(p)
@@ -429,7 +437,7 @@ class TestDvbTShaping:
 
         payload = _sample_payload(184)
         frame = mod.modulate(payload)
-        buf = _place(frame.iq, frame.samples_per_symbol)
+        buf = _place(frame.iq, frame.samples_per_symbol, lead=lead)
 
         rx = (
             sdr.DvbTFrameDemod(p)
@@ -490,21 +498,34 @@ class TestDvbTShaping:
 
 
 class TestDvbTSuperFrameShaping:
-    def test_masked_super_frame_round_trips(self):
-        # 45 taps (group delay 22) rather than the longer filters the single-frame
-        # tests use: the super-frame demod slices each frame at an exact boundary
-        # with no lead-in, so it has no tolerance for the acquisition bias a
-        # long filter's cyclic-prefix smearing introduces. See
-        # TestDvbTZeroLeadInAcquisition for the mechanism.
+    # The super-frame demod hands each frame a sub-buffer starting exactly at that
+    # frame's first sample, so it exercises the zero-lead-in acquisition path four
+    # times per decode. Every shaping combination below used to fail there.
+    @pytest.mark.parametrize(
+        "roll_off,taps,stopband_db",
+        [
+            (0, 45, 60.0),
+            (0, 89, 40.0),  # long mask: smears the CP correlation off zero
+            (0, 89, 80.0),
+            (16, 0, 60.0),  # taper: biases the timing estimate early
+            (8, 45, 60.0),  # both, inside the budget at backoff 32
+        ],
+    )
+    def test_shaped_super_frame_round_trips(self, roll_off, taps, stopband_db):
         p = sdr.DvbTSuperFrameParams("1/8", "qpsk", "1/2", cell_id=0xBEEF)
         payload = _sample_payload(700)
-        sf = sdr.DvbTSuperFrameMod(p).with_tx_lowpass(45, 60.0).modulate(payload)
-        # Same-length post-pass: the super-frame is still a uniform block.
+        mod = sdr.DvbTSuperFrameMod(p)
+        if roll_off:
+            mod = mod.with_symbol_window(roll_off)
+        if taps:
+            mod = mod.with_tx_lowpass(taps, stopband_db)
+        sf = mod.modulate(payload)
+        # Same-length post-passes: the super-frame is still a uniform block.
         assert len(sf.iq) == sf.n_symbols * sf.samples_per_symbol
 
         rx = (
             sdr.DvbTSuperFrameDemod(p)
-            .with_rx_window_backoff(64)
+            .with_rx_window_backoff(32)
             .decode(sf.iq, sf.symbols_per_frame, sf.frame_payload_lens)
         )
         assert rx.payload == payload.tobytes()
@@ -530,19 +551,29 @@ class TestDvbTSuperFrameShaping:
 
 
 class TestDvbTStreamShaping:
-    def test_streaming_receiver_takes_a_back_off(self):
+    @pytest.mark.parametrize("roll_off,taps", [(0, 45), (16, 0), (8, 45)])
+    def test_streaming_receiver_takes_a_back_off(self, roll_off, taps):
         # The streaming path needs the back-off too, or a shaped stream arrives
         # with the shaping inside the FFT window. Frame acquisition is unaffected:
         # the back-off moves only the per-symbol FFT window, not frame boundaries.
+        #
+        # It also re-acquires inside the slice it just acquired, which leaves that
+        # inner search almost no lead-in — so the tapered cases here are a second
+        # exercise of the wrap the estimator now unwinds.
         p = sdr.DvbTFrameParams("1/8", "qpsk", "1/2")
         payload = _sample_payload(184)
-        frame = sdr.DvbTFrameMod(p).with_tx_lowpass(89, 60.0).modulate(payload)
+        mod = sdr.DvbTFrameMod(p)
+        if roll_off:
+            mod = mod.with_symbol_window(roll_off)
+        if taps:
+            mod = mod.with_tx_lowpass(taps, 60.0)
+        frame = mod.modulate(payload)
         buf = _place(frame.iq, frame.samples_per_symbol, lead=101)
 
         rx = sdr.DvbTFrameStreamDemod(
-            p, frame.n_symbols, len(payload), rx_window_backoff=64
+            p, frame.n_symbols, len(payload), rx_window_backoff=32
         )
-        assert rx.rx_window_backoff == 64
+        assert rx.rx_window_backoff == 32
         frames = rx.feed(buf)
         assert len(frames) == 1
         assert frames[0].payload == payload.tobytes()
@@ -639,88 +670,54 @@ class TestDvbTBackOffSensitivity:
         assert ok == self.TRIALS
 
 
-class TestDvbTZeroLeadInAcquisition:
-    """Pins a known limitation of guard-interval acquisition under TX shaping.
+class TestDvbTAcquisitionUnderShaping:
+    """Guards the estimator fix that made shaped DVB-T acquirable with no lead-in.
 
-    Symbol windowing biases the van de Beek ML timing estimate a few samples
-    EARLY (measured ~roll_off/2: a 16-sample taper acquires ~8 samples early).
-    That bias is harmless in itself — a backed-off FFT window absorbs it. It stops
-    being harmless when the frame begins at sample 0 of the buffer: the search
-    range is ``[0, symbol_period)``, so "slightly negative" is not representable
-    and the argmax wraps to *nearly a whole symbol late*. Right symbol phase,
-    wrong symbol.
+    Symbol windowing biases the guard-interval ML timing estimate EARLY (roughly
+    a third of ``roll_off``): the taper attenuates each symbol's leading
+    cyclic-prefix samples but not their unwindowed copies in the interior. A long
+    baseband mask does the same by smearing the correlation. Where the frame
+    begins at sample 0 that phase is negative and unrepresentable in a
+    ``[0, period)`` search, so a plain argmax reported ``period - delta`` — the
+    right phase but the next symbol.
 
-    The mask is not affected the same way — it is linear-phase and applied
-    group-delay-compensated, so it introduces no timing bias — but a long filter
-    smears the cyclic-prefix correlation enough to move the argmax off zero, which
-    is equally fatal where there is no slack.
-
-    Two callers have no slack, and both are exercised below:
-
-    * ``DvbTSuperFrameDemod`` hands each frame a sub-buffer starting exactly at
-      that frame's first sample, and the last frame's sub-buffer is exactly one
-      frame long — so any nonzero offset overruns it.
-    * ``DvbTFrameStreamDemod`` acquires, then hands ``DvbTFrameDemod`` a slice
-      starting at what it just acquired, which re-runs the search with almost no
-      lead-in.
-
-    Delete these tests if acquisition is made robust to a negative timing bias.
+    ``GiSyncConfig::origin_score_ratio`` now unwinds that, gated on the preceding
+    period boundary's own *single-symbol* correlation so a genuine lead-in is
+    never collapsed to the origin. These tests replaced an earlier
+    ``TestDvbTZeroLeadInAcquisition`` that pinned the broken behaviour.
     """
 
-    def test_a_tapered_frame_needs_a_few_samples_of_lead_in(self):
+    @pytest.mark.parametrize("roll_off,taps", [(0, 0), (8, 0), (32, 0), (0, 45), (8, 45)])
+    def test_any_shaping_acquires_from_sample_zero(self, roll_off, taps):
+        p = sdr.DvbTFrameParams("1/8", "qpsk", "1/2")
+        payload = _sample_payload(184)
+        mod = sdr.DvbTFrameMod(p)
+        if roll_off:
+            mod = mod.with_symbol_window(roll_off)
+        if taps:
+            mod = mod.with_tx_lowpass(taps, 60.0)
+        frame = mod.modulate(payload)
+
+        # No lead-in whatsoever — the frame's first sample is the buffer's first.
+        rx = (
+            sdr.DvbTFrameDemod(p)
+            .with_rx_window_backoff(32)
+            .decode(frame.iq, frame.n_symbols, len(payload))
+        )
+        assert rx.payload == payload.tobytes()
+
+    @pytest.mark.parametrize("lead", [7, 40, 200, 1000])
+    def test_a_genuine_lead_in_is_not_collapsed_to_the_origin(self, lead):
+        # The safety property. Unwrapping must not fire when the buffer really
+        # does start before the frame, or the receiver would read silence as its
+        # first symbol.
         p = sdr.DvbTFrameParams("1/8", "qpsk", "1/2")
         payload = _sample_payload(184)
         frame = sdr.DvbTFrameMod(p).with_symbol_window(16).modulate(payload)
-
-        def decodes(lead):
-            buf = _place(frame.iq, frame.samples_per_symbol, lead=lead)
-            try:
-                rx = (
-                    sdr.DvbTFrameDemod(p)
-                    .with_rx_window_backoff(64)
-                    .decode(buf, frame.n_symbols, len(payload))
-                )
-                return rx.payload == payload.tobytes()
-            except ValueError:
-                return False
-
-        assert not decodes(0), "known limitation: no lead-in, no lock"
-        assert decodes(16), "a handful of lead-in samples is enough"
-        assert decodes(200)
-
-    def test_an_unshaped_frame_needs_no_lead_in(self):
-        # The control: without shaping the argmax sits exactly at 0, so the same
-        # zero-lead-in buffer decodes. This is what makes the above a shaping
-        # interaction rather than a general acquisition weakness.
-        p = sdr.DvbTFrameParams("1/8", "qpsk", "1/2")
-        payload = _sample_payload(184)
-        frame = sdr.DvbTFrameMod(p).modulate(payload)
-        buf = _place(frame.iq, frame.samples_per_symbol, lead=0)
-        rx = sdr.DvbTFrameDemod(p).decode(buf, frame.n_symbols, len(payload))
+        buf = _place(frame.iq, frame.samples_per_symbol, lead=lead)
+        rx = (
+            sdr.DvbTFrameDemod(p)
+            .with_rx_window_backoff(32)
+            .decode(buf, frame.n_symbols, len(payload))
+        )
         assert rx.payload == payload.tobytes()
-
-    def test_a_tapered_super_frame_does_not_round_trip(self):
-        # The consequence for the super-frame demod, which slices at exact frame
-        # boundaries. `with_symbol_window` is still bound and still shapes the
-        # transmitted spectrum correctly — it is the paired receiver that cannot
-        # currently acquire it.
-        p = sdr.DvbTSuperFrameParams("1/8", "qpsk", "1/2", cell_id=0xBEEF)
-        payload = _sample_payload(700)
-        sf = sdr.DvbTSuperFrameMod(p).with_symbol_window(16).modulate(payload)
-        with pytest.raises(ValueError):
-            sdr.DvbTSuperFrameDemod(p).with_rx_window_backoff(64).decode(
-                sf.iq, sf.symbols_per_frame, sf.frame_payload_lens
-            )
-
-    def test_a_long_mask_also_overruns_the_last_super_frame_frame(self):
-        # Same zero-slack mechanism, reached by filter length rather than by a
-        # taper: an 89-tap mask (group delay 44) moves the argmax off zero, and
-        # the last frame's sub-buffer is exactly one frame long. The 45-tap mask
-        # used in TestDvbTSuperFrameShaping stays inside the tolerance.
-        p = sdr.DvbTSuperFrameParams("1/8", "qpsk", "1/2", cell_id=0xBEEF)
-        payload = _sample_payload(700)
-        sf = sdr.DvbTSuperFrameMod(p).with_tx_lowpass(89, 60.0).modulate(payload)
-        with pytest.raises(ValueError):
-            sdr.DvbTSuperFrameDemod(p).with_rx_window_backoff(64).decode(
-                sf.iq, sf.symbols_per_frame, sf.frame_payload_lens
-            )

@@ -730,15 +730,11 @@ spectral filter and runs **once over the concatenated four frames**. Filtering
 each frame separately would leave the filter's edge transient at all three
 interior seams, which are continuous on air.
 
-> **Receiver limitation on the super-frame path.** `DvbTSuperFrameDemod` hands
-> each frame a sub-buffer starting exactly at that frame's first sample, and the
-> last frame's sub-buffer is exactly one frame long — so it has *no* tolerance
-> for a guard-interval acquisition that lands off zero. A symbol taper biases
-> that acquisition a few samples early (~`roll_off/2`), and since the search
-> range cannot express a negative offset, the argmax wraps to nearly a whole
-> symbol late. A long mask reaches the same place by smearing the cyclic-prefix
-> correlation. In practice today: **shape the super-frame with a short mask**
-> (45 taps is measured-safe; 89 is not), and use the taper on the single-frame
-> path, where any lead-in ahead of the frame — as a real receiver always has —
-> absorbs the bias. `python/tests/test_spectral_shaping.py`'s
-> `TestDvbTZeroLeadInAcquisition` pins the boundary.
+Both levers work on the super-frame path, which is worth stating because they
+briefly did not. `DvbTSuperFrameDemod` hands each frame a sub-buffer starting
+exactly at that frame's first sample, so it acquires with *zero* lead-in four
+times per decode — and symbol windowing biases guard-interval acquisition early,
+which in a `[0, period)` search wraps to nearly a whole symbol late. The
+estimator now recognises and unwinds that
+(`sync::GiSyncConfig::origin_score_ratio`); see
+[demodulate.md](demodulate.md#receiving-a-spectrally-shaped-dvb-t-signal).

@@ -699,12 +699,34 @@ back-off problem:
   margin to absorb the interpolation error when there is no noise to spend it on.
   Under noise it does not: `b = 64` costs ~6 dB and `b = 85` never closes. Keep
   `b ≤ 32` (free) or `≤ 42` (~1 dB).
-- **A tapered frame with no lead-in ahead of it.** Symbol windowing biases the
-  guard-interval acquisition a few samples early, and the search cannot express a
-  negative offset, so it wraps to nearly a whole symbol late. A real capture
-  always has lead-in and is unaffected; `DvbTSuperFrameDemod` (which slices at
-  exact frame boundaries) currently is affected — see the note in
-  [modulate.md](modulate.md#dvb-t-super-frame-modulator-four-frames).
+- **Nothing else.** Shaping used to have a second failure mode here — a tapered
+  frame beginning at sample 0 of the buffer would lock onto the wrong symbol —
+  which is now handled inside the estimator (below).
+
+#### Acquiring a shaped signal with no lead-in
+
+Symbol windowing biases the guard-interval ML timing estimate **early**, by
+roughly a third of `roll_off`: the taper attenuates each symbol's leading
+cyclic-prefix samples but not their unwindowed copies in the symbol's interior,
+so the correlation peaks slightly before the true boundary. A long baseband mask
+does the same by smearing the correlation.
+
+That bias is harmless where the receiver has lead-in — the peak simply lands a
+few samples early, which a backed-off window absorbs. It is not harmless where
+the frame begins at sample 0: the search range is `[0, period)`, a negative phase
+is not representable, and the argmax surfaces at `period − δ` instead. Right
+phase, wrong symbol — nearly a whole symbol late.
+
+Zero lead-in is not a corner case. `DvbTSuperFrameDemod` slices every constituent
+frame that way, and `DvbTFrameStreamDemod` re-acquires inside the slice it just
+acquired, which leaves that inner search almost none.
+
+`dvb_t_gi_sync` therefore reports the period boundary at or before the peak when
+two conditions hold: the peak sits within `cp_len/2` below that boundary, *and*
+the boundary's own **single-symbol** correlation reaches half the peak's. Both
+are needed — see `GiSyncConfig::origin_score_ratio`, which documents why the
+score rather than the ML metric, and why a single symbol rather than the
+accumulated one. Set `origin_score_ratio = 0.0` for the plain argmax.
 
 ### DVB-T super-frame demodulation
 

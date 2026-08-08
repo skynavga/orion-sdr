@@ -73,26 +73,94 @@ fn roundtrip_dvb_t_super_frame_with_tx_lowpass() {
     // separately would leave the filter's edge transient at all three interior
     // seams, which are continuous on air. The mask needs no decoding change; the
     // demod only supplies guard for its group delay via the window back-off.
+    // Swept over stop-band depth on purpose. This test used to run only at 80 dB
+    // and passed by luck: the super-frame demod hands each frame a sub-buffer
+    // starting exactly at that frame's first sample, and the last frame's is
+    // exactly one frame long — so ANY nonzero acquisition offset overran it. An
+    // 89-tap mask smears the cyclic-prefix correlation enough to move the peak
+    // off zero at 40 and 60 dB, and only at 80 dB did it happen to land on 0.
+    // With the estimator's wrap unwinding (`GiSyncConfig::origin_score_ratio`)
+    // every depth decodes, so the sweep is now a real guard rather than a
+    // coincidence.
     let p = params(ConstellationOrder::Qpsk, PunctureRate::R1_2, 0xBEEF);
-    let cp_len = GuardInterval::G1_8.cp_len_2k(); // 256
-    let backoff = 64usize; // inside the 85-sample scattered-pilot ceiling
-    let lowpass = DvbTFrameMod::tx_lowpass_for_2k(89, 80.0); // group delay 44
-    assert!(lowpass.fits_guard(cp_len, 0, backoff));
+    let backoff = 32usize; // free of the pilot-interpolation penalty (see dvb.md)
+    let payload = sample_payload(700);
+
+    for stopband_db in [40.0f32, 60.0, 80.0] {
+        for taps in [45usize, 89] {
+            let lowpass = DvbTFrameMod::tx_lowpass_for_2k(taps, stopband_db);
+            let sf = DvbTSuperFrameMod::new(p)
+                .with_tx_lowpass(lowpass)
+                .modulate(&payload);
+
+            // Same-length post-pass: the super-frame is still a uniform block.
+            assert_eq!(sf.iq.len(), sf.n_symbols() * sf.samples_per_symbol);
+
+            let rx = DvbTSuperFrameDemod::new(p)
+                .with_rx_window_backoff(backoff)
+                .decode(&sf.iq, sf.symbols_per_frame, sf.frame_payload_lens)
+                .unwrap_or_else(|e| {
+                    panic!("band-limited super-frame decode ({taps} taps, {stopband_db} dB): {e}")
+                });
+            assert_eq!(
+                rx.payload, payload,
+                "payload ({taps} taps, {stopband_db} dB)"
+            );
+            assert_eq!(
+                rx.cell_id, 0xBEEF,
+                "cell id ({taps} taps, {stopband_db} dB)"
+            );
+        }
+    }
+}
+
+#[test]
+fn roundtrip_dvb_t_super_frame_with_symbol_windowing() {
+    // The taper on the super-frame path, which was undecodable before the
+    // estimator learned to unwind a wrapped peak: windowing biases the ML timing
+    // estimate early by roughly a third of `roll_off`, and with each frame's
+    // sub-buffer starting exactly at that frame, the negative phase wrapped to
+    // nearly a whole symbol late.
+    let p = params(ConstellationOrder::Qpsk, PunctureRate::R1_2, 0x0102);
+    let payload = sample_payload(700);
+    let backoff = 32usize;
+
+    for roll_off in [8usize, 16, 32] {
+        let sf = DvbTSuperFrameMod::new(p)
+            .with_symbol_window(roll_off)
+            .modulate(&payload);
+        let rx = DvbTSuperFrameDemod::new(p)
+            .with_rx_window_backoff(backoff)
+            .decode(&sf.iq, sf.symbols_per_frame, sf.frame_payload_lens)
+            .unwrap_or_else(|e| panic!("windowed super-frame decode (roll_off {roll_off}): {e}"));
+        assert_eq!(rx.payload, payload, "payload (roll_off {roll_off})");
+        assert_eq!(rx.cell_id, 0x0102, "cell id (roll_off {roll_off})");
+    }
+}
+
+#[test]
+fn roundtrip_dvb_t_super_frame_with_both_shaping_levers() {
+    // Both levers together, sized inside the guard budget at a back-off that
+    // costs no sensitivity: group delay 22 (45 taps) + roll_off 8 = 30 ≤
+    // min(256 − 32, 32).
+    let p = params(ConstellationOrder::Qpsk, PunctureRate::R1_2, 0xBEEF);
+    let cp_len = GuardInterval::G1_8.cp_len_2k();
+    let (backoff, roll_off, taps) = (32usize, 8usize, 45usize);
+    let lowpass = DvbTFrameMod::tx_lowpass_for_2k(taps, 60.0);
+    assert!(lowpass.fits_guard(cp_len, roll_off, backoff));
 
     let payload = sample_payload(700);
     let sf = DvbTSuperFrameMod::new(p)
+        .with_symbol_window(roll_off)
         .with_tx_lowpass(lowpass)
         .modulate(&payload);
-
-    // Same-length post-pass: the super-frame is still a uniform block.
-    assert_eq!(sf.iq.len(), sf.n_symbols() * sf.samples_per_symbol);
 
     let rx = DvbTSuperFrameDemod::new(p)
         .with_rx_window_backoff(backoff)
         .decode(&sf.iq, sf.symbols_per_frame, sf.frame_payload_lens)
-        .expect("band-limited super-frame decode");
-    assert_eq!(rx.payload, payload, "recovered super-frame payload");
-    assert_eq!(rx.cell_id, 0xBEEF, "reassembled 16-bit cell id");
+        .expect("masked + windowed super-frame decode");
+    assert_eq!(rx.payload, payload);
+    assert_eq!(rx.cell_id, 0xBEEF);
 }
 
 #[test]

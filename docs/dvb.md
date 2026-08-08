@@ -255,6 +255,27 @@ All four guards are TPS-signalled and auto-detected, so the guard choice itself
 is transmitter-side with no receiver cost; the back-off is the part the receiver
 has to be told about.
 
+### Acquisition under shaping
+
+Both TX levers perturb guard-interval acquisition, in the same direction. A
+symbol taper attenuates each symbol's leading cyclic-prefix samples but not their
+unwindowed copies in the interior, so the van de Beek correlation peaks **early**
+by roughly a third of `roll_off`; a long mask smears the correlation similarly.
+
+Where the receiver has lead-in that is free — the peak lands a few samples early
+and the backed-off window absorbs it. Where the frame begins at sample 0 it is
+not: the `[0, period)` search cannot express a negative phase, so the peak
+surfaces at `period − δ`, which is the right phase but the *next* symbol.
+`DvbTSuperFrameDemod` slices every constituent frame with zero lead-in, and
+`DvbTFrameStreamDemod` re-acquires inside the slice it just acquired, so both hit
+this squarely.
+
+`sync::dvb_t_gi_sync` unwinds it, reporting the period boundary at or before the
+peak when that boundary sits within `cp_len/2` of it *and* the boundary's own
+single-symbol correlation reaches half the peak's. The second condition is what
+keeps a genuine lead-in from collapsing to the origin. See
+`GiSyncConfig::origin_score_ratio` for the derivation and the measured margins.
+
 ## Header formats
 
 `HeaderFormat::DvbTps` sits alongside the retained `OrionSdr` (default) and

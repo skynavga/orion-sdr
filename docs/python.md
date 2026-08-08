@@ -891,13 +891,9 @@ unchanged to within 0.1 dB, and a budget-legal configuration costs ~0.5 dB of
 sensitivity — all of it the back-off's, none of it the shaping's. See
 [performance.md](performance.md#out-of-band-emission-spectral-shaping).
 
-> Two current limitations, both pinned by
-> `python/tests/test_spectral_shaping.py`. A symbol taper biases guard-interval
-> acquisition a few samples early, and the search cannot express a negative
-> offset — so a frame that begins at sample 0 of the buffer locks onto the wrong
-> symbol. Real captures have lead-in and are fine; `DvbTSuperFrameDemod`, which
-> slices at exact frame boundaries, is not. Use the mask alone (45 taps) on the
-> super-frame path for now.
+The one thing to get right is the back-off, and the trap is that a *noiseless*
+round trip passes at values that cost 6 dB or never close under noise. Size it
+from the table above, not from `dvb_t_max_rx_window_backoff()`.
 
 The **super-frame** (four frames with alternating TPS sync + a 16-bit cell id
 split across them) is `DvbTSuperFrameMod` / `DvbTSuperFrameDemod`.
