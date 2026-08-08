@@ -152,7 +152,8 @@ deliberately **not** routed through these generic chains — see
 | `AgcRms` / `AgcRmsIq` | RMS-based automatic gain control |
 | `DcBlocker` | 1st-order high-pass (y = x − x₁ + r·y₁) |
 | `FirDecimator` | FIR anti-alias + integer decimation |
-| `FirLowpass` | FIR low-pass filter |
+| `FirLowpass` | FIR low-pass filter (real samples) |
+| `FirLowpassIq` | Linear-phase FIR low-pass over complex (IQ) samples; Kaiser-designed, with a group-delay-compensated `filter_aligned` |
 | `Biquad` | Transposed Direct Form II biquad |
 | `LpCascade` | Two cascaded biquads (4th-order) |
 | `LpDcCascade` | Fused `LpCascade` + `DcBlocker` |
@@ -300,6 +301,9 @@ carrier-indexing, and numerology conventions these types follow.
 | `CyclicPrefixRemove` | Removes CP: `n_fft + cp_len` in → `n_fft` out |
 | `GridMap` | TX: dense data symbols → sparse `n_fft`-bin frequency vector (nulls zeroed, pilots inserted) |
 | `GridExtract` | RX: `n_fft`-bin frequency vector → dense data-carrier stream (ignores pilots/channel) |
+| `SymbolFft` | RX: shared FFT-window select + FFT for one symbol; owns the window back-off |
+| `SymbolWindow` | TX: raised-cosine (Tukey) taper on each symbol's edges, same-length and stateless |
+| `TxLowpass` | TX: baseband spectral mask across an assembled stream; carries the guard-budget checks |
 
 `CarrierPlan` builds via `with_data_carriers`/`with_pilot_carriers`, and
 validates via `validate() -> Result<(), CarrierPlanError>`. `GridExtract`

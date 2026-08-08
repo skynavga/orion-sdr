@@ -16,6 +16,7 @@ the OFDM/COFDM conventions.
 | AM | Amplitude Modulation | DSB (double-sideband) variant implemented |
 | AWGN | Additive White Gaussian Noise | Standard noise model used in tests |
 | BCH | Bose–Chaudhuri–Hocquenghem | Binary block code (`fec/bch.rs`); COFDM outer FEC option |
+| BER | Bit Error Rate | Fraction of bits decoded wrongly; the CI thresholds and SNR sweeps in [performance.md](performance.md) |
 | BFO | Beat Frequency Oscillator | `bfo_hz` parameter in `SsbProductDemod` |
 | BM | Berlekamp–Massey | Error-locator algorithm in the BCH/RS decoders |
 | BP | Belief Propagation | Iterative sum-product algorithm used in LDPC decoders |
@@ -31,6 +32,7 @@ the OFDM/COFDM conventions.
 | DATV | Digital Amateur Television | Amateur digital TV; NB-DVB-T is the DVB-T-over-ham-bands variant |
 | DBPSK | Differential Binary Phase-Shift Keying | PSK31's BPSK31; also DVB-T TPS signalling (differential along the symbol axis) |
 | DC | Direct Current | Zero-frequency component; blocked by `DcBlocker`; implicitly null in OFDM carrier plans |
+| DFT | Discrete Fourier Transform | The transform `FftBlock` computes; FFT is the fast algorithm for it |
 | DQPSK | Differential Quadrature Phase-Shift Keying | PSK31's QPSK31 modulation, decoded via soft Viterbi |
 | DSB | Double-Sideband | Both sidebands transmitted; see AM |
 | DSP | Digital Signal Processing | — |
@@ -40,8 +42,9 @@ the OFDM/COFDM conventions.
 | EHF | Extremely High Frequency | 30–300 GHz; upper end of the OFDM target-band range |
 | EVM | Error Vector Magnitude | Soft-vs-ideal constellation distance, in dB; `OfdmRxFrame::evm_db` |
 | FEC | Forward Error Correction | LDPC in FT8/FT4; COFDM concatenates an inner (LDPC/convolutional) and outer (BCH/RS) code (`fec/`) |
+| FER | Frame Error Rate | Fraction of frames failing CRC/FEC; reported beside BER in the SNR sweeps |
 | FFT | Fast Fourier Transform | `FftBlock` (unity-gain forward) in `multicarrier/fft.rs`; the OFDM demod's frequency-domain transform |
-| FIR | Finite Impulse Response | `FirLowpass`, `FirDecimator` in `dsp/` |
+| FIR | Finite Impulse Response | `FirLowpass` (real), `FirLowpassIq` (complex, linear-phase), `FirDecimator` in `dsp/` |
 | FM | Frequency Modulation | Quadrature (discriminator) demod |
 | FMA | Fused Multiply-Add | `f32::mul_add`; used throughout inner loops |
 | FSK | Frequency-Shift Keying | Base modulation for FT8 (8-FSK) and FT4 (4-FSK) |
@@ -55,13 +58,16 @@ the OFDM/COFDM conventions.
 | IIR | Infinite Impulse Response | `Biquad`, `LpCascade` in `dsp/` |
 | IQ | In-phase / Quadrature | Complex baseband representation; `Complex32` throughout |
 | ISI | Inter-Symbol Interference | Multipath delay spread exceeding `cp_len` spills energy between OFDM symbols |
+| Kaiser | Kaiser window | Window parameterized by stop-band attenuation; `dsp::kaiser_lowpass_taps` designs the TX mask's FIR |
 | LDPC | Low-Density Parity-Check | LDPC(174,91) in FT8/FT4 (`codec/ldpc.rs`); parameterized family (`fec/ldpc_codes.rs`) for COFDM |
 | LEO | Low Earth Orbit | High-Doppler satellite case motivating OFDM's opt-in `PerSymbolPilotInterp` equalizer |
 | LFSR | Linear-Feedback Shift Register | Basis of the `PnScrambler` whitener (`fec/scrambler.rs`) |
 | LLR | Log-Likelihood Ratio | `log(P(bit=0)/P(bit=1))`; positive ↔ bit more likely 0 |
 | LO | Local Oscillator | Receiver frequency reference; source of frequency offset |
 | LP | Low-Pass | `FirLowpass`, `LpCascade` filter types |
+| LPF | Low-Pass Filter | Here: the TX baseband **spectral mask** `TxLowpass` applies across an assembled OFDM stream to cut out-of-band emission. See [ofdm.md](ofdm.md) |
 | MAC | Medium Access Control | The COFDM frame layer (`FramePacket`, `OfdmFrameMod`/`OfdmFrameStreamDemod`) |
+| Mask | Spectral emission mask | Band-plan limit on out-of-band power; no mask *template* is modelled — `TxLowpass` meets one |
 | MCS | Modulation and Coding Scheme | `McsTable` maps a per-frame index to (constellation, inner/outer FEC) |
 | ML | Maximum Likelihood | The van de Beek guard-interval timing/CFO estimator (`dvb_t_gi_sync`); not *max-log* (LLR approximation) |
 | MLSE | Maximum-Likelihood Sequence Estimation | `viterbi_decode_coherent` in `codec/psk31.rs` |
@@ -71,25 +77,32 @@ the OFDM/COFDM conventions.
 | NBFM | Narrowband FM | Voice FM with a small deviation-to-audio-bandwidth ratio |
 | NCO | Numerically Controlled Oscillator | `Nco` in `dsp/nco.rs`; phasor recurrence |
 | OFDM | Orthogonal Frequency-Division Multiplexing | `multicarrier/` + `modulate`/`demodulate`/`sync::ofdm*`; VHF–EHF target bands |
+| OOB | Out-of-Band | Emission outside the occupied band; cut by the edge guard, symbol taper, and `TxLowpass` mask |
 | OTFS | Orthogonal Time Frequency Space | Planned future `multicarrier/`-based waveform |
+| PHY | Physical Layer | The OFDM waveform layer (`OfdmMod`/`OfdmDemod`) beneath the COFDM frame/MAC layer |
 | PLL | Phase-Locked Loop | PSK31's AFC loop is a first-order decision-directed PLL |
 | PM | Phase Modulation | Quadrature (dφ) demod |
 | PN | Pseudo-Noise | Deterministic pseudo-random sequence; the `PnScrambler` whitener and S&C preamble base sequence |
 | PRBS | Pseudo-Random Binary Sequence | DVB-T's w_k generator (X^11+X^2+1) for pilot values and the TPS DBPSK reference |
+| PSD | Power Spectral Density | Power per unit bandwidth; a rectangular OFDM symbol's per-carrier PSD is a `sinc²` (EN 302 755 §9.7) |
 | QAM | Quadrature Amplitude Modulation | 16/64/256-QAM implemented |
 | QPSK | Quadrature Phase-Shift Keying | 2 bits/symbol |
+| QSO | (Q-code) two-way contact | Amateur-radio term for a contact; FT8/FT4 messages encode a standard QSO exchange |
 | RF | Radio Frequency | Upconverted (non-baseband) signal |
-| Roll-off | (symbol-window roll-off) | Raised-cosine taper length per symbol edge (samples), set on `CarrierPlan::with_window_roll_off`; the `β` fraction forms give `round(β·cp_len)` or `round(β·n_fft)`. See [ofdm.md](ofdm.md) |
 | RMS | Root Mean Square | Used by AGC and test SNR helpers |
+| Roll-off | (symbol-window roll-off) | Raised-cosine taper length per symbol edge (samples), set on `CarrierPlan::with_window_roll_off`; the `β` fraction forms give `round(β·cp_len)` or `round(β·n_fft)`. See [ofdm.md](ofdm.md) |
 | RS | Reed–Solomon | Byte-symbol block code (`fec/reed_solomon.rs`); DVB-T RS(204,188) t=8; COFDM outer FEC option |
 | RX | Receive / Receiver | — |
 | S&C | Schmidl & Cox | Repeated-segment preamble algorithm used by `ofdm_sync` for timing/CFO |
 | SC-FDMA | Single-Carrier Frequency-Division Multiple Access | DFT-s-OFDM; planned future `multicarrier/`-based waveform |
 | SDR | Software-Defined Radio | — |
 | SNR | Signal-to-Noise Ratio | Expressed in dB throughout |
+| sps | samples per symbol | `n_fft + cp_len` — the fixed per-symbol stride every OFDM receiver advances by |
 | SSB | Single-Sideband | Phasing (Weaver) modulator; product demodulator |
 | TDF-II | Transposed Direct Form II | Biquad filter state-variable structure |
 | TPS | Transmission Parameter Signalling | DVB-T/DVB-H signalling on 17 carriers, DBPSK over a 68-symbol frame; `HeaderFormat::DvbTps` |
+| TS | Transport Stream | The MPEG-2 packet stream DVB-T carries; see MPEG-TS |
+| Tu | Useful symbol duration | An OFDM symbol's `n_fft`-sample non-guard part; DVB tables give guards and roll-offs as fractions of it |
 | Tukey | Tukey (tapered-cosine) window | The raised-cosine symbol-edge taper `SymbolWindow` applies for TX out-of-band suppression; RX-transparent via the FFT-window back-off. See [ofdm.md](ofdm.md) |
 | TX | Transmit / Transmitter | — |
 | UHF | Ultra High Frequency | 300 MHz–3 GHz; secondary target band |

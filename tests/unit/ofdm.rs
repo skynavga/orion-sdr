@@ -7,7 +7,7 @@ use orion_sdr::demodulate::{
     EqualizerMethod, OfdmDecider, OfdmDemod, OfdmEqualizer, OfdmSoftDemod, build_ofdm_rx_frame,
 };
 use orion_sdr::modulate::{ConstellationOrder, OfdmConfig, OfdmMod};
-use orion_sdr::multicarrier::{CarrierPlan, FftBlock, SymbolWindow};
+use orion_sdr::multicarrier::{CarrierPlan, FftBlock, SymbolWindow, TxLowpass};
 use orion_sdr::sync::{OfdmPreamble, generate_ofdm_preamble};
 use orion_sdr::util::wb_spectrum_snr_db;
 use rustfft::FftPlanner;
@@ -986,6 +986,224 @@ fn window_stream_in_place(stream: &mut [C32], sps: usize, roll_off: usize) {
         win.process(&sym, &mut stream[off..off + sps]);
         off += sps;
     }
+}
+
+// ── TX baseband low-pass: beyond the windowing ceiling (Track C, R15) ───────
+
+/// The COFDM geometry used by the spectral-mask tests: a 256-point grid with a
+/// 31-carrier edge guard (occupied half-width 96 of 128, so there is real
+/// unoccupied bandwidth for a mask to work in) and a quarter guard interval —
+/// `cp_len = 64`, which affords a 65-tap mask at back-off `cp_len/2`.
+const MASK_GEOM: (usize, usize, usize) = (256, 64, 31);
+
+fn mask_config() -> OfdmConfig {
+    let (n_fft, cp_len, edge_guard) = MASK_GEOM;
+    let plan = CarrierPlan::new(n_fft, cp_len).with_contiguous_data(edge_guard, false);
+    OfdmConfig::new(plan, 240_000.0, 0.0, 1.0, ConstellationOrder::Qpsk)
+}
+
+/// The occupied half-width of [`mask_config`]'s plan, in carriers.
+fn mask_occupied_half() -> i32 {
+    let (n_fft, _, edge_guard) = MASK_GEOM;
+    (n_fft as i32 / 2 - 1) - edge_guard as i32
+}
+
+/// Complex power spectrum measured through a 4-term Blackman–Harris window
+/// (sidelobes ≈ −92 dB).
+///
+/// `complex_power_db` takes a raw rectangular slice, whose own `~1/f` leakage
+/// floor sits around −35 dB below the in-band power — fine for the ~11 dB
+/// effects the windowing tests measure, but it would *hide* a 60 dB mask
+/// entirely: the leakage of the analysis, not the signal, would be what got
+/// measured. Anything claiming deep stop-band attenuation must be read through
+/// a window with sidelobes below the attenuation being claimed.
+fn complex_power_db_bh(samples: &[C32], n_fft: usize) -> Vec<f32> {
+    const A: [f32; 4] = [0.35875, 0.48829, 0.14128, 0.01168];
+    let mut buf: Vec<rustfft::num_complex::Complex<f32>> = (0..n_fft)
+        .map(|i| {
+            let s = samples.get(i).copied().unwrap_or_default();
+            let x = core::f32::consts::TAU * i as f32 / n_fft as f32;
+            let w = A[0] - A[1] * x.cos() + A[2] * (2.0 * x).cos() - A[3] * (3.0 * x).cos();
+            rustfft::num_complex::Complex::new(s.re * w, s.im * w)
+        })
+        .collect();
+    FftPlanner::new().plan_fft_forward(n_fft).process(&mut buf);
+    buf.iter()
+        .map(|c| 10.0 * ((c.re * c.re + c.im * c.im) + 1e-12).log10())
+        .collect()
+}
+
+#[test]
+fn tx_lowpass_drops_out_of_band_below_the_windowing_floor() {
+    // R15: symbol windowing works on the symbol seam and tops out around ~11 dB
+    // in the skirt (R10). The baseband mask attacks the same energy directly in
+    // the frequency domain, so it is not bound by that ceiling — and because the
+    // two mechanisms are independent, stacking them beats either alone.
+    //
+    // Measured in the mask's STOP band (past its transition), which is how an
+    // emission mask is specified in the first place: at a stated offset from the
+    // band edge. The transition itself is deliberately unattenuated.
+    let (n_fft, cp_len, _) = MASK_GEOM;
+    let cfg = mask_config();
+    let occupied = mask_occupied_half(); // 96
+    let roll_off = cp_len / 2; // 32, the max-transparent taper
+    // 65 taps -> group delay 32 = min(cp_len - b, b) at b = cp_len/2.
+    let lowpass = TxLowpass::for_null_band(n_fft, occupied as usize, 65, 60.0);
+    assert!(lowpass.fits_guard(cp_len, 0, cp_len / 2));
+    assert!(lowpass.transition_fits(n_fft, occupied as usize));
+
+    let bits: Vec<u8> = (0..32768u32)
+        .map(|i| ((i.wrapping_mul(2654435761)) >> 24) as u8)
+        .collect();
+    let sps = cfg.samples_per_ofdm_symbol();
+    let baseline = OfdmMod::new(&cfg).modulate(&bits);
+
+    let mut window_only = baseline.clone();
+    window_stream_in_place(&mut window_only, sps, roll_off);
+    let mut lowpass_only = baseline.clone();
+    lowpass.apply(&mut lowpass_only);
+    let mut both = window_only.clone();
+    lowpass.apply(&mut both);
+
+    // Stop band: from the mask's stop-band edge out to Nyquist (all a
+    // critically-sampled complex baseband spectrum can show — energy past fs/2
+    // folds back).
+    let take = 4096.min(baseline.len() - sps);
+    let lo_k = (lowpass.stopband_edge_norm() * n_fft as f32).ceil() as i32;
+    let hi_k = n_fft as i32 / 2;
+    assert!(lo_k < hi_k, "stop band must be inside the null band");
+    let skirt = |s: &[C32]| {
+        let pdb = complex_power_db_bh(&s[sps..sps + take], take);
+        mean_skirt_power_db(&pdb, take, n_fft, lo_k, hi_k)
+    };
+
+    let s_base = skirt(&baseline);
+    let s_win = skirt(&window_only);
+    let s_lpf = skirt(&lowpass_only);
+    let s_both = skirt(&both);
+    println!(
+        "stop band k in [{lo_k}, {hi_k}] dB: base={s_base:.1} window={s_win:.1} \
+         lowpass={s_lpf:.1} both={s_both:.1}"
+    );
+
+    // Observed on this geometry: base −30, window −62, mask −96, both −116 dB.
+    // Assert roughly half of each observed margin, so the test states the effect
+    // without pinning exact numbers. Note windowing buys far more here (~32 dB)
+    // than the ~11 dB the R10 test measures a few carriers out: it changes the
+    // skirt's decay *rate*, so its payoff grows with distance from the band edge.
+    assert!(
+        s_win < s_base - 10.0,
+        "windowing should beat baseline ({s_win:.1} vs {s_base:.1})"
+    );
+    assert!(
+        s_lpf < s_win - 15.0,
+        "the mask must drop out-of-band power clearly BELOW the windowing floor \
+         (lowpass={s_lpf:.1} dB, window-only={s_win:.1} dB)"
+    );
+    assert!(
+        s_both < s_lpf - 8.0,
+        "mask + taper should stack, beating the mask alone \
+         ({s_both:.1} vs {s_lpf:.1})"
+    );
+}
+
+#[test]
+fn all_three_spectral_levers_stack() {
+    // R17: the full Track A + B + C stack on one COFDM link, each lever added in
+    // turn. They attack different things — the edge guard moves the loudest sinc
+    // generators inward, the taper lowers the skirt's decay rate, the mask
+    // attenuates what is left directly — so every addition must strictly improve
+    // on the one before, and the full stack must beat every partial combination.
+    let (n_fft, cp_len, edge_guard) = MASK_GEOM;
+    let fs = 240_000.0f32;
+    let occupied = mask_occupied_half(); // 96
+    let roll_off = cp_len / 2; // 32
+    let lowpass = TxLowpass::for_null_band(n_fft, occupied as usize, 65, 60.0);
+
+    let plan_of = |guard: usize| CarrierPlan::new(n_fft, cp_len).with_contiguous_data(guard, false);
+    let cfg_full = OfdmConfig::new(plan_of(0), fs, 0.0, 1.0, ConstellationOrder::Qpsk);
+    let cfg_guard = OfdmConfig::new(plan_of(edge_guard), fs, 0.0, 1.0, ConstellationOrder::Qpsk);
+
+    let bits: Vec<u8> = (0..32768u32)
+        .map(|i| ((i.wrapping_mul(2654435761)) >> 24) as u8)
+        .collect();
+    let sps = cfg_full.samples_per_ofdm_symbol();
+
+    let baseline = OfdmMod::new(&cfg_full).modulate(&bits);
+    let guard_only = OfdmMod::new(&cfg_guard).modulate(&bits);
+    let mut guard_win = guard_only.clone();
+    window_stream_in_place(&mut guard_win, sps, roll_off);
+    let mut guard_lpf = guard_only.clone();
+    lowpass.apply(&mut guard_lpf);
+    let mut all_three = guard_win.clone();
+    lowpass.apply(&mut all_three);
+
+    // Measured in two regions, because the taper and the mask do not act in the
+    // same place. The mask leaves its own transition band deliberately
+    // unattenuated, so close to the band edge the taper is the useful lever;
+    // past the transition the mask takes over by tens of dB. Reporting only one
+    // of the two would misrepresent either lever.
+    let take = 4096.min(baseline.len() - sps);
+    let stop_k = (lowpass.stopband_edge_norm() * n_fft as f32).ceil() as i32;
+    let skirt = |s: &[C32], lo_k: i32, hi_k: i32| {
+        let pdb = complex_power_db_bh(&s[sps..sps + take], take);
+        mean_skirt_power_db(&pdb, take, n_fft, lo_k, hi_k)
+    };
+    let near = |s: &[C32]| skirt(s, occupied + 4, stop_k - 1);
+    let far = |s: &[C32]| skirt(s, stop_k, n_fft as i32 / 2);
+
+    for (label, band) in [
+        ("near edge", &near as &dyn Fn(&[C32]) -> f32),
+        ("stop band", &far),
+    ] {
+        let s_base = band(&baseline);
+        let s_guard = band(&guard_only);
+        let s_win = band(&guard_win);
+        let s_lpf = band(&guard_lpf);
+        let s_all = band(&all_three);
+        println!(
+            "{label}: base={s_base:.1} +guard={s_guard:.1} +window={s_win:.1} \
+             +mask={s_lpf:.1} all={s_all:.1} dB"
+        );
+
+        assert!(
+            s_guard < s_base,
+            "{label}: edge guard should beat baseline ({s_guard:.1} vs {s_base:.1})"
+        );
+        assert!(
+            s_win < s_guard,
+            "{label}: adding the taper should beat the guard alone \
+             ({s_win:.1} vs {s_guard:.1})"
+        );
+        assert!(
+            s_lpf < s_guard,
+            "{label}: adding the mask should beat the guard alone \
+             ({s_lpf:.1} vs {s_guard:.1})"
+        );
+        assert!(
+            s_all < s_win && s_all < s_lpf,
+            "{label}: the full stack must beat every partial combination \
+             (all={s_all:.1}, guard+window={s_win:.1}, guard+mask={s_lpf:.1})"
+        );
+    }
+
+    // And the complementarity itself: inside the mask's transition the taper is
+    // the better lever; beyond it the mask wins by a wide margin. This is the
+    // reason to ship both rather than pick one.
+    assert!(
+        near(&guard_win) < near(&guard_lpf),
+        "near the band edge the taper should beat the mask's transition band \
+         ({:.1} vs {:.1})",
+        near(&guard_win),
+        near(&guard_lpf)
+    );
+    assert!(
+        far(&guard_lpf) < far(&guard_win) - 15.0,
+        "past its transition the mask should beat the taper by a wide margin \
+         ({:.1} vs {:.1})",
+        far(&guard_lpf),
+        far(&guard_win)
+    );
 }
 
 #[test]

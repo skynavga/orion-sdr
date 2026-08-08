@@ -427,6 +427,48 @@ decider.process(&soft, &mut bits);
 The per-bin equalizer models delay spreads up to `cp_len` — a longer channel
 impulse response causes inter-symbol interference the model doesn't capture.
 
+### RX FFT-window back-off
+
+By default the receiver's FFT window is the last `n_fft` samples of each symbol
+— pinned at the cyclic-prefix boundary, with the whole guard ahead of it and
+nothing behind. `rx_window_backoff` slides it `b` samples *earlier* into the
+guard, leaving slack on **both** sides of the useful part:
+
+```rust
+// Set once on the shared config; SymbolFft applies it on every RX path.
+let cfg = cfg.with_rx_window_backoff(cp_len / 2);
+// DVB-T sets it on the demod objects instead:
+// DvbTFrameDemod::new(params).with_rx_window_backoff(cp_len / 2)
+```
+
+Two reasons to want it. It buys tolerance to **pre-echo and small timing error**
+(standard receiver practice), and it is what makes the transmitter's spectral
+shaping transparent — the taper and mask in
+[modulate.md](modulate.md#out-of-band-spectral-shaping-tx) live in exactly the
+guard samples a backed-off window discards. Sample count and symbol boundaries
+are unchanged, so a strided receiver's cursor is unaffected.
+
+**It requires an equalizer.** Sliding the window by `b` multiplies bin `k` by
+`exp(-j2πkb/n_fft)` (the FFT shift theorem). That is harmless only where the
+channel estimate is measured at the *same* back-off and divides the ramp back
+out — the streaming COFDM demod and the DVB-T scattered path. On a bare,
+unequalized `OfdmDemod` or batch `OfdmFrameDemod`, a nonzero back-off leaves the
+ramp uncorrected and corrupts the decode; leave it `0` there.
+
+**How large it can be depends on the equalizer, not just the guard**, and the
+answer is the opposite of the intuitive one:
+
+- `TrainingSymbolHold` (the COFDM default) measures every bin from the training
+  symbol, so it absorbs any `b` the guard allows — verified up to `b = cp_len`.
+- `PerSymbolPilotInterp` (the DVB-T scattered path) only samples the channel
+  every `pilot_spacing` carriers. The ramp advances `2π·b·pilot_spacing/n_fft`
+  per gap, and past `π` the interpolation aliases: `b < n_fft/(2·pilot_spacing)`
+  (`SymbolFft::max_pilot_safe_backoff`), which is **85 samples for DVB-T 2K
+  regardless of guard interval** (`DVB_T_MAX_RX_WINDOW_BACKOFF`).
+
+So holding one full-resolution estimate is the *stronger* option here, and
+pilot interpolation is what costs budget.
+
 ### Soft (LLR) demapping
 
 `OfdmSoftDemod` is a separate type from `OfdmDecider` (not a mode flag),
@@ -601,6 +643,14 @@ enough lead-in for the guard-interval search). The **super-frame** and
 **streaming** receivers below wrap it. It recovers only the *fractional* CFO from
 the guard interval; if a real front end may be off by whole subcarriers, enable
 **integer**-CFO correction with the builder flag (below).
+
+When the transmitter applies symbol windowing or a spectral mask, pair the demod
+with a matching window back-off — `DvbTFrameDemod::new(params)
+.with_rx_window_backoff(cp_len / 2)`, also on the super-frame and streaming
+receivers. The scattered-pilot estimate is measured at the same back-off and
+corrects the induced phase ramp, so nothing else changes. Note DVB-T's ceiling
+of 85 samples (above): `cp_len/2` is the right value up to G1/16, but at G1/8
+and G1/4 it exceeds the ceiling and must be clamped to ~85 or the decode fails.
 
 ### DVB-T super-frame demodulation
 

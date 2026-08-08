@@ -9,6 +9,72 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.55] - 2026-08-08
+
+A third, deeper out-of-band lever for the OFDM/COFDM and DVB-T transmitters: an
+optional **baseband spectral mask** applied across the assembled stream after
+cyclic-prefix insertion and any symbol taper. v0.0.54's raised-cosine taper works
+on the symbol seam and is therefore bounded by the taper length the guard allows;
+a mask attenuates the skirt directly in the frequency domain, so its gain stacks
+on top instead of sharing that budget. Measured in the mask's stop band on a
+256-point COFDM link: baseline −30 dB, taper −62 dB, **mask −96 dB**, all three
+levers −116 dB; a conformant DVB-T frame's null band drops 66 dB with in-band
+power unchanged and TPS, pilots, and payload intact. Filtering is same-length and
+group-delay-compensated, so stream length and symbol boundaries never move and
+the fixed-`sps` strided receiver is unaffected. Off by default everywhere, so the
+on-air waveform stays byte-identical unless a caller opts in.
+
+Two constraints are worth reading before enabling it. The mask changes nothing
+about how a receiver *decodes* — the pilot/training equalizer absorbs it like any
+other linear channel — but its group delay must land in guard the receiver
+discards, so it shares one budget with the taper:
+`roll_off + group_delay ≤ min(cp_len − backoff, backoff)`. And a mask can only
+attenuate bandwidth the signal does not occupy, so on COFDM it pairs with the
+v0.0.54 edge guard: the guard makes the room, the mask uses it.
+
+### Added
+
+- `dsp::FirLowpassIq` — linear-phase FIR low-pass over complex (IQ) samples, with
+  `filter_aligned` for same-length, group-delay-compensated block filtering — plus
+  the Kaiser design helpers `kaiser_lowpass_taps`, `kaiser_transition_norm`, and
+  `kaiser_num_taps`.
+- `multicarrier::TxLowpass` — the TX spectral-mask spec shared by both chains:
+  `for_null_band` / `taps_for_null_band` size and place the filter against a
+  layout's occupied band edge, and `fits_guard`, `transition_fits`,
+  `group_delay`, and `stopband_edge_norm` express the design constraints.
+- `OfdmConfig::tx_lowpass` with `with_tx_lowpass(spec)` and
+  `with_tx_lowpass_null_band(num_taps, stopband_db)`, applied by
+  `OfdmFrameMod::modulate_frame`; `CarrierPlan::occupied_half_carriers`.
+- `DvbTFrameMod::with_tx_lowpass` and `tx_lowpass_for_2k(num_taps, stopband_db)`,
+  plus `DvbTSuperFrameMod::with_tx_lowpass` — applied once across the concatenated
+  four frames, so the interior frame seams are filtered like any other symbol
+  boundary.
+- `SymbolFft::max_pilot_safe_backoff(n_fft, pilot_spacing)` and the DVB-T
+  constants `DVB_T_SCATTERED_PILOT_SPACING` / `DVB_T_MAX_RX_WINDOW_BACKOFF`,
+  which express the ceiling on the RX window back-off (below).
+- Python: `OfdmConfig.with_tx_lowpass(num_taps, stopband_db)` and
+  `tx_lowpass_suggested_taps(stopband_db)`, with `.pyi` stubs.
+
+### Changed
+
+- The RX FFT-window back-off is now documented as the shared enabler for **both**
+  TX shaping levers, not a windowing-only requirement: a group-delay-compensated
+  mask is not transparent against a receiver pinned at the cyclic-prefix boundary,
+  because centring the response makes half of it a pre-echo.
+- The back-off's usable range is bounded by the **equalizer**, not only the guard.
+  A held training-symbol estimate (the COFDM default) absorbs any back-off the
+  guard allows; per-symbol pilot interpolation aliases once the induced phase ramp
+  advances more than π between references, capping DVB-T 2K at 85 samples whatever
+  the guard interval. Consequently the DVB-T shaping budget saturates —
+  32/64/85/85 samples for G1/32…G1/4 — making **G1/8 the sweet spot** for crowded
+  narrowband DATV band plans, and G1/4 a buy of delay-spread tolerance only. The
+  guard-interval guidance in `docs/dvb.md` reflects this.
+- Documentation: the three spectral-shaping levers are now covered in the
+  per-stage guides (`docs/modulate.md`, `docs/demodulate.md`, `docs/python.md`)
+  rather than only in `ofdm.md`/`dvb.md`; `docs/acronyms.md` gained ten terms its
+  own prose already used, and `docs/source.md` now lists the DVB-T super-frame and
+  streaming modules.
+
 ## [0.0.54] - 2026-08-07
 
 Out-of-band spectral shaping for the OFDM/COFDM and DVB-T paths: two opt-in,

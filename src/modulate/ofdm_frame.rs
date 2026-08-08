@@ -861,6 +861,19 @@ impl OfdmFrameMod {
         //    the RX-transparency and preamble constraints in the windowing design.
         self.apply_symbol_windowing(&mut out);
 
+        // 5. Optional TX baseband low-pass (spectral mask). Applied last, over
+        //    the whole assembled stream — spanning symbol boundaries, which is
+        //    what makes it a spectral filter rather than a per-symbol taper.
+        //    Unlike the taper this DOES include the S&C preamble: a real
+        //    transmitter band-limits everything it emits, and filtering only
+        //    part of the burst would put an unfiltered spectral step back in.
+        //    Periodicity — the property `ofdm_sync` correlates on — survives a
+        //    filter whose reach is short relative to `repeat_len`, since the
+        //    same taps see the same repeated samples; see `TxLowpass`.
+        if let Some(lowpass) = self.cfg.tx_lowpass {
+            lowpass.apply(&mut out);
+        }
+
         out
     }
 

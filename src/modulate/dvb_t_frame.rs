@@ -30,10 +30,10 @@
 use super::ofdm_frame::{CodecCache, block_plan, encode_chain, symbols_for_coded_bits};
 use crate::core::Block;
 use crate::fec::{CrcKind, InterleaverKind, ScramblerKind, ScramblerPos};
-use crate::multicarrier::{CyclicPrefixInsert, IfftBlock, SymbolWindow};
+use crate::multicarrier::{CyclicPrefixInsert, IfftBlock, SymbolWindow, TxLowpass};
 use crate::waveform::dvb_t::{
-    DVB_T_DATA_CARRIERS, DVB_T_FRAME_OUTER, DVB_T_FRAME_OUTER_IL, DVB_T_N_FFT, DvbTFrameParams,
-    ScatteredPilotMapper, dvb_t_map_symbol, tps_carrier_bins,
+    DVB_T_DATA_CARRIERS, DVB_T_FRAME_OUTER, DVB_T_FRAME_OUTER_IL, DVB_T_KMAX, DVB_T_N_FFT,
+    DvbTFrameParams, ScatteredPilotMapper, dvb_t_map_symbol, tps_carrier_bins,
 };
 use crate::waveform::dvb_t_tps::{TPS_SYMBOLS_PER_FRAME, TpsEncoder};
 use crate::waveform::dvb_t_ts::{
@@ -64,6 +64,9 @@ pub struct DvbTFrameMod {
     /// TX symbol-window roll-off in samples (raised-cosine edge taper). `0`
     /// (default) = no windowing, so the on-air frame is byte-identical.
     window_roll_off: usize,
+    /// Optional TX baseband low-pass (spectral mask) over the assembled frame.
+    /// `None` (default) leaves the on-air frame byte-identical.
+    tx_lowpass: Option<TxLowpass>,
 }
 
 impl DvbTFrameMod {
@@ -72,6 +75,7 @@ impl DvbTFrameMod {
         Self {
             params,
             window_roll_off: 0,
+            tx_lowpass: None,
         }
     }
 
@@ -87,6 +91,38 @@ impl DvbTFrameMod {
     pub fn with_symbol_window(mut self, roll_off: usize) -> Self {
         self.window_roll_off = roll_off;
         self
+    }
+
+    /// Enables a TX baseband low-pass (spectral mask) across the assembled
+    /// frame, applied after any symbol taper. `None`/absent (the default) leaves
+    /// the frame byte-identical.
+    ///
+    /// This is the DVB-T lever that **exceeds** the symbol-windowing ceiling: it
+    /// attenuates out-of-band energy directly in the frequency domain, and DVB-T
+    /// comes with room to do it in — 1705 of 2048 bins are active, so there is a
+    /// real null band for the transition. It changes nothing about how a
+    /// receiver decodes (the scattered-pilot equalizer absorbs the filter like
+    /// any other channel), but its group delay must land in guard the receiver
+    /// discards: pair it with
+    /// [`DvbTFrameDemod::with_rx_window_backoff`](crate::demodulate::DvbTFrameDemod::with_rx_window_backoff)
+    /// and keep `roll_off + group_delay ≤ min(cp_len − b, b)`
+    /// ([`TxLowpass::fits_guard`]). A **long guard** buys a sharper mask: G1/4
+    /// (`cp_len = 512`) affords eight times the filter length of G1/32.
+    ///
+    /// [`TxLowpass::for_null_band`] placed against DVB-T's own band edge is
+    /// [`for_dvb_t_2k`](Self::tx_lowpass_for_2k).
+    pub fn with_tx_lowpass(mut self, lowpass: TxLowpass) -> Self {
+        self.tx_lowpass = Some(lowpass);
+        self
+    }
+
+    /// A spectral mask sized for the fixed DVB-T 2K band edge (active carriers
+    /// `±852` of 2048), leaving `num_taps` and `stopband_db` to the caller —
+    /// `num_taps` is what the guard budget constrains.
+    /// [`TxLowpass::taps_for_null_band`] with the same arguments suggests a
+    /// length.
+    pub fn tx_lowpass_for_2k(num_taps: usize, stopband_db: f32) -> TxLowpass {
+        TxLowpass::for_null_band(DVB_T_N_FFT, DVB_T_KMAX / 2, num_taps, stopband_db)
     }
 
     /// The transmission parameters this modulator was built with.
@@ -222,6 +258,14 @@ impl DvbTFrameMod {
                 let symbol: Vec<C32> = iq[s * sps..(s + 1) * sps].to_vec();
                 win.process(&symbol, &mut iq[s * sps..(s + 1) * sps]);
             }
+        }
+
+        // Optional TX baseband low-pass, last and across the whole frame: it is
+        // a spectral filter spanning symbol boundaries, not a per-symbol taper.
+        // Same-length and group-delay-compensated, so the symbol grid a
+        // guard-interval receiver acquires is unmoved.
+        if let Some(lowpass) = self.tx_lowpass {
+            lowpass.apply(&mut iq);
         }
 
         DvbTFrame {

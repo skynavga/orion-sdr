@@ -60,9 +60,35 @@ impl SymbolFft {
     /// Clamped to `cp_len` — a back-off cannot exceed the guard, since the
     /// window must still start at or after the symbol's first sample. `0`
     /// reproduces the standard CP-boundary window exactly.
+    ///
+    /// The guard is not the only bound: see
+    /// [`max_pilot_safe_backoff`](Self::max_pilot_safe_backoff) for the tighter
+    /// one an equalizer imposes.
     pub fn with_window_backoff(mut self, backoff: usize) -> Self {
         self.backoff = backoff.min(self.cp_len);
         self
+    }
+
+    /// The largest back-off a **pilot-interpolated** equalizer can still undo,
+    /// given channel references every `pilot_spacing` subcarriers.
+    ///
+    /// A back-off of `b` multiplies bin `k` by `exp(-j2πkb/n_fft)`, so the phase
+    /// the equalizer must track advances by `2π·b·pilot_spacing/n_fft` between
+    /// adjacent references. Once that exceeds `π` the interpolation aliases —
+    /// the estimate wraps the wrong way between pilots and the decode fails —
+    /// giving `b < n_fft / (2·pilot_spacing)` regardless of how much guard is
+    /// available.
+    ///
+    /// This is why `backoff = cp_len/2` is a rule of thumb rather than a law:
+    /// beyond a certain guard length the pilot grid, not the guard, is what
+    /// caps the back-off (and with it the TX shaping budget it enables). For
+    /// DVB-T 2K — 2048 bins, scattered pilots every 12 — the ceiling is 85
+    /// samples, so guards longer than `2·85 = 170` buy no further budget.
+    /// A single-shot estimate held across the frame
+    /// (`EqualizerMethod::TrainingSymbolHold`) measures the ramp at full
+    /// frequency resolution and is not subject to this bound.
+    pub fn max_pilot_safe_backoff(n_fft: usize, pilot_spacing: usize) -> usize {
+        n_fft / (2 * pilot_spacing.max(1))
     }
 
     pub fn n_fft(&self) -> usize {

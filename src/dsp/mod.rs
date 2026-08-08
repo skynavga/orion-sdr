@@ -14,7 +14,10 @@ pub mod decim;
 pub use decim::FirDecimator;
 
 pub mod fir;
-pub use fir::{FirLowpass, HalfCosineMf};
+pub use fir::{
+    FirLowpass, FirLowpassIq, HalfCosineMf, kaiser_lowpass_taps, kaiser_num_taps,
+    kaiser_transition_norm,
+};
 
 pub mod iir;
 pub use iir::{Biquad, LpCascade, LpDcCascade};

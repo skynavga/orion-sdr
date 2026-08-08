@@ -721,6 +721,38 @@ cfg = cfg.with_scrambler(0b1001, 7, per_frame_random=True)
 iq = sdr.OfdmFrameMod(cfg, table).modulate_frame(frame, 0xABCD_1234)
 ```
 
+### Out-of-band spectral shaping
+
+The three TX shaping levers are all reachable from Python and all default off.
+See [modulate.md](modulate.md#out-of-band-spectral-shaping-tx) for what each one
+does and [ofdm.md](ofdm.md) for the geometry.
+
+```python
+N_FFT, CP_LEN = 256, 64
+
+# 1. Edge guard: pass an EMPTY data_carriers array and set edge_guard, and the
+#    contiguous span is generated for you (31 null carriers per band edge). This
+#    also opens the unoccupied bandwidth the mask needs to filter into.
+cfg = sdr.OfdmConfig(N_FFT, CP_LEN,
+                     np.zeros(0, np.int32),                    # data: generated
+                     np.zeros(0, np.int32), np.zeros(0, np.complex64),
+                     240_000.0, 0.0, 1.0, "qpsk", edge_guard=31)
+
+# 2 + 3. Taper and mask share ONE guard budget with the RX back-off:
+#        roll_off + group_delay <= min(cp_len - b, b), maximized at b = cp_len/2.
+taps = cfg.tx_lowpass_suggested_taps(60.0)     # length that fits the null band
+cfg = (cfg.with_symbol_window(16)              # raised-cosine taper, samples/edge
+          .with_tx_lowpass(taps, 60.0)         # cutoff placed at the band edge
+          .with_rx_window_backoff(CP_LEN // 2))
+```
+
+`with_tx_lowpass` takes the tap count because *that* is what the cyclic-prefix
+budget constrains — group delay is `(num_taps - 1) // 2`, and it plus the taper
+must fit `min(cp_len - backoff, backoff)`. The taper and mask are applied by
+`OfdmFrameMod.modulate_frame`; a bare `OfdmMod` applies neither. The back-off
+only works on the equalized (streaming) demod — see
+[demodulate.md](demodulate.md#rx-fft-window-back-off).
+
 ### DVB-T (narrowband, via the COFDM frame layer)
 
 The Python bindings expose DVB-T's *building blocks* through the generic

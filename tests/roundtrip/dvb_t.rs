@@ -280,7 +280,10 @@ fn dvb_t_scattered_needed_for_multipath() {
 use orion_sdr::demodulate::DvbTFrameDemod;
 use orion_sdr::fec::PunctureRate;
 use orion_sdr::modulate::{ConstellationOrder, DvbTFrameMod};
-use orion_sdr::waveform::dvb_t::{DvbTFrameParams, DvbTLinkParams};
+use orion_sdr::multicarrier::SymbolFft;
+use orion_sdr::waveform::dvb_t::{
+    DVB_T_MAX_RX_WINDOW_BACKOFF, DVB_T_SCATTERED_PILOT_SPACING, DvbTFrameParams, DvbTLinkParams,
+};
 
 fn capstone_params() -> DvbTFrameParams {
     DvbTFrameParams {
@@ -327,7 +330,6 @@ fn dvb_t_symbol_windowing_attenuates_symbol_edges() {
     // reduction is proven once on the shared `SymbolWindow` primitive in the COFDM
     // unit test; here we only verify DVB-T output is genuinely windowed, without a
     // slow 2K×68-symbol FFT.)
-    use orion_sdr::waveform::dvb_t::GuardInterval;
     let params = capstone_params(); // G1_32 -> cp_len = 64
     let cp_len = GuardInterval::G1_32.cp_len_2k();
     let roll_off = cp_len / 2;
@@ -364,7 +366,6 @@ fn roundtrip_dvb_t_frame_with_symbol_windowing() {
     // decodes cleanly when the demod's RX window back-off is matched (cp_len/2).
     // The taper lives only in guard samples the backed-off window discards, so the
     // continual/scattered/TPS pilots and the payload are all recovered intact.
-    use orion_sdr::waveform::dvb_t::GuardInterval;
     let params = capstone_params(); // G1_32 -> cp_len = 2048/32 = 64
     let cp_len = GuardInterval::G1_32.cp_len_2k();
     let roll_off = cp_len / 2;
@@ -389,6 +390,236 @@ fn roundtrip_dvb_t_frame_with_symbol_windowing() {
     assert_eq!(got.tps.constellation, params.constellation());
     assert_eq!(got.tps.guard, params.guard());
     assert_eq!(got.tps.cell_id, params.cell_id);
+}
+
+#[test]
+fn roundtrip_dvb_t_frame_with_tx_lowpass() {
+    // R16: a conformant DVB-T frame carrying the TX spectral mask decodes with a
+    // matched RX window back-off — payload, TPS, and pilots all intact. The mask
+    // is a linear channel the scattered-pilot equalizer absorbs; the only thing
+    // the receiver must provide is guard for the filter's group delay to sit in.
+    let params = capstone_params(); // G1_32 -> cp_len = 64
+    let cp_len = GuardInterval::G1_32.cp_len_2k();
+    // 45 taps at 60 dB: group delay 22 <= min(cp_len - b, b) = 32 at b = 32.
+    let lowpass = DvbTFrameMod::tx_lowpass_for_2k(45, 60.0);
+    assert_eq!(lowpass.group_delay(), 22);
+    assert!(lowpass.fits_guard(cp_len, 0, cp_len / 2));
+    assert!(
+        lowpass.transition_fits(2048, 852),
+        "45 taps must reach the stop band inside DVB-T's 1705-of-2048 null band"
+    );
+
+    let payload = sample_payload(184);
+    let frame = DvbTFrameMod::new(params)
+        .with_tx_lowpass(lowpass)
+        .modulate(&payload);
+
+    let lead = 200usize;
+    let mut buf = vec![C32::default(); lead];
+    buf.extend_from_slice(&frame.iq);
+    buf.extend(vec![C32::default(); frame.samples_per_symbol]);
+
+    let got = DvbTFrameDemod::new(params)
+        .with_rx_window_backoff(cp_len / 2)
+        .decode(&buf, frame.n_symbols, payload.len())
+        .expect("band-limited DVB-T frame decodes with matched back-off");
+    assert_eq!(got.payload, payload, "recovered TS payload");
+    assert_eq!(got.tps.frame_number, params.frame_number);
+    assert_eq!(got.tps.constellation, params.constellation());
+    assert_eq!(got.tps.guard, params.guard());
+    assert_eq!(got.tps.cell_id, params.cell_id);
+}
+
+fn g1_8_params() -> DvbTFrameParams {
+    DvbTFrameParams {
+        link: DvbTLinkParams {
+            guard: GuardInterval::G1_8,
+            constellation: ConstellationOrder::Qpsk,
+            code_rate: PunctureRate::R1_2,
+        },
+        frame_number: 1,
+        cell_id: 0x33,
+    }
+}
+
+#[test]
+fn dvb_t_rx_window_backoff_is_capped_by_the_pilot_grid_not_the_guard() {
+    // A back-off `b` puts a phase ramp exp(-j2πkb/n_fft) on the spectrum, and the
+    // per-symbol scattered-pilot equalizer only samples the channel every 12
+    // carriers — so once the ramp advances more than ~pi between pilots, the
+    // interpolation aliases and the decode dies, no matter how much guard is
+    // free. G1/8 has cp_len = 256, yet `cp_len/2 = 128` is already past the
+    // 85-sample ceiling. This is why the "b = cp_len/2" rule of thumb has an
+    // upper bound, and why guards beyond ~170 samples buy no extra TX-shaping
+    // budget (see DVB_T_MAX_RX_WINDOW_BACKOFF).
+    let params = g1_8_params();
+    let cp_len = GuardInterval::G1_8.cp_len_2k(); // 256
+    assert_eq!(DVB_T_MAX_RX_WINDOW_BACKOFF, 85);
+    assert_eq!(
+        SymbolFft::max_pilot_safe_backoff(2048, DVB_T_SCATTERED_PILOT_SPACING),
+        DVB_T_MAX_RX_WINDOW_BACKOFF
+    );
+
+    let payload = sample_payload(184);
+    let frame = DvbTFrameMod::new(params).modulate(&payload);
+    let decodes_at = |b: usize| {
+        let mut buf = vec![C32::default(); 200];
+        buf.extend_from_slice(&frame.iq);
+        buf.extend(vec![C32::default(); frame.samples_per_symbol]);
+        DvbTFrameDemod::new(params)
+            .with_rx_window_backoff(b)
+            .decode(&buf, frame.n_symbols, payload.len())
+            .map(|f| f.payload == payload)
+            .unwrap_or(false)
+    };
+    assert!(
+        decodes_at(64),
+        "a back-off inside the pilot ceiling decodes"
+    );
+    assert!(
+        !decodes_at(cp_len / 2),
+        "cp_len/2 = {} is past the {DVB_T_MAX_RX_WINDOW_BACKOFF}-sample pilot \
+         ceiling and must NOT decode — the guard has room but the pilot grid does not",
+        cp_len / 2
+    );
+}
+
+#[test]
+fn roundtrip_dvb_t_frame_with_tx_lowpass_and_symbol_windowing() {
+    // R16/R17: both TX shaping levers on one DVB-T frame, sharing the one budget
+    // `roll_off + group_delay <= min(cp_len - b, b)` — with `b` itself capped by
+    // the pilot grid (above). G1/8 at b = 64 gives 64 samples of slack, double
+    // what G1/32 can offer: the real (if bounded) long-guard win.
+    let params = g1_8_params();
+    let cp_len = GuardInterval::G1_8.cp_len_2k(); // 256
+    let backoff = 64usize;
+    assert!(backoff <= DVB_T_MAX_RX_WINDOW_BACKOFF);
+    let roll_off = 16usize;
+    let lowpass = DvbTFrameMod::tx_lowpass_for_2k(89, 80.0); // group delay 44
+    assert!(
+        lowpass.fits_guard(cp_len, roll_off, backoff),
+        "44 + 16 must fit the 64-sample slack at b = 64"
+    );
+
+    let payload = sample_payload(184);
+    let frame = DvbTFrameMod::new(params)
+        .with_symbol_window(roll_off)
+        .with_tx_lowpass(lowpass)
+        .modulate(&payload);
+
+    let mut buf = vec![C32::default(); 200];
+    buf.extend_from_slice(&frame.iq);
+    buf.extend(vec![C32::default(); frame.samples_per_symbol]);
+
+    let got = DvbTFrameDemod::new(params)
+        .with_rx_window_backoff(backoff)
+        .decode(&buf, frame.n_symbols, payload.len())
+        .expect("masked + windowed DVB-T frame decodes");
+    assert_eq!(got.payload, payload);
+    assert_eq!(got.tps.guard, params.guard());
+    assert_eq!(got.tps.cell_id, params.cell_id);
+}
+
+/// Mean power (dB, linear-averaged) over the `take`-point FFT bins whose
+/// carrier-equivalent index (in `n_fft` units) falls in `[lo_k, hi_k]`, measured
+/// through a 4-term Blackman–Harris window.
+///
+/// The window is not optional: a raw rectangular slice leaks its own `~1/f`
+/// skirt about 35 dB below the in-band power, which would swamp the very
+/// attenuation being measured.
+fn mean_band_power_db(samples: &[C32], take: usize, n_fft: usize, lo_k: i32, hi_k: i32) -> f32 {
+    const A: [f32; 4] = [0.35875, 0.48829, 0.14128, 0.01168];
+    let mut buf: Vec<rustfft::num_complex::Complex<f32>> = (0..take)
+        .map(|i| {
+            let s = samples.get(i).copied().unwrap_or_default();
+            let x = core::f32::consts::TAU * i as f32 / take as f32;
+            let w = A[0] - A[1] * x.cos() + A[2] * (2.0 * x).cos() - A[3] * (3.0 * x).cos();
+            rustfft::num_complex::Complex::new(s.re * w, s.im * w)
+        })
+        .collect();
+    rustfft::FftPlanner::new()
+        .plan_fft_forward(take)
+        .process(&mut buf);
+
+    let t = take as i32;
+    let (mut acc, mut count) = (0.0f64, 0usize);
+    for (bin, c) in buf.iter().enumerate() {
+        let signed = if (bin as i32) <= t / 2 {
+            bin as i32
+        } else {
+            bin as i32 - t
+        };
+        let k = (signed.abs() * n_fft as i32) / t;
+        if k >= lo_k && k <= hi_k {
+            acc += (c.re * c.re + c.im * c.im) as f64;
+            count += 1;
+        }
+    }
+    (10.0 * (acc / count.max(1) as f64).log10()) as f32
+}
+
+#[test]
+fn dvb_t_tx_lowpass_attenuates_the_null_band() {
+    // R16 (spectral): DVB-T's out-of-band skirt lives in the 343 bins between the
+    // outermost active carrier (±852) and Nyquist (±1024). Measure there, past
+    // the mask's own transition, on a real conformant frame.
+    let params = g1_8_params();
+    let lowpass = DvbTFrameMod::tx_lowpass_for_2k(89, 60.0);
+    let payload = sample_payload(184);
+
+    let plain = DvbTFrameMod::new(params).modulate(&payload);
+    let masked = DvbTFrameMod::new(params)
+        .with_tx_lowpass(lowpass)
+        .modulate(&payload);
+
+    // A window from the frame interior, clear of the filter's edge transient.
+    let take = 8192usize;
+    let off = 4 * plain.samples_per_symbol;
+    let n_fft = 2048usize;
+    let stop_k = (lowpass.stopband_edge_norm() * n_fft as f32).ceil() as i32;
+    assert!(
+        stop_k < n_fft as i32 / 2,
+        "89 taps must reach the stop band before Nyquist (got k = {stop_k})"
+    );
+
+    let band = |s: &[C32]| mean_band_power_db(&s[off..off + take], take, n_fft, stop_k, 1024);
+    let in_band = |s: &[C32]| mean_band_power_db(&s[off..off + take], take, n_fft, 0, 800);
+
+    let oob_plain = band(&plain.iq);
+    let oob_masked = band(&masked.iq);
+    let ib_plain = in_band(&plain.iq);
+    let ib_masked = in_band(&masked.iq);
+    println!(
+        "DVB-T k[{stop_k}, 1024]: plain={oob_plain:.1} masked={oob_masked:.1} dB \
+         (in band: {ib_plain:.1} -> {ib_masked:.1} dB)"
+    );
+
+    assert!(
+        oob_masked < oob_plain - 20.0,
+        "the mask should cut DVB-T's null-band emission hard \
+         (plain={oob_plain:.1} dB, masked={oob_masked:.1} dB)"
+    );
+    // ...without touching the carriers that matter: the active band is unchanged.
+    assert!(
+        (ib_masked - ib_plain).abs() < 0.5,
+        "in-band power must be preserved ({ib_plain:.1} -> {ib_masked:.1} dB)"
+    );
+}
+
+#[test]
+fn dvb_t_tx_lowpass_defaults_off() {
+    // Opt-in discipline: without the builder the frame is byte-identical to the
+    // pre-Track-C output.
+    let params = capstone_params();
+    let payload = sample_payload(184);
+    let plain = DvbTFrameMod::new(params).modulate(&payload);
+    let masked = DvbTFrameMod::new(params)
+        .with_tx_lowpass(DvbTFrameMod::tx_lowpass_for_2k(45, 60.0))
+        .modulate(&payload);
+    assert_eq!(plain.iq.len(), masked.iq.len(), "same-length post-pass");
+    assert_ne!(plain.iq, masked.iq, "the mask must actually change the IQ");
+    let again = DvbTFrameMod::new(params).modulate(&payload);
+    assert_eq!(plain.iq, again.iq, "default path unchanged");
 }
 
 #[test]

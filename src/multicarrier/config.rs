@@ -143,6 +143,19 @@ impl CarrierPlan {
         &self.data_carriers
     }
 
+    /// Half-width of the occupied band in subcarriers: the largest `|index|`
+    /// over the data and pilot carriers (`0` if the plan is empty). This is the
+    /// band edge a TX spectral mask must not cut into — see
+    /// [`TxLowpass::for_null_band`](super::TxLowpass::for_null_band).
+    pub fn occupied_half_carriers(&self) -> usize {
+        let data = self.data_carriers.iter().copied();
+        let pilots = self.pilot_carriers.iter().map(|&(idx, _)| idx);
+        data.chain(pilots)
+            .map(|idx| idx.unsigned_abs() as usize)
+            .max()
+            .unwrap_or(0)
+    }
+
     pub fn pilot_carriers(&self) -> &[(i32, C32)] {
         &self.pilot_carriers
     }

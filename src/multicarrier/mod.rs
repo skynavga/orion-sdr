@@ -23,3 +23,6 @@ pub use symbol_fft::SymbolFft;
 
 pub mod symbol_window;
 pub use symbol_window::SymbolWindow;
+
+pub mod tx_lowpass;
+pub use tx_lowpass::TxLowpass;
