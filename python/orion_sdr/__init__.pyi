@@ -637,9 +637,16 @@ class OfdmConfig:
     empty arrays for no pilots. *constellation* is one of ``"bpsk"``,
     ``"qpsk"``, ``"qam16"``, ``"qam64"``, ``"qam256"``.
 
-    Raises ``ValueError`` for an unknown constellation or an invalid carrier
+    *edge_guard* (optional): when given, the data carriers are generated as a
+    contiguous span leaving *edge_guard* null carriers at each band edge (DC
+    excluded), skipping any pilot index — reducing out-of-band emission. In
+    that mode *data_carriers* must be an empty array (the span is generated
+    automatically). When omitted, *data_carriers* is used verbatim.
+
+    Raises ``ValueError`` for an unknown constellation, an invalid carrier
     plan (overlapping data/pilot carriers, out-of-range indices, or an empty
-    data set).
+    data set), or a non-empty *data_carriers* passed together with
+    *edge_guard*.
     """
 
     def __init__(
@@ -653,6 +660,7 @@ class OfdmConfig:
         rf_hz: float,
         gain: float,
         constellation: str,
+        edge_guard: int | None = None,
     ) -> None: ...
     @property
     def bits_per_ofdm_symbol(self) -> int: ...

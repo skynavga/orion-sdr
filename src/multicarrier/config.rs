@@ -21,6 +21,8 @@ pub enum CarrierPlanError {
     Overlap(i32),
     #[error("no data carriers specified")]
     EmptyDataSet,
+    #[error("carrier index {0} intrudes into the {1}-carrier edge-guard band")]
+    InGuardBand(i32, usize),
 }
 
 /// Resource-grid description: FFT size, cyclic-prefix length, and the
@@ -60,6 +62,52 @@ impl CarrierPlan {
         self
     }
 
+    /// Fill `data_carriers` with a contiguous span that leaves `edge_guard`
+    /// null carriers at each band edge (in addition to the always-null Nyquist
+    /// bin at `-(n_fft/2)`). DC (index 0) is skipped unless `include_dc`, and
+    /// any index already present in `pilot_carriers` is skipped, so data and
+    /// pilots never overlap.
+    ///
+    /// This narrows the occupied bandwidth and pulls the strongest
+    /// `sinc`-skirt generators inward, reducing out-of-band emission for the
+    /// caller-owned (COFDM) carrier layout. `edge_guard == 0` with no pilots
+    /// reproduces the full-fill span, so it is regression-safe as a default.
+    ///
+    /// Owns the **data**-carrier list only: use it *instead of*
+    /// [`with_data_carriers`](Self::with_data_carriers) (both extend the same
+    /// vec), but *alongside*
+    /// [`with_pilot_carriers`](Self::with_pilot_carriers). Call
+    /// `with_pilot_carriers` first so the pilot indices are excluded from the
+    /// data fill:
+    ///
+    /// ```ignore
+    /// CarrierPlan::new(n_fft, cp_len)
+    ///     .with_pilot_carriers(pilots)
+    ///     .with_contiguous_data(edge_guard, /* include_dc */ false)
+    /// ```
+    pub fn with_contiguous_data(mut self, edge_guard: usize, include_dc: bool) -> Self {
+        let (lo, hi) = self.index_bounds();
+        let g = edge_guard as i32;
+        // The Nyquist bin -(n_fft/2) is representable (so index_bounds includes
+        // it) but conventionally null — the canonical full-fill span never
+        // occupies it. Start the fill one above it so `edge_guard == 0`
+        // reproduces that span exactly; the guard `g` then measures from the
+        // lowest *usable* index.
+        let start = lo + 1 + g;
+        let pilots: std::collections::HashSet<i32> =
+            self.pilot_carriers.iter().map(|&(idx, _)| idx).collect();
+        for idx in start..=(hi - g) {
+            if idx == 0 && !include_dc {
+                continue;
+            }
+            if pilots.contains(&idx) {
+                continue;
+            }
+            self.data_carriers.push(idx);
+        }
+        self
+    }
+
     pub fn n_fft(&self) -> usize {
         self.n_fft
     }
@@ -78,7 +126,7 @@ impl CarrierPlan {
 
     /// Signed carrier-index bounds representable by `n_fft`: negative
     /// frequencies down to `-(n_fft/2)`, positive up to `(n_fft-1)/2`.
-    fn index_bounds(&self) -> (i32, i32) {
+    pub fn index_bounds(&self) -> (i32, i32) {
         let n = self.n_fft as i32;
         (-(n / 2), (n - 1) / 2)
     }
@@ -118,6 +166,32 @@ impl CarrierPlan {
             }
         }
 
+        Ok(())
+    }
+
+    /// In addition to the [`validate`](Self::validate) checks, confirm that no
+    /// data or pilot carrier intrudes into the `edge_guard`-wide null band at
+    /// either edge — i.e. every assigned index lies in
+    /// `[-(n_fft/2) + edge_guard ..= (n_fft-1)/2 - edge_guard]`.
+    ///
+    /// Opt-in and non-breaking: [`validate`](Self::validate) is unchanged, so
+    /// existing callers are unaffected. Use this to assert a guard band is
+    /// actually honored when pilots are placed by hand.
+    pub fn validate_edge_guard(&self, edge_guard: usize) -> Result<(), CarrierPlanError> {
+        self.validate()?;
+        let (lo, hi) = self.index_bounds();
+        let g = edge_guard as i32;
+        let (glo, ghi) = (lo + g, hi - g);
+        for &idx in &self.data_carriers {
+            if idx < glo || idx > ghi {
+                return Err(CarrierPlanError::InGuardBand(idx, edge_guard));
+            }
+        }
+        for &(idx, _) in &self.pilot_carriers {
+            if idx < glo || idx > ghi {
+                return Err(CarrierPlanError::InGuardBand(idx, edge_guard));
+            }
+        }
         Ok(())
     }
 }

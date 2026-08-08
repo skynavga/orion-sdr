@@ -282,3 +282,132 @@ fn grid_map_partial_chunk_is_noop() {
     assert_eq!(wr.in_read, 0);
     assert_eq!(wr.out_written, 0);
 }
+
+// ── CarrierPlan::with_contiguous_data / validate_edge_guard (edge guard) ────
+
+// For n_fft, the full contiguous span (guard 0, DC excluded) is every
+// representable index except the Nyquist bin -(n_fft/2) and DC.
+fn full_span_len(n_fft: usize) -> usize {
+    let n = n_fft as i32;
+    let (lo, hi) = (-(n / 2), (n - 1) / 2);
+    // count lo..=hi, drop the Nyquist bin (lo) and DC
+    ((hi - lo + 1) - 2) as usize
+}
+
+#[test]
+fn contiguous_guard_zero_reproduces_full_span() {
+    let n_fft = 64;
+    let plan = CarrierPlan::new(n_fft, 16).with_contiguous_data(0, false);
+    assert_eq!(plan.data_carriers().len(), full_span_len(n_fft));
+    // Nyquist bin and DC absent; every other index present.
+    assert!(!plan.data_carriers().contains(&-(n_fft as i32 / 2)));
+    assert!(!plan.data_carriers().contains(&0));
+    assert!(plan.data_carriers().contains(&(n_fft as i32 / 2 - 1)));
+    assert!(plan.data_carriers().contains(&-(n_fft as i32 / 2 - 1)));
+    plan.validate().expect("full-span plan must validate");
+}
+
+#[test]
+fn contiguous_guard_k_drops_2k_carriers() {
+    let n_fft = 64;
+    for k in 0..=4 {
+        let plan = CarrierPlan::new(n_fft, 16).with_contiguous_data(k, false);
+        // full span minus k carriers per edge
+        let expected = full_span_len(n_fft) - 2 * k;
+        assert_eq!(
+            plan.data_carriers().len(),
+            expected,
+            "edge_guard={k} should drop 2k carriers"
+        );
+        // outermost k usable indices at each edge are gone (the low edge
+        // is measured from lo+1, since the Nyquist bin lo is never filled)
+        let (lo, hi) = plan.index_bounds();
+        for g in 0..k as i32 {
+            assert!(!plan.data_carriers().contains(&(lo + 1 + g)));
+            assert!(!plan.data_carriers().contains(&(hi - g)));
+        }
+        plan.validate().expect("guarded plan must validate");
+        plan.validate_edge_guard(k)
+            .expect("guarded plan must honor its own guard");
+    }
+}
+
+#[test]
+fn contiguous_include_dc_toggles_dc() {
+    let n_fft = 64;
+    let without = CarrierPlan::new(n_fft, 16).with_contiguous_data(2, false);
+    let with = CarrierPlan::new(n_fft, 16).with_contiguous_data(2, true);
+    assert!(!without.data_carriers().contains(&0));
+    assert!(with.data_carriers().contains(&0));
+    assert_eq!(
+        with.data_carriers().len(),
+        without.data_carriers().len() + 1
+    );
+}
+
+#[test]
+fn contiguous_indices_in_range_and_unique() {
+    let n_fft = 128;
+    let plan = CarrierPlan::new(n_fft, 32).with_contiguous_data(3, false);
+    let (lo, hi) = plan.index_bounds();
+    let mut seen = std::collections::HashSet::new();
+    for &idx in plan.data_carriers() {
+        assert!(idx >= lo && idx <= hi, "index {idx} out of range");
+        assert!(seen.insert(idx), "duplicate index {idx}");
+    }
+    plan.validate().expect("plan must validate");
+}
+
+#[test]
+fn contiguous_data_excludes_pilots_and_composes() {
+    let n_fft = 64;
+    // Pilots at a few interior indices; the data fill must skip them.
+    let pilots = [
+        (-10, C32::new(1.0, 0.0)),
+        (7, C32::new(1.0, 0.0)),
+        (20, C32::new(1.0, 0.0)),
+    ];
+    let plan = CarrierPlan::new(n_fft, 16)
+        .with_pilot_carriers(pilots)
+        .with_contiguous_data(2, false);
+
+    // No pilot index appears in the data list.
+    for &(pidx, _) in &pilots {
+        assert!(
+            !plan.data_carriers().contains(&pidx),
+            "data fill must exclude pilot index {pidx}"
+        );
+    }
+    // Data count = full guarded span minus DC minus the 3 pilots (all interior).
+    let full_guarded = full_span_len(n_fft) - 2 * 2;
+    assert_eq!(plan.data_carriers().len(), full_guarded - pilots.len());
+    // The whole plan validates with no data/pilot Overlap.
+    plan.validate()
+        .expect("pilots + edge guard must compose without overlap");
+}
+
+#[test]
+fn validate_edge_guard_rejects_intruding_index() {
+    let n_fft = 64;
+    let (lo, _) = CarrierPlan::new(n_fft, 16).index_bounds();
+    // A data carrier sitting in the outer guard band.
+    let plan = CarrierPlan::new(n_fft, 16).with_data_carriers([lo + 1, 0i32, 5]);
+    // Plain validate passes (index is in range, no overlap)...
+    plan.validate().expect("plain validate should pass");
+    // ...but validate_edge_guard(4) rejects the lo+1 intruder.
+    match plan.validate_edge_guard(4) {
+        Err(CarrierPlanError::InGuardBand(idx, g)) => {
+            assert_eq!(idx, lo + 1);
+            assert_eq!(g, 4);
+        }
+        other => panic!("expected InGuardBand, got {other:?}"),
+    }
+}
+
+#[test]
+fn validate_edge_guard_accepts_interior_only() {
+    let n_fft = 64;
+    let plan = CarrierPlan::new(n_fft, 16).with_contiguous_data(4, false);
+    plan.validate_edge_guard(4)
+        .expect("a plan built with guard g must pass validate_edge_guard(g)");
+}

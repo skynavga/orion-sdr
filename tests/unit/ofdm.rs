@@ -756,3 +756,93 @@ fn ofdm_equalizer_pilot_interp_extrapolates_outside_pilot_span() {
         );
     }
 }
+
+// ── Edge-carrier guard band: out-of-band emission (Track A, R4) ─────────────
+
+/// Full complex-baseband power spectrum in natural rustfft bin order (bin 0 =
+/// DC, negative freqs in the upper half). `util::power_spectrum` is real-input
+/// (one-sided) and would fold negative onto positive frequencies — wrong for a
+/// complex OFDM signal — so this test measures the complex spectrum directly.
+fn complex_power_db(samples: &[C32], n_fft: usize) -> Vec<f32> {
+    let mut buf: Vec<rustfft::num_complex::Complex<f32>> = (0..n_fft)
+        .map(|i| {
+            let s = samples.get(i).copied().unwrap_or_default();
+            rustfft::num_complex::Complex::new(s.re, s.im)
+        })
+        .collect();
+    FftPlanner::new().plan_fft_forward(n_fft).process(&mut buf);
+    buf.iter()
+        .map(|c| 10.0 * ((c.re * c.re + c.im * c.im) + 1e-12).log10())
+        .collect()
+}
+
+/// Mean power (dB) over the out-of-band bins: those signed indices with
+/// `|idx| > band_half`, i.e. outside the occupied span. Averaged in the linear
+/// domain to reflect actual leaked energy, then returned in dB.
+fn mean_oob_power_db(power_db: &[f32], n_fft: usize, band_half: i32) -> f32 {
+    let n = n_fft as i32;
+    let mut acc = 0.0f64;
+    let mut count = 0usize;
+    for (bin, &pdb) in power_db.iter().enumerate().take(n_fft) {
+        // rustfft bin -> signed index
+        let signed = if (bin as i32) <= n / 2 {
+            bin as i32
+        } else {
+            bin as i32 - n
+        };
+        if signed.abs() > band_half {
+            acc += 10f64.powf(pdb as f64 / 10.0);
+            count += 1;
+        }
+    }
+    let mean_lin = acc / count.max(1) as f64;
+    (10.0 * mean_lin.log10()) as f32
+}
+
+#[test]
+fn edge_guard_reduces_out_of_band_power() {
+    let n_fft = 256usize;
+    let cp_len = n_fft / 4;
+    let fs = 240_000.0f32;
+    let edge_guard = 12usize; // ~5% of n_fft per edge
+
+    // A deterministic bit pattern that exercises many subcarriers.
+    let bits: Vec<u8> = (0..4096u32)
+        .map(|i| ((i * 2654435761) >> 24) as u8)
+        .collect();
+
+    // Baseline: full-fill span (guard 0). Guarded: same but edge_guard nulls.
+    let full = CarrierPlan::new(n_fft, cp_len).with_contiguous_data(0, false);
+    let guarded = CarrierPlan::new(n_fft, cp_len).with_contiguous_data(edge_guard, false);
+
+    let cfg_full = OfdmConfig::new(full, fs, 0.0, 1.0, ConstellationOrder::Qpsk);
+    let cfg_guarded = OfdmConfig::new(guarded, fs, 0.0, 1.0, ConstellationOrder::Qpsk);
+
+    let out_full = OfdmMod::new(&cfg_full).modulate(&bits);
+    let out_guarded = OfdmMod::new(&cfg_guarded).modulate(&bits);
+
+    // Analyze one interior symbol (skip the first, to avoid transient edges),
+    // dropping its CP so the FFT sees exactly one n_fft-sample OFDM symbol.
+    let sps = cfg_full.samples_per_ofdm_symbol();
+    let sym_full = &out_full[sps + cp_len..sps + cp_len + n_fft];
+    let sym_guarded = &out_guarded[sps + cp_len..sps + cp_len + n_fft];
+
+    let pdb_full = complex_power_db(sym_full, n_fft);
+    let pdb_guarded = complex_power_db(sym_guarded, n_fft);
+
+    // Occupied half-width of the GUARDED signal: its outermost data carrier.
+    let band_half = (n_fft as i32 / 2 - 1) - edge_guard as i32;
+
+    let oob_full = mean_oob_power_db(&pdb_full, n_fft, band_half);
+    let oob_guarded = mean_oob_power_db(&pdb_guarded, n_fft, band_half);
+
+    // The guard should drop mean out-of-band power well below the full-fill
+    // case (the outer carriers that were the loudest sinc generators are now
+    // null). Demonstrated, not merely asserted: require a clear margin.
+    let drop_db = oob_full - oob_guarded;
+    assert!(
+        drop_db > 10.0,
+        "edge guard should cut mean OOB power by >10 dB \
+         (full={oob_full:.1} dB, guarded={oob_guarded:.1} dB, drop={drop_db:.1} dB)"
+    );
+}

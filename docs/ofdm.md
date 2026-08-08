@@ -59,6 +59,38 @@ Once `n_fft`/`cp_len`/carrier layout are chosen, they flow straight into
 (`multicarrier/config.rs`) and `OfdmConfig` (`modulate/ofdm.rs`); nothing
 downstream re-derives or second-guesses them.
 
+**Edge-carrier guard band (out-of-band emission).** Plain OFDM's out-of-band
+spectrum decays only as `~1/f` (each subcarrier is a rectangular-windowed
+sinusoid, so a `sinc`), and the loudest skirt generators are the carriers at the
+band edges. Because the COFDM carrier layout is caller-owned (no standard
+mandates edge pilots), the cheapest way to clean up the emission is to leave a
+guard band of null carriers at each edge, pulling those generators inward.
+`CarrierPlan::with_contiguous_data(edge_guard, include_dc)` builds the
+data-carrier span for exactly this: it fills a contiguous span leaving
+`edge_guard` null carriers at each edge (beyond the always-null Nyquist bin),
+skips DC unless `include_dc`, and skips any index already in `pilot_carriers` so
+data and pilots never overlap. Use it *instead of* `with_data_carriers` but
+*alongside* `with_pilot_carriers` (call `with_pilot_carriers` first so the fill
+can exclude the pilot indices). `edge_guard == 0` reproduces the full-fill span,
+so it is a regression-safe default. `validate_edge_guard(g)` optionally asserts
+no data/pilot carrier intrudes into the guard.
+
+- **Sizing.** `edge_guard ≈ ceil(0.02 … 0.05 · n_fft)` per edge is the useful
+  range: it trades a few percent of throughput (each nulled carrier removes
+  `bits_per_ofdm_symbol` capacity) for the strongest `sinc` generators moving
+  inward by that many bins, lowering the skirt onset. It narrows the occupied
+  bandwidth below `fs` but leaves `fs`, `n_fft`, and the CP fraction untouched —
+  the CP is a *time-domain* guard, orthogonal to this *frequency-domain* edge
+  guard; do not conflate the two.
+- **Limits.** Nulling shifts where the skirt starts; it does **not** change the
+  `~1/f` sidelobe decay. For deep suppression (tens of dB across the decay),
+  combine it with time-domain symbol windowing (raised-cosine / Tukey
+  overlap-add).
+- **DVB-T cannot use this.** DVB-T's extreme carriers (active indices `0` and
+  `1704`) are *mandatory* continual pilots that conformant receivers rely on
+  (`waveform/dvb_t.rs`); they cannot be nulled or moved inward. Symbol
+  windowing is DVB-T's only skirt-suppression lever.
+
 **CFO acquisition capture range.** `ofdm_sync`'s Schmidl & Cox fractional
 estimator is unambiguous only within `±fs / (2 · repeat_len)` — note this is
 **not** always `±½` the subcarrier spacing; it equals that only when
