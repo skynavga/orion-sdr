@@ -30,6 +30,7 @@
 use super::dvb_t_frame::{DvbTFrame, DvbTFrameMod};
 use crate::fec::PunctureRate;
 use crate::modulate::ConstellationOrder;
+use crate::multicarrier::TxLowpass;
 use crate::waveform::dvb_t::{DvbTFrameParams, DvbTLinkParams, GuardInterval};
 use num_complex::Complex32 as C32;
 
@@ -113,6 +114,7 @@ impl DvbTSuperFrame {
 pub struct DvbTSuperFrameMod {
     params: DvbTSuperFrameParams,
     window_roll_off: usize,
+    tx_lowpass: Option<TxLowpass>,
 }
 
 impl DvbTSuperFrameMod {
@@ -121,6 +123,7 @@ impl DvbTSuperFrameMod {
         Self {
             params,
             window_roll_off: 0,
+            tx_lowpass: None,
         }
     }
 
@@ -129,6 +132,20 @@ impl DvbTSuperFrameMod {
     /// `0` (the default) disables it.
     pub fn with_symbol_window(mut self, roll_off: usize) -> Self {
         self.window_roll_off = roll_off;
+        self
+    }
+
+    /// Enables the TX baseband low-pass (spectral mask) for the super-frame (see
+    /// [`DvbTFrameMod::with_tx_lowpass`](crate::modulate::DvbTFrameMod::with_tx_lowpass)).
+    /// Absent (the default) leaves the super-frame byte-identical.
+    ///
+    /// Unlike the symbol taper, which is per-symbol and therefore propagates to
+    /// each constituent frame, the mask is applied **once over the concatenated
+    /// four-frame stream**. Filtering each frame separately would leave the
+    /// filter's edge transient at all three interior frame seams — a spectral
+    /// step exactly where the super-frame is continuous on air.
+    pub fn with_tx_lowpass(mut self, lowpass: TxLowpass) -> Self {
+        self.tx_lowpass = Some(lowpass);
         self
     }
 
@@ -188,6 +205,11 @@ impl DvbTSuperFrameMod {
         let mut iq = Vec::with_capacity(symbols_per_frame * samples_per_symbol * n);
         for frame in &frames {
             iq.extend_from_slice(&frame.iq);
+        }
+        // The spectral mask runs once over the whole concatenation, so the three
+        // interior frame seams are filtered like any other symbol boundary.
+        if let Some(lowpass) = self.tx_lowpass {
+            lowpass.apply(&mut iq);
         }
 
         DvbTSuperFrame {

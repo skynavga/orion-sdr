@@ -316,6 +316,22 @@ pub const DVB_T_TPS_CARRIERS_2K: [usize; 17] = [
 /// every 4 OFDM symbols (`l mod 4`).
 pub const DVB_T_SCATTERED_PHASES: usize = 4;
 
+/// Scattered-pilot spacing **within one symbol**, in subcarriers (EN 300 744
+/// §4.5.3: `k mod 12 == 3·(l mod 4)`). Every twelfth carrier of a given symbol
+/// is a channel reference; the four phases interleave to an effective spacing of
+/// 3 *across* symbols, but a per-symbol equalizer only ever sees 12.
+pub const DVB_T_SCATTERED_PILOT_SPACING: usize = 12;
+
+/// The largest RX FFT-window back-off (samples) the per-symbol scattered-pilot
+/// equalizer can undo for DVB-T 2K: `n_fft / (2 · 12) = 85`. See
+/// [`SymbolFft::max_pilot_safe_backoff`](crate::multicarrier::SymbolFft::max_pilot_safe_backoff)
+/// for the derivation.
+///
+/// This is a **hard ceiling independent of the guard interval**, so the useful
+/// TX-shaping slack `min(cp_len − b, b)` stops growing once `cp_len` passes
+/// `2 · 85 = 170`: G1/32 affords 32 samples, G1/16 64, and G1/8 and G1/4 both 85.
+pub const DVB_T_MAX_RX_WINDOW_BACKOFF: usize = DVB_T_N_FFT / (2 * DVB_T_SCATTERED_PILOT_SPACING);
+
 /// DVB-T guard interval as a fraction of the useful symbol part `Tu`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuardInterval {
@@ -413,7 +429,9 @@ pub fn dvb_t_2k_plan(guard: GuardInterval) -> CarrierPlan {
 /// third carrier.
 pub fn scattered_pilot_indices(phase: usize) -> Vec<usize> {
     let start = 3 * (phase % DVB_T_SCATTERED_PHASES);
-    (start..=DVB_T_KMAX).step_by(12).collect()
+    (start..=DVB_T_KMAX)
+        .step_by(DVB_T_SCATTERED_PILOT_SPACING)
+        .collect()
 }
 
 /// The 17 TPS active-carrier indices for 2K mode. A thin wrapper over

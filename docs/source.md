@@ -26,7 +26,8 @@ src/
     agc.rs            — AgcRms, AgcRmsIq
     dc.rs             — DcBlocker (1st-order HP: y = x - x1 + r·y1)
     decim.rs          — FirDecimator
-    fir.rs            — FirLowpass, HalfCosineMf
+    fir.rs            — FirLowpass, FirLowpassIq (complex, Kaiser-designed),
+                        HalfCosineMf, kaiser_lowpass_taps/num_taps/transition_norm
     iir.rs            — Biquad, LpCascade, LpDcCascade
     nco.rs            — Nco, mix_with_nco
     rotator.rs        — Rotator
@@ -36,6 +37,9 @@ src/
     cyclic_prefix.rs    — CyclicPrefixInsert, CyclicPrefixRemove
     fft.rs              — FftBlock, IfftBlock (allocation-free, cached rustfft plan)
     grid.rs             — CarrierGrid, GridMap, GridExtract
+    symbol_fft.rs       — SymbolFft (shared RX window-select + FFT; window back-off)
+    symbol_window.rs    — SymbolWindow (TX raised-cosine symbol edge taper)
+    tx_lowpass.rs       — TxLowpass (TX composite-stream baseband spectral mask)
   demodulate/
     am.rs             — AmEnvelopeDemod (PowerSqrt, AbsApprox)
     bpsk.rs           — BpskDemod, BpskDecider

@@ -5,7 +5,7 @@ use num_complex::Complex32 as C32;
 use orion_sdr::core::Block;
 use orion_sdr::multicarrier::{
     CarrierGrid, CarrierPlan, CarrierPlanError, CyclicPrefixInsert, CyclicPrefixRemove, FftBlock,
-    GridExtract, GridMap, IfftBlock, SubcarrierRole, SymbolFft, SymbolWindow,
+    GridExtract, GridMap, IfftBlock, SubcarrierRole, SymbolFft, SymbolWindow, TxLowpass,
 };
 
 fn tone(n: usize, cycles: f32) -> Vec<C32> {
@@ -349,6 +349,204 @@ fn symbol_window_time_window_leaves_rx_range_untouched() {
             "RX-window sample {i} was modified by the taper"
         );
     }
+}
+
+// ── TxLowpass (TX composite-stream spectral mask, Track C / R14) ────────────
+
+/// Builds `n_symbols` CP'd OFDM symbols carrying pseudo-random QPSK data on the
+/// bins `|k| <= occupied_half`, and returns the assembled stream.
+fn cp_symbol_stream(
+    n_fft: usize,
+    cp_len: usize,
+    occupied_half: usize,
+    n_symbols: usize,
+) -> Vec<C32> {
+    let sps = n_fft + cp_len;
+    let mut ifft = IfftBlock::new(n_fft);
+    let mut core = vec![C32::default(); n_fft];
+    let mut stream = vec![C32::default(); n_symbols * sps];
+    let mut cp = CyclicPrefixInsert::new(n_fft, cp_len);
+    let mut time = vec![C32::default(); n_fft];
+    for s in 0..n_symbols {
+        core.fill(C32::default());
+        for k in 1..=occupied_half as i32 {
+            for signed in [k, -k] {
+                let bin = if signed < 0 {
+                    (n_fft as i32 + signed) as usize
+                } else {
+                    signed as usize
+                };
+                // Deterministic but well-mixed QPSK symbol, independent per
+                // (symbol, carrier) — a weakly-mixed hash would make adjacent
+                // symbols near-identical and hide exactly the ISI these tests
+                // are here to detect.
+                let mut h =
+                    (s as u32).wrapping_mul(0x9E37_79B1) ^ (bin as u32).wrapping_mul(0x85EB_CA6B);
+                h ^= h >> 13;
+                h = h.wrapping_mul(0xC2B2_AE35);
+                h ^= h >> 16;
+                let quad = h & 3;
+                let a = core::f32::consts::FRAC_1_SQRT_2;
+                core[bin] = match quad {
+                    0 => C32::new(a, a),
+                    1 => C32::new(-a, a),
+                    2 => C32::new(-a, -a),
+                    _ => C32::new(a, -a),
+                };
+            }
+        }
+        ifft.process(&core, &mut time);
+        cp.process(&time, &mut stream[s * sps..(s + 1) * sps]);
+    }
+    stream
+}
+
+#[test]
+fn tx_lowpass_sizing_and_budget_helpers() {
+    let (n_fft, occupied_half) = (64usize, 20usize);
+    // The transition is pushed against the band edge: the pass band ends at the
+    // outermost carrier (20/64) and the stop band starts as early as 21 taps allow.
+    let lp = TxLowpass::for_null_band(n_fft, occupied_half, 21, 40.0);
+    let occupied_norm = 20.0 / 64.0;
+    assert!(
+        (lp.cutoff_norm - 0.5 * lp.transition_norm() - occupied_norm).abs() < 1e-6,
+        "pass band should end at the outermost carrier, cutoff {} transition {}",
+        lp.cutoff_norm,
+        lp.transition_norm()
+    );
+    assert!(
+        lp.stopband_edge_norm() < 0.5,
+        "stop band must be reached before Nyquist, got {}",
+        lp.stopband_edge_norm()
+    );
+    // A filter too short for its own transition falls back to centring rather
+    // than putting the pass band edge past Nyquist.
+    let stubby = TxLowpass::for_null_band(n_fft, occupied_half, 3, 60.0);
+    assert!(!stubby.transition_fits(n_fft, occupied_half));
+    assert!((stubby.cutoff_norm - 0.5 * (occupied_norm + 0.5)).abs() < 1e-6);
+    // Odd/>=3 clamp, so the group delay is an integer half-length.
+    assert_eq!(lp.group_delay(), 10);
+    assert_eq!(TxLowpass::new(0.4, 16, 40.0).group_delay(), 8); // 16 -> 17 taps
+    assert_eq!(TxLowpass::new(0.4, 1, 40.0).group_delay(), 1); // 1 -> 3 taps
+
+    // The suggested length is long enough for the transition to fit the null
+    // band, and a filter that short really does fit.
+    let m = TxLowpass::taps_for_null_band(n_fft, occupied_half, 40.0);
+    assert!(
+        TxLowpass::new(lp.cutoff_norm, m, 40.0).transition_fits(n_fft, occupied_half),
+        "sized filter ({m} taps) should fit the null band"
+    );
+    assert!(
+        !TxLowpass::new(lp.cutoff_norm, 3, 40.0).transition_fits(n_fft, occupied_half),
+        "a 3-tap filter is far too short for a 40 dB mask"
+    );
+
+    // Guard budget: roll_off + group_delay <= min(cp_len - b, b), maximized at
+    // b = cp_len/2.
+    let cp_len = 32usize;
+    assert!(lp.fits_guard(cp_len, 0, cp_len / 2)); // 0 + 10 <= 16
+    assert!(lp.fits_guard(cp_len, 6, cp_len / 2)); // 6 + 10 <= 16
+    assert!(!lp.fits_guard(cp_len, 7, cp_len / 2)); // 7 + 10 >  16
+    assert!(!lp.fits_guard(cp_len, 0, 4)); // slack min(28, 4) = 4 < 10
+}
+
+/// Test geometry shared by the two `TxLowpass` transparency tests:
+/// `n_fft = 64`, `cp_len = 32`, carriers `|k| <= 20`, RX back-off `cp_len/2`.
+const LPF_GEOM: (usize, usize, usize) = (64, 32, 20);
+
+/// Measures how much the filter's effective per-bin response `Y[k]/X[k]` varies
+/// between symbols carrying *different* data. Zero means the receiver's FFT sees
+/// an exact circular convolution — one fixed complex scalar per bin — which is
+/// what an equalizer can divide out. Nonzero is inter-symbol leakage it cannot.
+/// Also returns the worst pass-band deviation of that scalar from unity.
+fn tx_lowpass_response_spread(lp: &TxLowpass) -> (f32, f32) {
+    let (n_fft, cp_len, occupied_half) = LPF_GEOM;
+    let sps = n_fft + cp_len;
+    let b = cp_len / 2;
+    let plain = cp_symbol_stream(n_fft, cp_len, occupied_half, 5);
+    let mut filtered = plain.clone();
+    lp.apply(&mut filtered);
+    assert_eq!(filtered.len(), plain.len(), "same-length post-pass");
+
+    // Per-bin ratio Y[k]/X[k] for one symbol, over the occupied bins only.
+    let ratios = |s: usize| -> Vec<C32> {
+        let mut sf = SymbolFft::new(n_fft, cp_len).with_window_backoff(b);
+        let x: Vec<C32> = sf.demod_symbol(&plain[s * sps..]).unwrap().to_vec();
+        let y: Vec<C32> = sf.demod_symbol(&filtered[s * sps..]).unwrap().to_vec();
+        (1..=occupied_half)
+            .flat_map(|k| [k, n_fft - k])
+            .map(|bin| y[bin] / x[bin])
+            .collect()
+    };
+    // Interior symbols only — the first and last carry the filter's edge
+    // transient, exactly as a real transmitted burst does.
+    let (r1, r2, r3) = (ratios(1), ratios(2), ratios(3));
+    let spread = r1
+        .iter()
+        .zip(r2.iter())
+        .zip(r3.iter())
+        .map(|((a, b), c)| (a - b).norm().max((a - c).norm()))
+        .fold(0.0f32, f32::max);
+    let unity = r1
+        .iter()
+        .map(|r| (r - C32::new(1.0, 0.0)).norm())
+        .fold(0.0f32, f32::max);
+    (spread, unity)
+}
+
+#[test]
+fn tx_lowpass_is_a_data_independent_per_bin_channel() {
+    // The load-bearing C1 property, and the reason no matched RX setting is
+    // needed: within the guard budget the filter reaches only samples the cyclic
+    // prefix makes cyclically equal, so what the receiver's FFT sees is an exact
+    // CIRCULAR convolution — one complex scalar per bin, identical for every
+    // symbol. That is precisely what a pilot/training equalizer divides out.
+    let (n_fft, cp_len, occupied_half) = LPF_GEOM;
+    let lp = TxLowpass::for_null_band(n_fft, occupied_half, 21, 40.0); // d = 10
+    assert!(
+        lp.fits_guard(cp_len, 0, cp_len / 2),
+        "test must stay inside the guard budget"
+    );
+
+    let (spread, unity) = tx_lowpass_response_spread(&lp);
+    assert!(
+        spread < 1e-5,
+        "per-bin response must not depend on the data (spread {spread:e}) — \
+         any dependence is ISI the equalizer cannot invert"
+    );
+    // And in the pass band that scalar is ~1 (real, no phase rotation): the
+    // payload carriers pass essentially untouched.
+    assert!(
+        unity < 0.05,
+        "occupied carriers should pass at ~unity, worst deviation {unity}"
+    );
+}
+
+#[test]
+fn tx_lowpass_overrunning_the_guard_budget_leaks_between_symbols() {
+    // The negative control for `fits_guard`: a filter whose group delay exceeds
+    // the receiver's discarded guard reaches into the neighbouring symbol, so the
+    // per-bin response starts depending on the adjacent data — real ISI. The leak
+    // is small in absolute terms (the far taps are tiny), so the honest claim is
+    // the CONTRAST: orders of magnitude more than an in-budget filter. This is
+    // why the budget is a documented constraint rather than a suggestion.
+    let (n_fft, cp_len, occupied_half) = LPF_GEOM;
+    let b = cp_len / 2;
+    let in_budget = TxLowpass::for_null_band(n_fft, occupied_half, 21, 40.0); // d = 10
+    let over_budget = TxLowpass::for_null_band(n_fft, occupied_half, 61, 40.0); // d = 30
+    assert!(in_budget.fits_guard(cp_len, 0, b));
+    assert!(
+        !over_budget.fits_guard(cp_len, 0, b),
+        "d = 30 must exceed the slack min(cp_len - b, b) = 16"
+    );
+
+    let (ok_spread, _) = tx_lowpass_response_spread(&in_budget);
+    let (bad_spread, _) = tx_lowpass_response_spread(&over_budget);
+    assert!(
+        bad_spread > 100.0 * ok_spread.max(1e-9),
+        "over-running the guard should leak between symbols: \
+         in-budget spread {ok_spread:e} vs over-budget {bad_spread:e}"
+    );
 }
 
 #[test]

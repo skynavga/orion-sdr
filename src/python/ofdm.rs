@@ -222,6 +222,38 @@ impl PyOfdmConfig {
         Ok(Self(self.0.clone().with_symbol_window(roll_off)))
     }
 
+    /// Enables the TX baseband low-pass (spectral mask) the frame modulator
+    /// applies across the assembled stream (default: off). The cutoff is placed
+    /// against this plan's own occupied band edge, leaving `num_taps` — the
+    /// quantity the cyclic-prefix budget constrains — to the caller.
+    ///
+    /// Unlike symbol windowing this is not bounded by the windowing ceiling: it
+    /// attenuates out-of-band energy directly in the frequency domain, so its
+    /// gain stacks on top. It needs no decoding change at the receiver, but its
+    /// group delay `(num_taps - 1) // 2` must fit the guard the receiver
+    /// discards — pair it with `with_rx_window_backoff` and keep
+    /// `roll_off + group_delay <= min(cp_len - backoff, backoff)`.
+    #[pyo3(signature = (num_taps, stopband_db = 60.0))]
+    fn with_tx_lowpass(&self, num_taps: usize, stopband_db: f32) -> PyResult<Self> {
+        Ok(Self(
+            self.0
+                .clone()
+                .with_tx_lowpass_null_band(num_taps, stopband_db),
+        ))
+    }
+
+    /// The tap count whose transition just fits the unoccupied band of this
+    /// config's carrier plan at `stopband_db` — a starting point for
+    /// `with_tx_lowpass`, to be checked against the guard budget.
+    #[pyo3(signature = (stopband_db = 60.0))]
+    fn tx_lowpass_suggested_taps(&self, stopband_db: f32) -> usize {
+        crate::multicarrier::TxLowpass::taps_for_null_band(
+            self.0.carrier_plan.n_fft(),
+            self.0.carrier_plan.occupied_half_carriers(),
+            stopband_db,
+        )
+    }
+
     /// Sets a rectangular block interleaver on the given stage
     /// (`"inner"` or `"outer"`). `rows`/`cols` = 0 disables it.
     #[pyo3(signature = (stage, rows, cols))]

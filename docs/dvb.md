@@ -168,11 +168,12 @@ also public for standalone use. See [demodulate.md](demodulate.md) for the flag.
 ## Spectral shaping (symbol windowing)
 
 DVB-T's out-of-band skirt can be reduced with the crate's raised-cosine symbol
-windowing — the **only** OOB lever available to DVB-T, since its extreme carriers
-are mandatory continual pilots that cannot be nulled (unlike the COFDM
-edge-carrier guard). Windowing is **not** a DVB-T/DVB-T2 feature (both standards
-define a rectangular symbol; see [ofdm.md](ofdm.md) for the EN 302 755 detail),
-so this is an `orion-sdr`-internal, RX-transparent, off-by-default option.
+windowing — one of two OOB levers available to DVB-T (the other being the
+baseband spectral mask below), since its extreme carriers are mandatory continual
+pilots that cannot be nulled the way the COFDM edge-carrier guard nulls its own.
+Windowing is **not** a DVB-T/DVB-T2 feature (both standards define a rectangular
+symbol; see [ofdm.md](ofdm.md) for the EN 302 755 detail), so this is an
+`orion-sdr`-internal, RX-transparent, off-by-default option.
 
 Because a DVB-T frame is preamble-less, **every** symbol is a CP-bearing OFDM
 symbol and every one is windowed (no S&C region to skip). The taper touches only
@@ -186,6 +187,47 @@ the same back-off, corrects the induced phase ramp). Both propagate through the
 super-frame mod/demod to every constituent frame. Defaults (`0`/`0`) leave the
 on-air frame byte-identical. See [ofdm.md](ofdm.md) for the shared `SymbolWindow`
 / `SymbolFft` geometry and the transparency argument.
+
+## Spectral shaping (baseband mask)
+
+The deeper lever is an optional TX low-pass across the assembled frame:
+`DvbTFrameMod::with_tx_lowpass(TxLowpass)`, propagated by
+`DvbTSuperFrameMod::with_tx_lowpass`. DVB-T is a good fit for it — only 1705 of
+2048 bins are active, so the standard leaves a genuine null band for the
+transition to live in, and the per-symbol scattered-pilot equalizer absorbs the
+filter like any other channel. `DvbTFrameMod::tx_lowpass_for_2k(num_taps,
+stopband_db)` places the cutoff against the fixed `±852` band edge.
+
+Measured on a conformant frame (G1/8, 89-tap 60 dB mask): mean power in the null
+band past the mask's transition drops **66 dB**, with in-band power unchanged to
+within 0.1 dB and TPS, pilots, and payload all recovered. See
+[ofdm.md](ofdm.md) for the transparency argument and the guard budget.
+
+On the **super-frame** the mask is applied once over the concatenated four
+frames, not per frame: the three interior seams are continuous on air, and
+filtering each frame separately would leave the filter's edge transient at each.
+
+### Choosing a guard interval for DATV
+
+The two TX shaping levers share one budget,
+`roll_off + group_delay ≤ min(cp_len − b, b)`, so a longer guard buys a longer
+taper and a sharper mask. But it saturates, and it is worth knowing where:
+
+| Guard | `cp_len` | Best usable `b` | Shaping slack |
+| --- | --- | --- | --- |
+| G1/32 | 64 | 32 | 32 |
+| G1/16 | 128 | 64 | 64 |
+| G1/8 | 256 | 85 | 85 |
+| G1/4 | 512 | 85 | 85 |
+
+`b` is capped at 85 samples by the scattered-pilot spacing, *not* by the guard
+(`DVB_T_MAX_RX_WINDOW_BACKOFF`; see the derivation in [ofdm.md](ofdm.md)). So
+moving G1/32 → G1/8 more than doubles the shaping budget, while G1/8 → G1/4 adds
+nothing to it — the extra guard buys delay-spread tolerance only. For crowded
+narrowband DATV band plans, **G1/8 is the sweet spot**: the full 85 samples of
+shaping budget at a quarter of G1/4's guard overhead. All four guards are
+TPS-signalled and auto-detected, so this is a transmitter-side choice with no
+receiver cost.
 
 ## Header formats
 

@@ -11,7 +11,9 @@ use crate::fec::{
     CrcKind, DecodeRule, HeaderFormat, InnerFec, InterleaverKind, OuterFec, ScramblerKind,
     ScramblerPos, SeedMode,
 };
-use crate::multicarrier::{CarrierGrid, CarrierPlan, CyclicPrefixInsert, GridMap, IfftBlock};
+use crate::multicarrier::{
+    CarrierGrid, CarrierPlan, CyclicPrefixInsert, GridMap, IfftBlock, TxLowpass,
+};
 use num_complex::Complex32 as C32;
 
 /// Constellation order used by an OFDM data carrier's symbol mapper.
@@ -99,6 +101,19 @@ pub struct OfdmConfig {
     /// estimate) a nonzero back-off leaves the ramp uncorrected and corrupts the
     /// decode — leave it `0` there.
     pub rx_window_backoff: usize,
+    /// Optional TX baseband low-pass (spectral mask) applied by the frame
+    /// modulator across the **assembled** stream, after CP insertion and any
+    /// symbol windowing. `None` (the default) leaves the on-air output
+    /// unchanged.
+    ///
+    /// **TX-only field**, but not RX-indifferent: the filter is a linear
+    /// channel the pilot/training equalizer absorbs, so no *decoding* change is
+    /// needed, yet its group delay must land in guard the receiver discards.
+    /// Pair it with [`rx_window_backoff`](Self::rx_window_backoff) — the same
+    /// knob symbol windowing uses — and keep
+    /// `roll_off + group_delay ≤ min(cp_len − backoff, backoff)`
+    /// ([`TxLowpass::fits_guard`]).
+    pub tx_lowpass: Option<TxLowpass>,
 }
 
 /// Rejects an [`OfdmConfig`] whose frame-layer settings are mutually
@@ -146,6 +161,7 @@ impl OfdmConfig {
             ldpc_decode_rule: DecodeRule::SumProduct,
             dvb_t_scattered: false,
             rx_window_backoff: 0,
+            tx_lowpass: None,
         }
     }
 
@@ -266,6 +282,38 @@ impl OfdmConfig {
         let n_fft = self.carrier_plan.n_fft();
         let roll_off = (beta.max(0.0) * n_fft as f32).round() as usize;
         self.with_symbol_window(roll_off)
+    }
+
+    /// Enables the TX baseband low-pass (spectral mask) applied by
+    /// [`OfdmFrameMod::modulate_frame`](crate::modulate::OfdmFrameMod::modulate_frame)
+    /// across the assembled stream (see [`tx_lowpass`](Self::tx_lowpass)).
+    /// Off by default.
+    ///
+    /// Unlike symbol windowing this is *not* bounded by the windowing ceiling —
+    /// it attenuates the skirt directly in the frequency domain, so its gain
+    /// stacks on top. It changes nothing about how the receiver *decodes*, but
+    /// its group delay shares the guard budget with any symbol taper and needs
+    /// a nonzero [`rx_window_backoff`](Self::rx_window_backoff) to land in:
+    /// check [`TxLowpass::fits_guard`].
+    pub fn with_tx_lowpass(mut self, lowpass: TxLowpass) -> Self {
+        self.tx_lowpass = Some(lowpass);
+        self
+    }
+
+    /// Convenience form of [`with_tx_lowpass`](Self::with_tx_lowpass) that reads
+    /// the occupied band edge straight off the carrier plan and centres the
+    /// filter's transition in the unoccupied band above it
+    /// ([`TxLowpass::for_null_band`]). `num_taps` stays the caller's choice
+    /// because it is what the cyclic-prefix budget constrains;
+    /// [`TxLowpass::taps_for_null_band`] suggests a length.
+    pub fn with_tx_lowpass_null_band(self, num_taps: usize, stopband_db: f32) -> Self {
+        let lowpass = TxLowpass::for_null_band(
+            self.carrier_plan.n_fft(),
+            self.carrier_plan.occupied_half_carriers(),
+            num_taps,
+            stopband_db,
+        );
+        self.with_tx_lowpass(lowpass)
     }
 
     /// Validates the frame-layer configuration. Returns `Ok(())` for the bare

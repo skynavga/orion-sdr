@@ -9,7 +9,9 @@
 use crate::common::add_awgn;
 use orion_sdr::demodulate::{DvbTRxSuperFrameError, DvbTSuperFrameDemod};
 use orion_sdr::fec::PunctureRate;
-use orion_sdr::modulate::{ConstellationOrder, DvbTSuperFrameMod, DvbTSuperFrameParams};
+use orion_sdr::modulate::{
+    ConstellationOrder, DvbTFrameMod, DvbTSuperFrameMod, DvbTSuperFrameParams,
+};
 use orion_sdr::waveform::dvb_t::{DvbTLinkParams, GuardInterval};
 
 fn sample_payload(len: usize) -> Vec<u8> {
@@ -62,6 +64,71 @@ fn dvb_t_super_frame_cell_id_split_across_frames() {
         .expect("super-frame decode");
     assert_eq!(rx.cell_id, 0x1234);
     assert_eq!(rx.payload, payload);
+}
+
+#[test]
+fn roundtrip_dvb_t_super_frame_with_tx_lowpass() {
+    // R16: the spectral mask propagates to the super-frame path, where it is
+    // applied ONCE over the concatenated four frames — filtering each frame
+    // separately would leave the filter's edge transient at all three interior
+    // seams, which are continuous on air. The mask needs no decoding change; the
+    // demod only supplies guard for its group delay via the window back-off.
+    let p = params(ConstellationOrder::Qpsk, PunctureRate::R1_2, 0xBEEF);
+    let cp_len = GuardInterval::G1_8.cp_len_2k(); // 256
+    let backoff = 64usize; // inside the 85-sample scattered-pilot ceiling
+    let lowpass = DvbTFrameMod::tx_lowpass_for_2k(89, 80.0); // group delay 44
+    assert!(lowpass.fits_guard(cp_len, 0, backoff));
+
+    let payload = sample_payload(700);
+    let sf = DvbTSuperFrameMod::new(p)
+        .with_tx_lowpass(lowpass)
+        .modulate(&payload);
+
+    // Same-length post-pass: the super-frame is still a uniform block.
+    assert_eq!(sf.iq.len(), sf.n_symbols() * sf.samples_per_symbol);
+
+    let rx = DvbTSuperFrameDemod::new(p)
+        .with_rx_window_backoff(backoff)
+        .decode(&sf.iq, sf.symbols_per_frame, sf.frame_payload_lens)
+        .expect("band-limited super-frame decode");
+    assert_eq!(rx.payload, payload, "recovered super-frame payload");
+    assert_eq!(rx.cell_id, 0xBEEF, "reassembled 16-bit cell id");
+}
+
+#[test]
+fn dvb_t_super_frame_mask_is_continuous_across_frame_seams() {
+    // Filtering the concatenation (rather than each frame) is observable: the
+    // samples straddling an interior frame boundary must differ from what
+    // per-frame filtering would produce, since a per-frame filter would ramp its
+    // state down and back up at every seam.
+    let p = params(ConstellationOrder::Qpsk, PunctureRate::R1_2, 0x0102);
+    let lowpass = DvbTFrameMod::tx_lowpass_for_2k(89, 80.0);
+    let payload = sample_payload(700);
+
+    let whole = DvbTSuperFrameMod::new(p)
+        .with_tx_lowpass(lowpass)
+        .modulate(&payload);
+    // Per-frame filtering, for contrast: the same four frames, each masked alone.
+    let per_frame = {
+        let plain = DvbTSuperFrameMod::new(p).modulate(&payload);
+        let frame_len = plain.iq.len() / 4;
+        let mut out = plain.iq.clone();
+        for chunk in out.chunks_mut(frame_len) {
+            lowpass.apply(chunk);
+        }
+        out
+    };
+    assert_eq!(whole.iq.len(), per_frame.len());
+
+    let seam = whole.iq.len() / 4; // first interior frame boundary
+    let d = lowpass.group_delay();
+    let worst = (seam - d..seam + d)
+        .map(|i| (whole.iq[i] - per_frame[i]).norm())
+        .fold(0.0f32, f32::max);
+    assert!(
+        worst > 1e-6,
+        "the mask must run across the frame seam, not restart at it"
+    );
 }
 
 #[test]

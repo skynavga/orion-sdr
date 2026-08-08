@@ -3,6 +3,19 @@
   "env": {
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
   },
-  "alwaysThinkingEnabled": false,
-  "enabledFeatureFlags": []
+  "alwaysThinkingEnabled": true,
+  "enabledFeatureFlags": [],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "in=$(cat); if printf '%s' \"$in\" | grep -qiE 'Generated with Claude Code|Co-Authored-By: Claude'; then printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"Blocked: a Claude attribution trailer was detected in this command. Project convention (global CLAUDE.md + feedback_commit_messages) forbids Co-Authored-By: Claude and the Generated-with-Claude-Code trailer in commit messages and PR bodies. Remove the trailer and retry.\"}}'; fi"
+          }
+        ]
+      }
+    ]
+  }
 }

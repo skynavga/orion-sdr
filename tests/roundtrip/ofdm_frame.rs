@@ -120,6 +120,139 @@ fn stream_frame_with_symbol_windowing() {
     assert_eq!(frames[0].packet.payload, payload);
 }
 
+/// A plan with real unoccupied bandwidth for a spectral mask to work in: a
+/// 128-point grid with a 20-carrier edge guard (so the occupied half-width is
+/// 43 of 64) and a quarter-length guard interval.
+fn masked_plan_config() -> OfdmConfig {
+    let (n_fft, cp_len) = (128usize, 32usize);
+    let plan =
+        orion_sdr::multicarrier::CarrierPlan::new(n_fft, cp_len).with_contiguous_data(20, false);
+    OfdmConfig::new(plan, 48_000.0, 0.0, 1.0, ConstellationOrder::Bpsk)
+}
+
+fn masked_preamble(cfg: &OfdmConfig) -> OfdmPreamble {
+    OfdmPreamble::new(4, 32)
+        .with_training_symbol(cfg.carrier_plan.n_fft(), cfg.carrier_plan.cp_len())
+}
+
+#[test]
+fn stream_frame_with_tx_lowpass() {
+    // R15: the TX baseband spectral mask is applied across the whole assembled
+    // stream (preamble included). It is absorbed by the equalizer as an ordinary
+    // linear channel, so the demod needs no new decoding step — but its group
+    // delay must land in guard the receiver discards, which is what the RX
+    // window back-off provides. Prove a masked frame still round-trips cleanly.
+    let cp_len = 32usize;
+    let taps = 21usize; // group delay 10
+    let cfg = masked_plan_config()
+        .with_tx_lowpass_null_band(taps, 40.0)
+        .with_rx_window_backoff(cp_len / 2); // slack min(16, 16) = 16 >= 10
+    let lowpass = cfg.tx_lowpass.expect("mask configured");
+    assert!(
+        lowpass.fits_guard(cp_len, 0, cp_len / 2),
+        "test config must stay inside the guard budget"
+    );
+
+    let pre = masked_preamble(&cfg);
+    let table = McsTable::default_ladder();
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+
+    let payload = sample_payload(48);
+    let frame = FramePacket::new(FrameMetadata::new(0x00C1, 1), payload.clone()); // mcs 1 = QPSK
+    let mut buf = vec![C32::default(); 40];
+    buf.extend_from_slice(&modu.modulate_frame(&frame, 0));
+    buf.extend(vec![C32::default(); 128]);
+
+    let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre);
+    let frames: Vec<_> = rx.feed(&buf).into_iter().filter_map(|r| r.ok()).collect();
+    assert_eq!(frames.len(), 1, "band-limited frame decodes");
+    assert_eq!(frames[0].packet.payload, payload);
+}
+
+#[test]
+fn stream_frame_with_tx_lowpass_and_symbol_windowing() {
+    // R15/R17: the two TX shaping levers stack, and they share one guard budget:
+    // `roll_off + group_delay <= min(cp_len - b, b)`. Configure both inside it
+    // and the frame must still decode.
+    let cp_len = 32usize;
+    let (taps, roll_off) = (15usize, 6usize); // group delay 7; 7 + 6 = 13 <= 16
+    let cfg = masked_plan_config()
+        .with_tx_lowpass_null_band(taps, 40.0)
+        .with_symbol_window(roll_off)
+        .with_rx_window_backoff(cp_len / 2);
+    assert!(
+        cfg.tx_lowpass
+            .expect("mask configured")
+            .fits_guard(cp_len, roll_off, cp_len / 2),
+        "mask + taper must fit the guard together"
+    );
+
+    let pre = masked_preamble(&cfg);
+    let table = McsTable::default_ladder();
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+
+    let payload = sample_payload(48);
+    let frame = FramePacket::new(FrameMetadata::new(0x00C2, 1), payload.clone());
+    let mut buf = vec![C32::default(); 40];
+    buf.extend_from_slice(&modu.modulate_frame(&frame, 0));
+    buf.extend(vec![C32::default(); 128]);
+
+    let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre);
+    let frames: Vec<_> = rx.feed(&buf).into_iter().filter_map(|r| r.ok()).collect();
+    assert_eq!(frames.len(), 1, "masked + windowed frame decodes");
+    assert_eq!(frames[0].packet.payload, payload);
+}
+
+#[test]
+fn cofdm_training_hold_takes_any_back_off_the_guard_allows() {
+    // The COFDM streaming demod estimates the channel once from the training
+    // symbol, measured at the same back-off — a per-bin estimate at full
+    // frequency resolution, so it absorbs the back-off's phase ramp exactly at
+    // ANY `b`, right up to the whole cyclic prefix.
+    //
+    // This is the opposite of the per-symbol *pilot-interpolated* path DVB-T
+    // uses, where the ramp must be reconstructed between references spaced 12
+    // carriers apart and aliases past `n_fft/(2*12)` (see
+    // `dvb_t_rx_window_backoff_is_capped_by_the_pilot_grid_not_the_guard`).
+    // Recorded here because it inverts the natural assumption: for window
+    // back-off, holding one training estimate is the *stronger* option, so
+    // offering COFDM a pilot-interpolated equalizer would shrink its shaping
+    // budget rather than widen it.
+    let cp_len = 32usize;
+    for backoff in [cp_len / 2, 3 * cp_len / 4, cp_len] {
+        let cfg = masked_plan_config().with_rx_window_backoff(backoff);
+        let pre = masked_preamble(&cfg);
+        let table = McsTable::default_ladder();
+        let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+
+        let payload = sample_payload(32);
+        let frame = FramePacket::new(FrameMetadata::new(0x00C3, 1), payload.clone());
+        let mut buf = vec![C32::default(); 40];
+        buf.extend_from_slice(&modu.modulate_frame(&frame, 0));
+        buf.extend(vec![C32::default(); 128]);
+
+        let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre);
+        let frames: Vec<_> = rx.feed(&buf).into_iter().filter_map(|r| r.ok()).collect();
+        assert_eq!(frames.len(), 1, "back-off {backoff} should decode");
+        assert_eq!(frames[0].packet.payload, payload, "back-off {backoff}");
+    }
+}
+
+#[test]
+fn tx_lowpass_defaults_off_and_is_byte_identical() {
+    // The Track A/B/C regression guard: every lever is opt-in, so a config that
+    // does not ask for a mask emits exactly what it emitted before.
+    let cfg = masked_plan_config();
+    assert!(cfg.tx_lowpass.is_none(), "mask is off by default");
+    let pre = masked_preamble(&cfg);
+    let table = McsTable::default_ladder();
+    let frame = FramePacket::new(FrameMetadata::new(9, 0), sample_payload(24));
+
+    let plain = OfdmFrameMod::new(cfg.clone(), table.clone(), pre).modulate_frame(&frame, 0);
+    let also_plain = OfdmFrameMod::new(cfg, table, pre).modulate_frame(&frame, 0);
+    assert_eq!(plain, also_plain);
+}
+
 #[test]
 fn roundtrip_frame_awgn() {
     let cfg = plan_config();

@@ -699,6 +699,26 @@ class OfdmConfig:
         RX-transparent when paired with a matching ``with_rx_window_backoff``
         (``roll_off = cp_len/2`` with back-off ``cp_len/2``)."""
         ...
+    def with_tx_lowpass(
+        self, num_taps: int, stopband_db: float = 60.0
+    ) -> "OfdmConfig":
+        """Enable the TX baseband low-pass (spectral mask) applied across the
+        assembled frame (default: off). The cutoff is placed against this plan's
+        own occupied band edge; *num_taps* stays the caller's choice because it
+        is what the cyclic-prefix budget constrains.
+
+        Not bounded by the symbol-windowing ceiling — it attenuates out-of-band
+        energy directly in the frequency domain, so its gain stacks on top of a
+        taper's. It needs no decoding change at the receiver, but its group delay
+        ``(num_taps - 1) // 2`` must fit the guard the receiver discards: pair it
+        with ``with_rx_window_backoff`` and keep
+        ``roll_off + group_delay <= min(cp_len - backoff, backoff)``."""
+        ...
+    def tx_lowpass_suggested_taps(self, stopband_db: float = 60.0) -> int:
+        """The tap count whose transition just fits this plan's unoccupied band
+        at *stopband_db* — a starting point for ``with_tx_lowpass``, to be
+        checked against the guard budget."""
+        ...
     def with_interleaver(self, stage: str, rows: int, cols: int) -> "OfdmConfig":
         """Set a rectangular block interleaver on *stage* (``"inner"`` |
         ``"outer"``); ``rows``/``cols`` = 0 disables it."""

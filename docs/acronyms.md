@@ -41,7 +41,7 @@ the OFDM/COFDM conventions.
 | EVM | Error Vector Magnitude | Soft-vs-ideal constellation distance, in dB; `OfdmRxFrame::evm_db` |
 | FEC | Forward Error Correction | LDPC in FT8/FT4; COFDM concatenates an inner (LDPC/convolutional) and outer (BCH/RS) code (`fec/`) |
 | FFT | Fast Fourier Transform | `FftBlock` (unity-gain forward) in `multicarrier/fft.rs`; the OFDM demod's frequency-domain transform |
-| FIR | Finite Impulse Response | `FirLowpass`, `FirDecimator` in `dsp/` |
+| FIR | Finite Impulse Response | `FirLowpass` (real), `FirLowpassIq` (complex, linear-phase), `FirDecimator` in `dsp/` |
 | FM | Frequency Modulation | Quadrature (discriminator) demod |
 | FMA | Fused Multiply-Add | `f32::mul_add`; used throughout inner loops |
 | FSK | Frequency-Shift Keying | Base modulation for FT8 (8-FSK) and FT4 (4-FSK) |
@@ -60,10 +60,13 @@ the OFDM/COFDM conventions.
 | LFSR | Linear-Feedback Shift Register | Basis of the `PnScrambler` whitener (`fec/scrambler.rs`) |
 | LLR | Log-Likelihood Ratio | `log(P(bit=0)/P(bit=1))`; positive ↔ bit more likely 0 |
 | LO | Local Oscillator | Receiver frequency reference; source of frequency offset |
+| Kaiser | Kaiser window | Window parameterized by stop-band attenuation; `dsp::kaiser_lowpass_taps` designs the TX mask's FIR |
 | LP | Low-Pass | `FirLowpass`, `LpCascade` filter types |
+| LPF | Low-Pass Filter | Here: the TX baseband **spectral mask** `TxLowpass` applies across an assembled OFDM stream to cut out-of-band emission. See [ofdm.md](ofdm.md) |
 | MAC | Medium Access Control | The COFDM frame layer (`FramePacket`, `OfdmFrameMod`/`OfdmFrameStreamDemod`) |
 | MCS | Modulation and Coding Scheme | `McsTable` maps a per-frame index to (constellation, inner/outer FEC) |
 | ML | Maximum Likelihood | The van de Beek guard-interval timing/CFO estimator (`dvb_t_gi_sync`); not *max-log* (LLR approximation) |
+| Mask | Spectral emission mask | Band-plan limit on out-of-band power; no mask *template* is modelled — `TxLowpass` meets one |
 | MLSE | Maximum-Likelihood Sequence Estimation | `viterbi_decode_coherent` in `codec/psk31.rs` |
 | MMSE | Minimum Mean-Square Error | Noise-aware equalizer; a candidate remedy for high-order-QAM multipath (not yet implemented) |
 | MPEG-TS | MPEG Transport Stream | The 188-byte-packet payload DVB-T carries; the RS(204,188) code protects one TS packet |

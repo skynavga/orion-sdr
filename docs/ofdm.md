@@ -132,10 +132,86 @@ ramp out. A bare, unequalized demod must keep back-off `0`.
 - **Sizing and payoff.** The taper is bounded by `cp_len/2` (a fraction of the
   guard), so suppression is real but **modest** — a measured ~11 dB drop in the
   sidelobe skirt a few carriers beyond the band edge, *not* the immediate edge
-  nor the far noise floor. It also competes with the equalizer's delay-spread
-  budget (both live in the guard). For COFDM it composes with the edge guard
-  above (nulling moves the skirt inward; windowing lowers its rolloff); combined
-  beats either alone. Default `roll_off = 0` leaves on-air output byte-identical.
+  nor the far noise floor. (Further out it does better, since it changes the
+  skirt's *decay rate*: ~32 dB measured in the deep out-of-band region. The
+  payoff grows with distance from the band edge.) It also competes with the
+  equalizer's delay-spread budget (both live in the guard). For COFDM it
+  composes with the edge guard above (nulling moves the skirt inward; windowing
+  lowers its rolloff); combined beats either alone. Default `roll_off = 0`
+  leaves on-air output byte-identical.
+- **How large a back-off can be, and what caps it.** The `b ≤ cp_len` clamp on
+  `SymbolFft` is not the binding constraint on every path. What the receiver has
+  to do is *undo* the ramp `exp(-j2πkb/n_fft)` from its channel estimate, so the
+  ceiling depends on how that estimate is obtained:
+  - `TrainingSymbolHold` (the COFDM default) measures every bin from the
+    training symbol at the same back-off, so it absorbs any `b` the guard
+    allows — verified up to `b = cp_len`.
+  - `PerSymbolPilotInterp` (the DVB-T scattered path) only samples the channel
+    every `pilot_spacing` carriers and interpolates between them. The ramp
+    advances `2π·b·pilot_spacing/n_fft` per gap, and past `π` the interpolation
+    aliases, giving `b < n_fft / (2·pilot_spacing)`
+    (`SymbolFft::max_pilot_safe_backoff`) — **85 samples for DVB-T 2K**,
+    whatever the guard interval.
+
+  Note which way round that is: holding one full-resolution estimate is the
+  *stronger* option for window back-off, and a pilot-interpolated equalizer is
+  the one that costs budget. It also means a guard longer than `2 × 85 = 170`
+  buys DVB-T no additional shaping room.
+
+**Baseband spectral mask (out-of-band emission, both chains).** The third and
+deepest lever is an optional TX low-pass across the **assembled** stream, run
+after CP insertion and after any symbol taper: `TxLowpass`
+(`multicarrier/tx_lowpass.rs`), a Kaiser-windowed linear-phase FIR over complex
+samples (`dsp::FirLowpassIq`). Where windowing attacks the skirt *indirectly*
+(smoothing the symbol seam, and so capped by the taper length the guard allows),
+a mask attacks it directly in the frequency domain — so its attenuation stacks
+on top of windowing's rather than sharing the same budget.
+
+It is applied with `FirLowpassIq::filter_aligned`: same length, group delay
+compensated. Stream length and symbol boundaries are unchanged, so the fixed-`sps`
+strided receiver is untouched.
+
+- **What the receiver sees.** With an FFT window at back-off `b`, each windowed
+  sample combines symbol samples spanning `±d` around the window (`d` = the
+  filter's group delay). While that reach stays inside the symbol, the cyclic
+  prefix makes it an exact *circular* convolution, so the FFT sees each
+  subcarrier scaled by a single complex `H[k]` — which the pilot/training
+  estimate divides out like any other channel. Nothing about decoding changes,
+  and unlike the back-off there is no TX/RX value to keep matched.
+- **But it does need the back-off.** Centring the response makes half of it a
+  pre-echo, so at `b = 0` there is no room for it at all: the budget is the same
+  one windowing uses, now shared —
+  `roll_off + group_delay ≤ min(cp_len − b, b)` (`TxLowpass::fits_guard`),
+  maximized at `b = cp_len/2`. The RX FFT-window back-off is therefore the
+  enabler for *both* TX shaping levers, not a windowing-only requirement.
+  Overrunning the budget degrades gradually (a little inter-symbol leakage the
+  equalizer cannot invert) rather than failing abruptly.
+- **It needs somewhere to filter.** A mask can only attenuate bandwidth the
+  signal does not occupy. A COFDM plan filling every bin out to Nyquist leaves
+  no room for a transition, so pair it with the edge guard above: *the guard
+  makes the room, the mask uses it.* DVB-T has the room built in (1705 of 2048
+  bins are active).
+- **Acquisition budget.** The mask is applied to the whole burst, preamble
+  included — a real transmitter band-limits everything it emits, and filtering
+  only part of one would put the spectral step back. A Schmidl & Cox preamble's
+  repetition survives wherever the taps see only repeated samples, so the second
+  sizing rule is `group_delay ≪ repeat_len`. Preamble-less waveforms (DVB-T,
+  which acquires from the CP) are bound only by the guard budget.
+- **Config.** `OfdmConfig::with_tx_lowpass(TxLowpass)`, or
+  `with_tx_lowpass_null_band(num_taps, stopband_db)` which reads the occupied
+  band edge off the carrier plan and places the transition against it.
+  `num_taps` stays the caller's choice because *it* is what the guard budget
+  constrains; `TxLowpass::taps_for_null_band` suggests a length and
+  `transition_fits` says whether it is long enough. DVB-T uses
+  `DvbTFrameMod::with_tx_lowpass` (and the super-frame equivalent). Absent by
+  default ⇒ byte-identical output.
+- **Payoff.** Measured on a 256-point COFDM link (`cp_len = 64`, 31-carrier edge
+  guard, 65-tap 60 dB mask, `roll_off = 32`), mean out-of-band power in the
+  mask's stop band: baseline −30 dB, windowing −62 dB, **mask −96 dB**, both
+  −116 dB. On a conformant DVB-T frame the null band drops 66 dB with in-band
+  power unchanged to within 0.1 dB. Note the two levers act in different places
+  — inside the mask's own transition the taper is the better lever; past it the
+  mask wins by tens of dB — which is why both ship.
 
 **CFO acquisition capture range.** `ofdm_sync`'s Schmidl & Cox fractional
 estimator is unambiguous only within `±fs / (2 · repeat_len)` — note this is
