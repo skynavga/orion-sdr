@@ -203,6 +203,25 @@ impl PyOfdmConfig {
         Ok(Self(cfg))
     }
 
+    /// Sets the receiver FFT-window back-off in samples (RX-only; default 0).
+    /// Pulls the demod window earlier into the guard for multipath robustness
+    /// and to make a matched TX symbol-window taper transparent. Only
+    /// RX-transparent on the equalized (streaming / scattered) path — see the
+    /// Rust `OfdmConfig::rx_window_backoff` docs.
+    #[pyo3(signature = (backoff))]
+    fn with_rx_window_backoff(&self, backoff: usize) -> PyResult<Self> {
+        Ok(Self(self.0.clone().with_rx_window_backoff(backoff)))
+    }
+
+    /// Enables TX symbol windowing with a `roll_off`-sample raised-cosine edge
+    /// taper (default 0 = off). Reduces out-of-band emission; only
+    /// RX-transparent when paired with a matching `with_rx_window_backoff`
+    /// (`roll_off = cp_len/2` with back-off `cp_len/2`).
+    #[pyo3(signature = (roll_off))]
+    fn with_symbol_window(&self, roll_off: usize) -> PyResult<Self> {
+        Ok(Self(self.0.clone().with_symbol_window(roll_off)))
+    }
+
     /// Sets a rectangular block interleaver on the given stage
     /// (`"inner"` or `"outer"`). `rows`/`cols` = 0 disables it.
     #[pyo3(signature = (stage, rows, cols))]

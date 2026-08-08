@@ -112,12 +112,24 @@ impl DvbTSuperFrame {
 #[derive(Debug, Clone)]
 pub struct DvbTSuperFrameMod {
     params: DvbTSuperFrameParams,
+    window_roll_off: usize,
 }
 
 impl DvbTSuperFrameMod {
     /// Builds a super-frame modulator with the given parameters.
     pub fn new(params: DvbTSuperFrameParams) -> Self {
-        Self { params }
+        Self {
+            params,
+            window_roll_off: 0,
+        }
+    }
+
+    /// Enables TX symbol windowing for every constituent frame (see
+    /// [`DvbTFrameMod::with_symbol_window`](crate::modulate::DvbTFrameMod::with_symbol_window)).
+    /// `0` (the default) disables it.
+    pub fn with_symbol_window(mut self, roll_off: usize) -> Self {
+        self.window_roll_off = roll_off;
+        self
     }
 
     /// The super-frame parameters this modulator was built with.
@@ -160,7 +172,11 @@ impl DvbTSuperFrameMod {
         }
 
         let frames: Vec<DvbTFrame> = (0..n)
-            .map(|f| DvbTFrameMod::new(params.frame(f as u8)).modulate(&parts[f]))
+            .map(|f| {
+                DvbTFrameMod::new(params.frame(f as u8))
+                    .with_symbol_window(self.window_roll_off)
+                    .modulate(&parts[f])
+            })
             .collect();
         let symbols_per_frame = frames[0].n_symbols;
         let samples_per_symbol = frames[0].samples_per_symbol;

@@ -320,6 +320,39 @@ fn roundtrip_dvb_t_2k_tps_end_to_end() {
 }
 
 #[test]
+fn roundtrip_dvb_t_frame_with_symbol_windowing() {
+    // R11: a conformant DVB-T frame with TX symbol windowing (roll_off = cp_len/2)
+    // decodes cleanly when the demod's RX window back-off is matched (cp_len/2).
+    // The taper lives only in guard samples the backed-off window discards, so the
+    // continual/scattered/TPS pilots and the payload are all recovered intact.
+    use orion_sdr::waveform::dvb_t::GuardInterval;
+    let params = capstone_params(); // G1_32 -> cp_len = 2048/32 = 64
+    let cp_len = GuardInterval::G1_32.cp_len_2k();
+    let roll_off = cp_len / 2;
+
+    let payload = sample_payload(184);
+    let frame = DvbTFrameMod::new(params)
+        .with_symbol_window(roll_off)
+        .modulate(&payload);
+
+    let lead = 200usize;
+    let mut buf = vec![C32::default(); lead];
+    buf.extend_from_slice(&frame.iq);
+    buf.extend(vec![C32::default(); frame.samples_per_symbol]);
+
+    let got = DvbTFrameDemod::new(params)
+        .with_rx_window_backoff(cp_len / 2)
+        .decode(&buf, frame.n_symbols, payload.len())
+        .expect("windowed DVB-T frame decodes with matched back-off");
+    assert_eq!(got.payload, payload, "recovered TS payload");
+    // Pilots/TPS intact — windowing touched only guard samples, not carriers.
+    assert_eq!(got.tps.frame_number, params.frame_number);
+    assert_eq!(got.tps.constellation, params.constellation());
+    assert_eq!(got.tps.guard, params.guard());
+    assert_eq!(got.tps.cell_id, params.cell_id);
+}
+
+#[test]
 fn dvb_t_tps_frame_survives_awgn() {
     // The same conformant frame through modest AWGN: the DBPSK TPS (17-carrier
     // averaged, BCH-protected) and the soft-decision payload FEC both hold.

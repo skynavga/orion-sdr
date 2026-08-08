@@ -30,7 +30,7 @@
 use super::ofdm_frame::{CodecCache, block_plan, encode_chain, symbols_for_coded_bits};
 use crate::core::Block;
 use crate::fec::{CrcKind, InterleaverKind, ScramblerKind, ScramblerPos};
-use crate::multicarrier::{CyclicPrefixInsert, IfftBlock};
+use crate::multicarrier::{CyclicPrefixInsert, IfftBlock, SymbolWindow};
 use crate::waveform::dvb_t::{
     DVB_T_DATA_CARRIERS, DVB_T_FRAME_OUTER, DVB_T_FRAME_OUTER_IL, DVB_T_N_FFT, DvbTFrameParams,
     ScatteredPilotMapper, dvb_t_map_symbol, tps_carrier_bins,
@@ -61,12 +61,32 @@ pub struct DvbTFrame {
 #[derive(Debug, Clone)]
 pub struct DvbTFrameMod {
     params: DvbTFrameParams,
+    /// TX symbol-window roll-off in samples (raised-cosine edge taper). `0`
+    /// (default) = no windowing, so the on-air frame is byte-identical.
+    window_roll_off: usize,
 }
 
 impl DvbTFrameMod {
     /// Builds a modulator for a link with the given transmission parameters.
     pub fn new(params: DvbTFrameParams) -> Self {
-        Self { params }
+        Self {
+            params,
+            window_roll_off: 0,
+        }
+    }
+
+    /// Enables TX symbol windowing with a `roll_off`-sample raised-cosine taper
+    /// at each symbol edge, reducing out-of-band emission. `0` (the default)
+    /// disables it. DVB-T frames are preamble-less — every symbol is CP-bearing —
+    /// so every symbol is windowed. The taper is only RX-transparent when the
+    /// receiver's window back-off is paired to it (`roll_off ≤ cp_len/2` with
+    /// back-off `cp_len/2`); see
+    /// [`DvbTFrameDemod::with_rx_window_backoff`](crate::demodulate::DvbTFrameDemod::with_rx_window_backoff).
+    /// The continual/scattered/TPS pilots are unaffected — windowing touches only
+    /// the time-domain guard samples, not the subcarrier allocation.
+    pub fn with_symbol_window(mut self, roll_off: usize) -> Self {
+        self.window_roll_off = roll_off;
+        self
     }
 
     /// The transmission parameters this modulator was built with.
@@ -191,6 +211,17 @@ impl DvbTFrameMod {
             }
             ifft.process(&freq, &mut time);
             cp_insert.process(&time, &mut iq[s * sps..(s + 1) * sps]);
+        }
+
+        // Optional TX symbol windowing. DVB-T is preamble-less, so every symbol
+        // is a CP-bearing OFDM symbol and every one is tapered; the taper touches
+        // only guard samples, leaving the continual/scattered/TPS pilots intact.
+        if self.window_roll_off > 0 {
+            let mut win = SymbolWindow::new(sps, self.window_roll_off);
+            for s in 0..n_symbols {
+                let symbol: Vec<C32> = iq[s * sps..(s + 1) * sps].to_vec();
+                win.process(&symbol, &mut iq[s * sps..(s + 1) * sps]);
+            }
         }
 
         DvbTFrame {

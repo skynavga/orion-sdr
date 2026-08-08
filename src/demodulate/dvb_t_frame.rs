@@ -88,6 +88,7 @@ pub enum DvbTRxError {
 pub struct DvbTFrameDemod {
     params: DvbTFrameParams,
     integer_cfo: bool,
+    rx_window_backoff: usize,
 }
 
 impl DvbTFrameDemod {
@@ -98,6 +99,7 @@ impl DvbTFrameDemod {
         Self {
             params,
             integer_cfo: false,
+            rx_window_backoff: 0,
         }
     }
 
@@ -108,6 +110,18 @@ impl DvbTFrameDemod {
     /// buffer is decoded unchanged.
     pub fn with_integer_cfo_correction(mut self, on: bool) -> Self {
         self.integer_cfo = on;
+        self
+    }
+
+    /// Sets the receiver FFT-window back-off in samples (default 0). Pull the
+    /// per-symbol FFT window earlier into the guard for multipath/pre-echo
+    /// robustness, and to make a matching TX symbol-window taper transparent
+    /// (`roll_off = back_off = cp_len/2` is the transparent operating point; see
+    /// [`DvbTFrameMod::with_symbol_window`](crate::modulate::DvbTFrameMod::with_symbol_window)).
+    /// The scattered-pilot channel estimate is measured at the same back-off, so
+    /// the induced phase ramp is corrected — required for a clean decode.
+    pub fn with_rx_window_backoff(mut self, backoff: usize) -> Self {
+        self.rx_window_backoff = backoff;
         self
     }
 
@@ -194,7 +208,12 @@ impl DvbTFrameDemod {
     ) -> Result<DvbTRxFrame, DvbTRxError> {
         let params = self.params;
         let cache = CodecCache::new();
-        let base = params.config();
+        // Carry the RX window back-off into the derived config so every
+        // `SymbolFft` in the per-symbol loop reads at the configured window
+        // position (the scattered-pilot estimate then corrects the phase ramp).
+        let base = params
+            .config()
+            .with_rx_window_backoff(self.rx_window_backoff);
         let n_fft = DVB_T_N_FFT;
         let cp_len = base.carrier_plan.cp_len();
         let sps = n_fft + cp_len;

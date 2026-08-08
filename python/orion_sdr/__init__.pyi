@@ -687,6 +687,18 @@ class OfdmConfig:
         only to ``"scaled_min_sum"`` (≈0.75 recovers most of the coding gain).
         Min-sum trades ≲0.3 dB of coding gain for ~2× decode throughput."""
         ...
+    def with_rx_window_backoff(self, backoff: int) -> "OfdmConfig":
+        """Set the receiver FFT-window back-off in samples (RX-only, default 0).
+        Pulls the demod window earlier into the guard for multipath robustness
+        and to make a matched TX symbol-window taper transparent. Only
+        RX-transparent on the equalized (streaming/scattered) path."""
+        ...
+    def with_symbol_window(self, roll_off: int) -> "OfdmConfig":
+        """Enable TX symbol windowing: a *roll_off*-sample raised-cosine edge
+        taper per symbol (default 0 = off), reducing out-of-band emission. Only
+        RX-transparent when paired with a matching ``with_rx_window_backoff``
+        (``roll_off = cp_len/2`` with back-off ``cp_len/2``)."""
+        ...
     def with_interleaver(self, stage: str, rows: int, cols: int) -> "OfdmConfig":
         """Set a rectangular block interleaver on *stage* (``"inner"`` |
         ``"outer"``); ``rows``/``cols`` = 0 disables it."""
