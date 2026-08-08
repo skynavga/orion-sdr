@@ -8,7 +8,7 @@ use super::qpsk::QpskDecider;
 use crate::core::{Block, WorkReport};
 use crate::modulate::qam::{axis_scale, build_axis_table};
 use crate::modulate::{ConstellationOrder, OfdmConfig};
-use crate::multicarrier::{CarrierGrid, CyclicPrefixRemove, FftBlock, GridExtract};
+use crate::multicarrier::{CarrierGrid, GridExtract, SymbolFft};
 use crate::sync::ofdm_sync::training_symbol_freq_pattern;
 use num_complex::Complex32 as C32;
 
@@ -27,12 +27,8 @@ pub struct OfdmDemod {
     samples_per_symbol: usize,
     num_data_carriers: usize,
     gain: f32,
-    cp_remove: CyclicPrefixRemove,
-    fft: FftBlock,
+    symbol_fft: SymbolFft,
     grid_extract: GridExtract,
-    // scratch, sized once in new()
-    time_scratch: Vec<C32>,
-    freq_scratch: Vec<C32>,
 }
 
 impl OfdmDemod {
@@ -46,11 +42,8 @@ impl OfdmDemod {
             samples_per_symbol: cfg.samples_per_ofdm_symbol(),
             num_data_carriers,
             gain: 1.0,
-            cp_remove: CyclicPrefixRemove::new(n_fft, cp_len),
-            fft: FftBlock::new(n_fft),
+            symbol_fft: SymbolFft::new(n_fft, cp_len),
             grid_extract: GridExtract::new(grid),
-            time_scratch: vec![C32::default(); n_fft],
-            freq_scratch: vec![C32::default(); n_fft],
         }
     }
 
@@ -76,14 +69,15 @@ impl Block for OfdmDemod {
             return WorkReport::default();
         }
 
-        let cp_wr = self
-            .cp_remove
-            .process(&input[..self.samples_per_symbol], &mut self.time_scratch);
-        let fft_wr = self.fft.process(&self.time_scratch, &mut self.freq_scratch);
-        let grid_wr = self.grid_extract.process(&self.freq_scratch, output);
+        let freq = match self
+            .symbol_fft
+            .demod_symbol(&input[..self.samples_per_symbol])
+        {
+            Some(f) => f,
+            None => return WorkReport::default(),
+        };
+        let grid_wr = self.grid_extract.process(freq, output);
 
-        debug_assert_eq!(cp_wr.out_written, self.fft.n_fft());
-        debug_assert_eq!(fft_wr.out_written, self.fft.n_fft());
         debug_assert_eq!(grid_wr.out_written, self.num_data_carriers);
 
         let g = self.gain;

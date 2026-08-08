@@ -5,7 +5,7 @@ use num_complex::Complex32 as C32;
 use orion_sdr::core::Block;
 use orion_sdr::multicarrier::{
     CarrierGrid, CarrierPlan, CarrierPlanError, CyclicPrefixInsert, CyclicPrefixRemove, FftBlock,
-    GridExtract, GridMap, IfftBlock, SubcarrierRole,
+    GridExtract, GridMap, IfftBlock, SubcarrierRole, SymbolFft,
 };
 
 fn tone(n: usize, cycles: f32) -> Vec<C32> {
@@ -131,6 +131,49 @@ fn cyclic_prefix_zero_length_cp() {
     assert_eq!(wr.in_read, n_fft);
     assert_eq!(wr.out_written, n_fft);
     assert_eq!(output, input);
+}
+
+#[test]
+fn symbol_fft_matches_manual_cp_remove_then_fft() {
+    // SymbolFft must be bit-identical to the inline CyclicPrefixRemove -> FftBlock
+    // sequence it replaces across the RX paths (the R7 refactor's core guarantee).
+    let n_fft = 32;
+    let cp_len = 8;
+    let sps = n_fft + cp_len;
+    // A CP'd symbol: distinct complex ramp, then a real cyclic prefix.
+    let core: Vec<C32> = (0..n_fft)
+        .map(|k| C32::new(k as f32 * 0.25, -(k as f32) * 0.1))
+        .collect();
+    let mut symbol = vec![C32::default(); sps];
+    CyclicPrefixInsert::new(n_fft, cp_len).process(&core, &mut symbol);
+
+    // Reference: the exact inline sequence.
+    let mut cp_remove = CyclicPrefixRemove::new(n_fft, cp_len);
+    let mut fft = FftBlock::new(n_fft);
+    let mut time = vec![C32::default(); n_fft];
+    let mut ref_freq = vec![C32::default(); n_fft];
+    cp_remove.process(&symbol, &mut time);
+    fft.process(&time, &mut ref_freq);
+
+    // Helper under test.
+    let mut sf = SymbolFft::new(n_fft, cp_len);
+    assert_eq!(sf.symbol_len(), sps);
+    assert_eq!(sf.n_fft(), n_fft);
+    let freq = sf.demod_symbol(&symbol).expect("full symbol demaps");
+    assert_eq!(
+        freq,
+        ref_freq.as_slice(),
+        "SymbolFft must match inline CP-remove+FFT"
+    );
+}
+
+#[test]
+fn symbol_fft_partial_input_is_none() {
+    let n_fft = 16;
+    let cp_len = 4;
+    let mut sf = SymbolFft::new(n_fft, cp_len);
+    let short = vec![C32::default(); n_fft + cp_len - 1]; // one sample short
+    assert!(sf.demod_symbol(&short).is_none());
 }
 
 #[test]

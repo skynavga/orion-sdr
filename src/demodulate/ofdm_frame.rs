@@ -31,7 +31,7 @@ use crate::modulate::ofdm_frame::{
     McsTable, bits_to_bytes, block_plan, build_scrambler, bytes_to_bits, check_and_strip_crc,
     scramble_bytes, symbol_config, symbols_for_coded_bits,
 };
-use crate::multicarrier::{CarrierGrid, CyclicPrefixRemove, FftBlock, GridExtract};
+use crate::multicarrier::{CarrierGrid, GridExtract, SymbolFft};
 use crate::sync::{OfdmPreamble, ofdm_sync};
 use num_complex::Complex32 as C32;
 use std::sync::Arc;
@@ -86,22 +86,14 @@ fn soft_demap(
             let n_fft = cfg.carrier_plan.n_fft();
             let cp_len = cfg.carrier_plan.cp_len();
             let grid = CarrierGrid::from_plan(&cfg.carrier_plan);
-            let mut cp_remove = CyclicPrefixRemove::new(n_fft, cp_len);
-            let mut fft = FftBlock::new(n_fft);
+            let mut symbol_fft = SymbolFft::new(n_fft, cp_len);
             let mut grid_extract = GridExtract::new(grid);
-            let mut time = vec![C32::default(); n_fft];
-            let mut freq = vec![C32::default(); n_fft];
             let mut equalized = vec![C32::default(); n_fft];
             let mut in_off = 0;
             let mut out_off = 0;
             for _ in 0..n_symbols {
-                if cp_remove.process(&iq[in_off..], &mut time).out_written != n_fft {
-                    return None;
-                }
-                if fft.process(&time, &mut freq).out_written != n_fft {
-                    return None;
-                }
-                if eq.process(&freq, &mut equalized).out_written != n_fft {
+                let freq = symbol_fft.demod_symbol(&iq[in_off..])?;
+                if eq.process(freq, &mut equalized).out_written != n_fft {
                     return None;
                 }
                 if grid_extract.process(&equalized, &mut symbols).out_written != n_data {
@@ -157,10 +149,7 @@ fn soft_demap_scattered(
     // A per-symbol-interpolating equalizer; its pilot set is re-installed for
     // each symbol's phase before `process`.
     let mut eq = OfdmEqualizer::new(&cfg, EqualizerMethod::PerSymbolPilotInterp);
-    let mut cp_remove = CyclicPrefixRemove::new(n_fft, cp_len);
-    let mut fft = FftBlock::new(n_fft);
-    let mut time = vec![C32::default(); n_fft];
-    let mut freq = vec![C32::default(); n_fft];
+    let mut symbol_fft = SymbolFft::new(n_fft, cp_len);
     let mut equalized = vec![C32::default(); n_fft];
     let mut symbols = vec![C32::default(); n_data];
     let mut llrs = vec![0.0f32; n_symbols * bps];
@@ -168,18 +157,13 @@ fn soft_demap_scattered(
     let mut in_off = 0;
     let mut out_off = 0;
     for _ in 0..n_symbols {
-        if cp_remove.process(&iq[in_off..], &mut time).out_written != n_fft {
-            return None;
-        }
-        if fft.process(&time, &mut freq).out_written != n_fft {
-            return None;
-        }
+        let freq = symbol_fft.demod_symbol(&iq[in_off..])?;
         // Install this symbol's phase-`l` pilots (bins + known TX values) and the
         // phase's data bins to interpolate across, then equalize from them.
         let pilots = extractor.current_pilot_bins().to_vec();
         let data_bins: Vec<usize> = extractor.data_bins().to_vec();
         eq.set_pilot_bins(&pilots, &data_bins);
-        if eq.process(&freq, &mut equalized).out_written != n_fft {
+        if eq.process(freq, &mut equalized).out_written != n_fft {
             return None;
         }
         extractor.extract_symbol(&equalized, &mut symbols);
@@ -888,21 +872,9 @@ impl OfdmFrameStreamDemod {
         if corrected.len() < end {
             return None;
         }
-        let mut cp_remove = CyclicPrefixRemove::new(n_fft, cp_len);
-        let mut fft = FftBlock::new(n_fft);
-        let mut time = vec![C32::default(); n_fft];
-        if cp_remove
-            .process(&corrected[training_start..end], &mut time)
-            .out_written
-            != n_fft
-        {
-            return None;
-        }
-        let mut freq = vec![C32::default(); n_fft];
-        if fft.process(&time, &mut freq).out_written != n_fft {
-            return None;
-        }
-        Some(freq)
+        let mut symbol_fft = SymbolFft::new(n_fft, cp_len);
+        let freq = symbol_fft.demod_symbol(&corrected[training_start..end])?;
+        Some(freq.to_vec())
     }
 }
 

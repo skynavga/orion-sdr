@@ -25,7 +25,7 @@ use crate::core::Block;
 use crate::dsp::Rotator;
 use crate::fec::{CrcKind, DecodeRule, InterleaverKind, ScramblerKind, ScramblerPos};
 use crate::modulate::ofdm_frame::{CodecCache, block_plan};
-use crate::multicarrier::{CyclicPrefixRemove, FftBlock};
+use crate::multicarrier::SymbolFft;
 use crate::sync::{dvb_t_gi_sync, dvb_t_integer_cfo};
 use crate::waveform::dvb_t::{
     DVB_T_DATA_CARRIERS, DVB_T_FRAME_OUTER, DVB_T_FRAME_OUTER_IL, DVB_T_N_FFT, DvbTFrameParams,
@@ -140,19 +140,21 @@ impl DvbTFrameDemod {
         }
         let sps = n_fft + cp_len;
         let acq = dvb_t_gi_sync(iq, n_fft, cp_len, fs, sps)?;
-        let mut cpr = CyclicPrefixRemove::new(n_fft, cp_len);
-        let mut fft = FftBlock::new(n_fft);
-        let mut time = vec![C32::default(); n_fft];
-        let mut freq = vec![C32::default(); n_fft];
+        let mut symbol_fft = SymbolFft::new(n_fft, cp_len);
         let mut accum = vec![C32::default(); n_fft];
+        // `freq_hold` preserves the prior symbol's spectrum so a trailing
+        // partial symbol (guard passes but CP-remove is a no-op) accumulates
+        // the previous value — matching the pre-refactor inline behavior.
+        let mut freq_hold = vec![C32::default(); n_fft];
         for s in 0..INTEGER_CFO_ACCUM_SYMBOLS {
             let off = acq.start_sample + s * sps;
             if off + n_fft > iq.len() {
                 break;
             }
-            cpr.process(&iq[off..], &mut time);
-            fft.process(&time, &mut freq);
-            for (a, &x) in accum.iter_mut().zip(freq.iter()) {
+            if let Some(freq) = symbol_fft.demod_symbol(&iq[off..]) {
+                freq_hold.copy_from_slice(freq);
+            }
+            for (a, &x) in accum.iter_mut().zip(freq_hold.iter()) {
                 *a += C32::new(x.norm_sqr(), 0.0);
             }
         }
@@ -206,13 +208,10 @@ impl DvbTFrameDemod {
         //    data LLRs + TPS cells.
         let mut extractor = ScatteredPilotExtractor::new(params.guard());
         let mut eq = OfdmEqualizer::new(&base, EqualizerMethod::PerSymbolPilotInterp);
-        let mut cp_remove = CyclicPrefixRemove::new(n_fft, cp_len);
-        let mut fft = FftBlock::new(n_fft);
+        let mut symbol_fft = SymbolFft::new(n_fft, cp_len);
         let mut tps_dec = TpsDecoder::new();
         let tps_bins = tps_carrier_bins();
 
-        let mut time = vec![C32::default(); n_fft];
-        let mut freq = vec![C32::default(); n_fft];
         let mut equalized = vec![C32::default(); n_fft];
         let mut data_syms = vec![C32::default(); DVB_T_DATA_CARRIERS];
         let bits_per_sym = DVB_T_DATA_CARRIERS * vbits;
@@ -221,10 +220,10 @@ impl DvbTFrameDemod {
         let mut tps_word: Option<TpsWord> = None;
         for s in 0..n_symbols {
             let off = start + s * sps;
-            if cp_remove.process(&iq[off..], &mut time).out_written != n_fft {
-                return Err(DvbTRxError::Incomplete);
-            }
-            fft.process(&time, &mut freq);
+            let freq = match symbol_fft.demod_symbol(&iq[off..]) {
+                Some(f) => f,
+                None => return Err(DvbTRxError::Incomplete),
+            };
             // TPS cells from the raw (pre-equalization) bins — DBPSK is differential
             // and needs no channel estimate.
             let cells: Vec<C32> = tps_bins.iter().map(|&b| freq[b]).collect();
@@ -237,7 +236,7 @@ impl DvbTFrameDemod {
             let pilots = extractor.current_pilot_bins().to_vec();
             let data_bins = extractor.data_bins().to_vec();
             eq.set_pilot_bins(&pilots, &data_bins);
-            eq.process(&freq, &mut equalized);
+            eq.process(freq, &mut equalized);
             extractor.extract_symbol(&equalized, &mut data_syms);
             let sym_llrs = &mut llrs[s * bits_per_sym..(s + 1) * bits_per_sym];
             for (c, &sym) in data_syms.iter().enumerate() {

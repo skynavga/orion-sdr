@@ -17,3 +17,6 @@ pub use fft::{FftBlock, IfftBlock};
 
 pub mod grid;
 pub use grid::{CarrierGrid, GridExtract, GridMap};
+
+pub mod symbol_fft;
+pub use symbol_fft::SymbolFft;
