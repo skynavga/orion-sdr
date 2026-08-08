@@ -116,6 +116,79 @@ Total CFO is `cfo_hz + integer_cfo_bins * (fs / n_fft)`. `integer_cfo_bins` is
 matching how the per-order symbol mappers aren't exposed today — `OfdmMod`
 and `OfdmDemod` are the two main entry points.
 
+`OfdmConfig` also carries the frame layer's whole configuration surface as
+chainable builders, each returning a new config and all defaulted off: FEC
+(`with_inner_fec`, `with_outer_fec`, `with_ldpc_decode_rule`), framing
+(`with_interleaver`, `with_conv_interleaver`, `with_scrambler`,
+`with_dvb_t_scrambler`, `with_payload_crc`, `with_header_crc`,
+`with_header_format`), and out-of-band shaping (below). `validate_frame()`
+raises if the combination is inconsistent.
+
+#### Out-of-band spectral shaping
+
+| Member | Description |
+| --- | --- |
+| `OfdmConfig(..., edge_guard=g)` | Generates the data span leaving `g` null carriers per band edge (pass an empty `data_carriers`) |
+| `OfdmConfig.occupied_half_carriers` | The outermost occupied carrier's distance from DC — reads the edge guard back |
+| `.with_symbol_window(roll_off)` | Raised-cosine per-symbol edge taper, samples per side |
+| `.with_tx_lowpass(num_taps, stopband_db=60.0)` | TX baseband mask across the assembled frame, cutoff placed at the plan's band edge |
+| `.tx_lowpass_suggested_taps(stopband_db=60.0)` | Shortest filter whose transition fits the null band |
+| `.tx_lowpass_group_delay(num_taps)` | `(num_taps − 1) // 2` after the odd/≥3 clamp |
+| `.tx_lowpass_fits_guard(num_taps, roll_off=0, backoff=None)` | The shared guard-budget check; `backoff` defaults to `cp_len // 2` |
+| `.with_rx_window_backoff(b)` | RX FFT-window back-off — the enabler for both TX levers |
+
+The taper and the mask take effect in `OfdmFrameMod.modulate_frame` (they are
+post-passes over an assembled frame, so a bare `OfdmMod` applies neither); the
+edge guard changes which carriers exist, so every path inherits it. See
+[modulate.md](modulate.md#choosing-the-numbers) for how to size them.
+
+#### COFDM Frame (MAC) Layer
+
+| Class | Description |
+| --- | --- |
+| `FramePacket(payload, sequence_num=0, mcs_index=0)` | One frame's payload plus its header metadata |
+| `McsTable()` | `add(constellation, inner_kind=…, inner_code=…, outer_kind=…, outer_a=…, outer_b=…)`, `len`, `default_ladder()` |
+| `CodecCache()` | Per-link FEC code cache, optionally shared across a mod/demod pair |
+| `OfdmFrameMod(cfg, mcs_table, num_repeats=4, repeat_len=16, cache=None)` | `modulate_frame(frame, seed=…) → complex64[]` |
+| `OfdmFrameStreamDemod(cfg, mcs_table, num_repeats=…, repeat_len=…, cache=…)` | `feed(iq) → list[RxFrame]`, `feed_with_errors`, `flush` |
+| `OfdmFrameDemod(cfg, mcs_table, cache=None)` | `decode(iq) → RxFrame` for a known start (IQ begins after preamble+training) |
+
+Recovered frames expose `.payload` (`uint8[]`) and `.sequence_num`.
+
+#### DVB-T / NB-DVB-T
+
+| Class / function | Description |
+| --- | --- |
+| `DvbTFrameParams(guard, constellation, code_rate, frame_number=0, cell_id=0)` | Link + per-frame TPS parameters, as strings |
+| `DvbTSuperFrameParams(guard, constellation, code_rate, cell_id=0)` | Same link set with the **full 16-bit** cell id |
+| `DvbTFrameMod(params)` | `modulate(payload) → DvbTFrame`; `with_symbol_window(roll_off)`, `with_tx_lowpass(num_taps, stopband_db=60.0)` |
+| `DvbTFrameDemod(params)` | `decode(iq, n_symbols, payload_len) → DvbTRxFrame`; `with_integer_cfo_correction`, `with_rx_window_backoff` |
+| `DvbTSuperFrameMod(params)` | `modulate(payload) → DvbTSuperFrame`; same two shaping builders |
+| `DvbTSuperFrameDemod(params)` | `decode(iq, symbols_per_frame, frame_payload_lens) → DvbTRxSuperFrame`; same two RX builders |
+| `DvbTFrameStreamDemod(params, n_symbols, payload_len, integer_cfo_correction=…, rx_window_backoff=…)` | `feed`, `flush`, `buffered` |
+| `DvbTFrame` / `DvbTSuperFrame` | `.iq`, `.n_symbols`, `.samples_per_symbol`; super-frame adds `.frame_payload_lens` |
+| `DvbTRxFrame` / `DvbTRxSuperFrame` | `.payload` (bytes) and `.tps` / `.cell_id` |
+| `TpsWord` | `frame_number`, `constellation`, `code_rate`, `guard`, `cell_id` |
+
+`guard` ∈ `"1/32"|"1/16"|"1/8"|"1/4"`, `constellation` ∈ `"qpsk"|"qam16"|"qam64"`
+(DVB-T has no 256-QAM), `code_rate` ∈ `"1/2"|"2/3"|"3/4"|"5/6"|"7/8"`; an unknown
+string raises `ValueError`. There is no edge-guard equivalent — DVB-T's extreme
+carriers are mandatory continual pilots.
+
+| Module function | Description |
+| --- | --- |
+| `nb_bandwidth_fs(mode)` | Sample rate for a `"333khz"` / `"1mhz"` / `"2mhz"` mode: `occupied_hz · 2048/1705` |
+| `nb_bandwidth_occupied_hz(mode)` | Nominal occupied RF bandwidth for the same modes |
+| `dvb_t_cp_len(guard)` | 64 / 128 / 256 / 512 — the guard the shaping levers share |
+| `dvb_t_max_rx_window_backoff()` | 85, whatever the guard interval (set by the scattered-pilot grid) |
+| `dvb_t_tx_lowpass_suggested_taps(stopband_db=60.0)` | Shortest mask fitting DVB-T's built-in null band |
+| `dvb_t_tx_lowpass_group_delay(num_taps)` | `(num_taps − 1) // 2` after the odd/≥3 clamp |
+| `dvb_t_tx_lowpass_fits_guard(guard, num_taps, roll_off, backoff)` | The shared guard-budget check |
+
+`TxLowpass` is not a Python class: DVB-T's band edge is fixed, so a mask is
+fully specified by `(num_taps, stopband_db)` and the sizing arithmetic lives in
+these module functions instead.
+
 ### Array Types
 
 | Domain | dtype | Notes |
@@ -361,3 +434,76 @@ uses a fixed-seed pseudo-random pattern, reproducible on both TX and RX
 without shared state. `ofdm_sync` runs the integer-CFO search (when a
 training symbol is present) on the top-5 timing candidates by score; results
 are sorted by descending score.
+
+### Channel Coding (`fec/`)
+
+Waveform-agnostic FEC and framing primitives, shared by the COFDM frame layer
+and the DVB-T chain. See [ofdm.md](ofdm.md) for how they compose.
+
+| Type | Description |
+| --- | --- |
+| `Ldpc` / `LdpcCode` / `DecodeRule` | Parameterized LDPC inner code; `SumProduct` (default) \| `MinSum` \| `ScaledMinSum(α)` |
+| `ConvEncoder` / `PunctureRate` | K=7 punctured convolutional inner code (rates 1/2 … 7/8) with soft Viterbi |
+| `Bch` / `BchError` | BCH outer code over GF(2⁸) |
+| `ReedSolomon` / `RsError` | Reed–Solomon outer code; `ReedSolomon::dvb()` is DVB-T's RS(204,188) |
+| `Gf256` | Process-wide GF(2⁸) log/antilog tables shared by `Bch` and `ReedSolomon` |
+| `BlockInterleaver` | Rectangular block interleaver (`rows × cols`) |
+| `ConvInterleaver` / `ConvDeinterleaver` | Forney convolutional interleaver (DVB-T uses I=12, M=17) |
+| `PnScrambler` / `PnScramblerStream` | Additive LFSR whitener (DVB-T energy dispersal) |
+| `FramePacket` / `FrameMetadata` | One frame's payload plus its header fields |
+| `CrcKind` / `HeaderFormat` / `InnerFec` / `OuterFec` / `InterleaverKind` | The `OfdmConfig` builder enums |
+| `ScramblerKind` / `ScramblerPos` / `SeedMode` | The scrambler's builder enums |
+| `RxError` | Frame-layer decode failure |
+
+### COFDM Frame (MAC) Layer
+
+| Type | Description |
+| --- | --- |
+| `OfdmFrameMod` | `modulate_frame(&FramePacket, seed) -> Vec<C32>`: CRC → concatenated FEC → interleave → map → preamble/header |
+| `OfdmFrameStreamDemod` | `feed(&[C32])`/`flush()` streaming RX: acquisition, CFO correction, equalization, decode |
+| `OfdmFrameDemod` | Batch RX for a known start (IQ begins after preamble + training) |
+| `RxFrame` | A recovered frame: `packet`, plus the per-frame RX diagnostics |
+| `Mcs` / `McsTable` | Per-frame adaptive coding: constellation + inner/outer code, selected by header index |
+| `CodecCache` | Per-link cache of constructed FEC codes, shareable across a mod/demod pair |
+| `FrameConfigError` | Returned by `OfdmConfig::validate_frame` |
+
+### DVB-T / NB-DVB-T
+
+The conformant EN 300 744 2K chain. See [dvb.md](dvb.md) for the waveform design.
+
+| Type / Constant | Description |
+| --- | --- |
+| `DvbTLinkParams` | The shared link set: guard interval, constellation, code rate |
+| `DvbTFrameParams` | `link` + `frame_number` (0..=3) + the frame's cell-id byte |
+| `DvbTSuperFrameParams` | `link` + the full 16-bit `cell_id`, split across four frames |
+| `GuardInterval` | `G1_32 \| G1_16 \| G1_8 \| G1_4`; `cp_len_2k()` → 64 / 128 / 256 / 512 |
+| `NbBandwidth` | `Bw333kHz \| Bw1MHz \| Bw2MHz`; `fs()`, `occupied_hz()` — pure fs-scaling of the fixed 2K structure |
+| `DvbTFrameMod` / `DvbTFrame` | TX: `modulate(&[u8]) -> DvbTFrame`; `with_symbol_window`, `with_tx_lowpass`, `tx_lowpass_for_2k` |
+| `DvbTSuperFrameMod` / `DvbTSuperFrame` | TX: four sequenced frames; same two shaping builders (the mask runs once over all four) |
+| `DvbTFrameDemod` / `DvbTRxFrame` / `DvbTRxError` | Batch RX: GI acquisition, scattered-pilot equalization, TPS, payload FEC |
+| `DvbTSuperFrameDemod` / `DvbTRxSuperFrame` / `DvbTRxSuperFrameError` | Batch RX over four frames: sequence check + cell-id reassembly |
+| `DvbTFrameStreamDemod` | Streaming RX: `feed`/`flush` over a continuous run of frames |
+| `TpsWord` | The recovered TPS signalling |
+| `DVB_T_N_FFT` / `DVB_T_KMAX` / `DVB_T_ACTIVE_CARRIERS` | 2048 / 1704 / 1705 |
+| `DVB_T_SCATTERED_PILOT_SPACING` | 12 |
+| `DVB_T_MAX_RX_WINDOW_BACKOFF` | `n_fft / (2·spacing)` = **85** — the aliasing ceiling (not the usable limit) |
+| `DVB_T_FRAMES_PER_SUPER_FRAME` | 4 |
+
+Both demodulators take `with_integer_cfo_correction(bool)` and
+`with_rx_window_backoff(usize)`; the streaming receiver takes both too.
+
+### DVB-T Acquisition
+
+| Function / Type | Description |
+| --- | --- |
+| `dvb_t_gi_sync(iq, n_fft, cp_len, fs, search_len)` | van de Beek ML guard-interval timing + fractional CFO |
+| `dvb_t_gi_sync_with(..., &GiSyncConfig)` | Same, with an explicit `ρ` energy weight and coherent-accumulation bound |
+| `dvb_t_gi_refine` / `dvb_t_gi_refine_with` | Refines an existing lock over a narrow offset window |
+| `dvb_t_integer_cfo(...) -> IntegerCfoResult` | Whole-subcarrier CFO from the 45 continual pilots, with a confidence ratio |
+| `GiSyncResult` | `{start_sample, cfo_hz, score}` |
+
+`dvb_t_gi_sync` selects on the ML metric `|γ(d)| − ρ·Φ(d)` over `d ∈ [0,
+search_len)`; the reported `score` is `|γ|/Φ` at the winner. Because the search
+range starts at 0, it cannot express a *negative* offset — which matters when TX
+symbol windowing biases the true optimum a few samples early. See
+[demodulate.md](demodulate.md#receiving-a-spectrally-shaped-dvb-t-signal).

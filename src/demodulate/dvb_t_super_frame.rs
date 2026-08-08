@@ -103,6 +103,12 @@ impl DvbTSuperFrameDemod {
         self.integer_cfo
     }
 
+    /// The receiver FFT-window back-off in samples applied to every constituent
+    /// frame (`0` = the standard CP-boundary window).
+    pub fn rx_window_backoff(&self) -> usize {
+        self.rx_window_backoff
+    }
+
     /// Demodulates one conformant DVB-T super-frame from `iq`, starting at the
     /// first frame's first sample (each frame GI-acquires from its own cyclic
     /// prefix, so no preamble is needed). `symbols_per_frame` and

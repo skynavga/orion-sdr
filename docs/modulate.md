@@ -486,17 +486,102 @@ discarding — which is what `with_rx_window_backoff` arranges (see
 together, or the shaping is not transparent. `TxLowpass::fits_guard` is the
 check. The edge guard needs no RX change at all.
 
-Sizing rules worth knowing before picking numbers:
+### Choosing the numbers
 
-- **The mask needs somewhere to filter.** It can only attenuate bandwidth the
-  signal does not occupy, so on COFDM pair it with the edge guard — *the guard
-  makes the room, the mask uses it*. `TxLowpass::transition_fits` says whether a
-  given length reaches its stop band inside that room.
-- **A preamble-bearing frame adds a second rule.** The mask is applied to the
-  whole burst, preamble included, and Schmidl & Cox repetition only survives
-  where the filter's taps see repeated samples: keep `group_delay ≪ repeat_len`.
-- **Defaults are off**, so a config that asks for none of this emits exactly
-  what it emitted before.
+Five knobs — `edge_guard`, `backoff`, `roll_off`, `num_taps`, `stopband_db` —
+and two independent budgets between them. Work in this order; each step
+constrains the next.
+
+**1. Back-off first.** It is the enabler, not an afterthought: both TX levers
+spend guard samples, and the back-off is what puts those samples outside the
+receiver's FFT window. The slack it yields is `min(cp_len − b, b)`, which peaks
+at `b = cp_len/2` giving `cp_len/2` samples. Below that you are wasting guard;
+above it you are eating into the useful part.
+
+On COFDM that is the whole story — `TrainingSymbolHold` measures every bin, so it
+absorbs any `b` the guard allows. **On DVB-T it is not.** The scattered-pilot
+equalizer interpolates linearly between pilots 12 carriers apart, and the
+back-off's phase ramp advances `2π·b·12/2048` per gap, so a chord approximates an
+arc with a `1 − cos(θ/2)` magnitude error in between. The result is a *graded*
+cost, not a cliff at the aliasing limit:
+
+| `b` (DVB-T 2K) | Cost |
+| --- | --- |
+| ≤ 32 | free |
+| ≤ 42 (`n_fft/(4·spacing)`, θ ≤ 90°) | ≤ 1 dB |
+| 64 | ~6 dB |
+| 85 (`DVB_T_MAX_RX_WINDOW_BACKOFF`, θ = 180°) | link does not close at any SNR |
+
+So **keep DVB-T's `b` at 32, or 42 if you need the slack** — the 85-sample
+aliasing cap is a hard ceiling, not a target. Measured in
+[performance.md](performance.md#the-rx-window-back-off-costs-sensitivity-well-before-it-aliases).
+
+**2. Split the slack between the two TX levers.** They share it:
+
+```text
+roll_off + group_delay ≤ min(cp_len − b, b)      where group_delay = (num_taps − 1)/2
+```
+
+`TxLowpass::fits_guard(cp_len, roll_off, backoff)` is the check
+(`OfdmConfig::tx_lowpass_fits_guard` and `dvb_t_tx_lowpass_fits_guard` from
+Python). Overrunning it degrades gradually — a little inter-symbol leakage the
+equalizer cannot invert — rather than failing abruptly, but it is the budget to
+design against.
+
+**3. Edge guard (COFDM only) — a separate, frequency-domain budget.** This one
+does not touch the guard interval at all; it costs *throughput*, since each
+nulled carrier removes `bits_per_ofdm_symbol` capacity.
+`edge_guard ≈ ceil(0.02 … 0.05 · n_fft)` per edge is the useful range. Its
+second job matters as much as its first: it creates the null band the mask
+filters into. DVB-T needs none — 343 of its 2048 bins are already inactive — and
+could not use one anyway, since its extreme carriers are mandatory continual
+pilots.
+
+**4. Mask length: start from the suggestion, then check the guard.**
+`TxLowpass::taps_for_null_band` (Python: `tx_lowpass_suggested_taps`,
+`dvb_t_tx_lowpass_suggested_taps`) returns the *shortest* filter whose
+transition reaches the stop band inside the null band. Two independent
+constraints meet here, and the suggestion only satisfies the first:
+
+| Constraint | Says | Fails when |
+| --- | --- | --- |
+| `transition_fits` | long enough to reach the stop band before Nyquist | the null band is too narrow — widen `edge_guard` |
+| `fits_guard` | short enough that its group delay fits the guard | the CP is too short — lengthen it, or lower `stopband_db` |
+
+They pull in opposite directions, which is the whole sizing problem. A wider
+null band needs a *shorter* filter; a deeper stop band needs a longer one.
+
+**5. Taper: whatever slack is left.** With no mask, `roll_off = cp_len/2` is the
+maximum transparent taper (`with_symbol_window_beta_guard(0.5)`). With a mask,
+`roll_off = slack − group_delay`. Near the band edge the taper is the better of
+the two levers — the mask leaves its own transition deliberately unattenuated —
+so it is worth keeping some.
+
+**6. On a preamble-bearing frame, check acquisition too.** The mask filters the
+whole burst, preamble included, and Schmidl & Cox repetition only survives where
+the taps see repeated samples: keep `group_delay ≪ repeat_len`. Preamble-less
+waveforms (DVB-T, which acquires from the CP) are bound only by the guard
+budget.
+
+Two worked configurations, both measured in
+[performance.md](performance.md#out-of-band-emission-spectral-shaping):
+
+| | COFDM | DVB-T (G1/8) |
+| --- | --- | --- |
+| `n_fft` / `cp_len` | 256 / 64 | 2048 / 256 |
+| `backoff` | 32 (`cp_len/2`) | 32 (the free-cost limit, not `cp_len/2` = 128) |
+| slack | 32 | 32 |
+| `edge_guard` | 31 (12% of `n_fft`) | n/a |
+| `num_taps` / group delay | 45 / 22 | 45 / 22 |
+| `roll_off` | 8 | 8 |
+| budget used | 22 + 8 = 30 ≤ 32 | 22 + 8 = 30 ≤ 32 |
+
+The DVB-T column is not a typo: its 256-sample guard buys it no more shaping room
+than COFDM's 64-sample one, because the binding constraint is the pilot grid, not
+the guard. Measured cost of that configuration: ~0.5 dB, all of it the back-off's.
+
+**Defaults are off**, so a config that asks for none of this emits exactly what
+it emitted before.
 
 ## DVB-T Frame Modulator (conformant, preamble-less)
 
@@ -542,30 +627,64 @@ let frame = modulator.modulate(&payload);
 let _fs = NbBandwidth::Bw1MHz.fs();
 ```
 
-Both spectral-shaping post-passes are available here as builders (the edge guard
-is not — DVB-T's extreme carriers are mandatory continual pilots that cannot be
-nulled). DVB-T is preamble-less, so *every* symbol is CP-bearing and gets
-tapered, and there is no Schmidl & Cox region to keep clear of the mask:
+### Spectral shaping on DVB-T
+
+Two of the three levers are available here as builders. The edge guard is not:
+DVB-T's extreme carriers (active indices `0` and `1704`) are *mandatory*
+continual pilots that conformant receivers rely on, so they cannot be nulled or
+moved inward. In exchange DVB-T needs no edge guard — the standard already
+leaves 343 of 2048 bins inactive, which is the room a mask filters into.
+
+Two other things differ from COFDM, both because the frame is preamble-less:
+*every* symbol is CP-bearing and therefore tapered (there is no Schmidl & Cox
+region to skip), and there is no acquisition budget to respect — only the guard
+budget. Work through [Choosing the numbers](#choosing-the-numbers) above; the
+DVB-T-specific constraint is the back-off ceiling in step 1.
 
 ```rust
 use orion_sdr::modulate::DvbTFrameMod;
+use orion_sdr::multicarrier::TxLowpass;
 
-let cp_len = GuardInterval::G1_8.cp_len_2k();          // 256
-let backoff = 64usize;                                  // see the ceiling below
-let mask = DvbTFrameMod::tx_lowpass_for_2k(89, 60.0);   // group delay 44
-assert!(mask.fits_guard(cp_len, 16, backoff));
+// 1. Back-off. cp_len/2 = 128 would be the COFDM answer, but DVB-T's pilot-
+//    interpolated equalizer makes the back-off cost sensitivity: 32 is free,
+//    42 costs ~1 dB, 64 costs ~6 dB. Take 32 and accept 32 samples of slack —
+//    the 256-sample guard buys nothing extra here.
+let cp_len = GuardInterval::G1_8.cp_len_2k();                    // 256
+let backoff = 32usize;
+let slack = (cp_len - backoff).min(backoff);                     // 32
+
+// 2. Mask length. The suggestion is the *shortest* filter that reaches its stop
+//    band inside DVB-T's null band — and on DVB-T that shortest filter is also
+//    the practical one, since 45 taps' group delay of 22 is most of the slack.
+let taps = TxLowpass::taps_for_null_band(2048, 852, 60.0);       // 45
+let mask = DvbTFrameMod::tx_lowpass_for_2k(taps, 60.0);          // group delay 22
+let roll_off = 8usize;
+assert!(mask.fits_guard(cp_len, roll_off, backoff));             // 22 + 8 <= 32
+assert!(slack >= roll_off + mask.group_delay());
 
 let frame = DvbTFrameMod::new(params)
-    .with_symbol_window(16)      // raised-cosine taper, samples per edge
-    .with_tx_lowpass(mask)       // cutoff placed against the fixed ±852 band edge
+    .with_symbol_window(roll_off) // raised-cosine taper, samples per edge
+    .with_tx_lowpass(mask)        // cutoff placed against the fixed ±852 band edge
     .modulate(&payload);
 ```
 
-Pair with `DvbTFrameDemod::with_rx_window_backoff(backoff)`. **The back-off is
-capped at 85 samples by the scattered-pilot spacing, not by the guard**, so the
-shaping budget saturates: 32 / 64 / 85 / 85 samples for G1/32 … G1/4. G1/8 is
-the sweet spot for crowded DATV band plans — the full budget at a quarter of
-G1/4's overhead. See [dvb.md](dvb.md) for the table and the derivation.
+Pair with `DvbTFrameDemod::with_rx_window_backoff(backoff)` — the same value, on
+the same link.
+
+**Do not size DVB-T shaping against the 85-sample aliasing cap.**
+`DVB_T_MAX_RX_WINDOW_BACKOFF` is where the pilot interpolation *aliases*, not
+where it stops working: at 85 the link does not close at any SNR, and at 64 it
+costs ~6 dB. The usable slack is 32 samples for free, 42 for about a dB, and it
+saturates there from G1/16 onward regardless of guard interval. A longer guard
+buys delay-spread tolerance, not shaping room. See
+[dvb.md](dvb.md#choosing-a-guard-interval-for-datv) and the measurements in
+[performance.md](performance.md#the-rx-window-back-off-costs-sensitivity-well-before-it-aliases).
+
+Nothing about the *carriers* changes: the taper touches only time-domain guard
+samples and the mask is a linear channel the scattered-pilot equalizer absorbs,
+so the continual, scattered, and TPS pilots and the payload all come through
+untouched. Measured on a conformant frame: the null band drops 66 dB with in-band
+power unchanged to within 0.1 dB.
 
 ## DVB-T Super-Frame Modulator (four frames)
 
@@ -610,3 +729,12 @@ is per-symbol, so it propagates to each constituent frame; the mask is a
 spectral filter and runs **once over the concatenated four frames**. Filtering
 each frame separately would leave the filter's edge transient at all three
 interior seams, which are continuous on air.
+
+Both levers work on the super-frame path, which is worth stating because they
+briefly did not. `DvbTSuperFrameDemod` hands each frame a sub-buffer starting
+exactly at that frame's first sample, so it acquires with *zero* lead-in four
+times per decode — and symbol windowing biases guard-interval acquisition early,
+which in a `[0, period)` search wraps to nearly a whole symbol late. The
+estimator now recognises and unwinds that
+(`sync::GiSyncConfig::origin_score_ratio`); see
+[demodulate.md](demodulate.md#receiving-a-spectrally-shaped-dvb-t-signal).

@@ -88,13 +88,20 @@ across all orders.
 carrier phasor from an internal `Rotator` (phasor recurrence, no per-sample trig).
 Setting `rf_hz = 0.0` gives baseband passthrough.
 
-## Multicarrier / OFDM / COFDM
+## Multicarrier / OFDM / COFDM / DVB-T
 
 The OFDM physical layer (FFT normalization, carrier indexing, numerology, CFO
 acquisition, channel estimation, the block-boundary contract) and the coded,
 framed COFDM link built on it (concatenated FEC, interleaver domains, the
 frame format, and the streaming receiver) have their own document:
-[ofdm.md](ofdm.md).
+[ofdm.md](ofdm.md). That document also covers the three out-of-band
+spectral-shaping levers — edge-carrier guard, symbol windowing, baseband mask —
+and the guard budget they share with the RX FFT-window back-off.
+
+[dvb.md](dvb.md) covers the conformant DVB-T / NB-DVB-T waveform layered on that
+same stack: the fixed 2K numerology, the pilot grid and the constant-1512
+invariant, the payload FEC chain, TPS signalling, preamble-less guard-interval
+acquisition, and the frame/super-frame transport.
 
 ## Throughput
 

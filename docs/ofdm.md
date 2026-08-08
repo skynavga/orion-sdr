@@ -148,15 +148,25 @@ ramp out. A bare, unequalized demod must keep back-off `0`.
     allows — verified up to `b = cp_len`.
   - `PerSymbolPilotInterp` (the DVB-T scattered path) only samples the channel
     every `pilot_spacing` carriers and interpolates between them. The ramp
-    advances `2π·b·pilot_spacing/n_fft` per gap, and past `π` the interpolation
-    aliases, giving `b < n_fft / (2·pilot_spacing)`
+    advances `θ = 2π·b·pilot_spacing/n_fft` per gap, and past `π` the
+    interpolation aliases, giving `b < n_fft / (2·pilot_spacing)`
     (`SymbolFft::max_pilot_safe_backoff`) — **85 samples for DVB-T 2K**,
     whatever the guard interval.
 
   Note which way round that is: holding one full-resolution estimate is the
   *stronger* option for window back-off, and a pilot-interpolated equalizer is
-  the one that costs budget. It also means a guard longer than `2 × 85 = 170`
-  buys DVB-T no additional shaping room.
+  the one that costs budget.
+
+  **The aliasing limit is not the usable limit.** Because the interpolation is
+  *linear*, it approximates the ramp's arc by a chord and is wrong by
+  `1 − cos(θ/2)` in between pilots — a graded error that bites long before `θ`
+  reaches `π`. Measured on DVB-T 2K: `b = 32` (θ = 68°) is free, `b = 42`
+  (θ = 90°, i.e. `n_fft/(4·pilot_spacing)`) costs ~1 dB, `b = 64` costs ~6 dB,
+  and at the aliasing cap itself the link does not close at any SNR. So the rule
+  of thumb for a pilot-interpolated equalizer is **`b ≤ n_fft/(4·pilot_spacing)`**,
+  half the aliasing bound; see
+  [performance.md](performance.md#the-rx-window-back-off-costs-sensitivity-well-before-it-aliases).
+  A guard longer than `2 × 42 = 84` samples buys DVB-T no additional shaping room.
 
 **Baseband spectral mask (out-of-band emission, both chains).** The third and
 deepest lever is an optional TX low-pass across the **assembled** stream, run

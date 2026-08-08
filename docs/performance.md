@@ -9,7 +9,7 @@ Measurements taken on Apple M2 Pro, release build (`opt-level=3`, `lto=fat`,
 `codegen-units=1`), no SIMD.  Results are ordered by throughput (descending)
 within each table.
 
-## v0.0.55 Results
+## v0.0.56 Results
 
 ### Analog modes (65536 samples × 30 passes)
 
@@ -576,6 +576,171 @@ the data carriers straddling each TPS carrier. The equalizer interpolates its
 estimate across the TPS bins from the true continual + scattered pilots instead;
 the noiseless correctness guard is
 `roundtrip::dvb_t::dvb_t_equalizer_noiseless_clean_*`.
+
+## Out-of-band emission (spectral shaping)
+
+Three off-by-default levers reduce OFDM's `~1/f` out-of-band skirt: an
+edge-carrier guard band, a TX symbol-window taper, and a TX baseband spectral
+mask. [ofdm.md](ofdm.md) has the geometry and the transparency arguments;
+[modulate.md](modulate.md#choosing-the-numbers) has the sizing recipe. This
+section is what they measure.
+
+All figures are **mean power in a stated band, in dB relative to the in-band
+level**, read through a 4-term Blackman–Harris analysis window. The window is not
+a detail: a rectangular slice has its own ~−35 dB leakage floor and would hide a
+60 dB mask completely — what got measured would be the leakage of the *analysis*,
+not of the signal. Anything claiming deep stop-band attenuation has to be read
+through a window whose sidelobes sit below the attenuation claimed.
+
+### COFDM, each lever added in turn (n_fft 256, cp_len 64, 31-carrier edge guard, 65-tap 60 dB mask, roll_off 32)
+
+Two bands, because the taper and the mask do not act in the same place. The mask
+leaves its own transition deliberately unattenuated, so close to the band edge
+the taper is the useful lever; past the transition the mask takes over by tens
+of dB. Reporting only one band would misrepresent one of them.
+
+| Configuration | Near edge (just outside the carriers) | Stop band (past the mask's transition) |
+| --- | ---: | ---: |
+| Baseline (no lever) | +5.9 | +5.8 |
+| + edge guard | −21.3 | −29.7 |
+| + symbol windowing | −30.8 | −61.7 |
+| + baseband mask (no taper) | −26.1 | −95.6 |
+| **All three** | **−33.8** | **−115.6** |
+
+Read down the stop-band column: the edge guard buys ~35 dB by moving the loudest
+`sinc` generators inward, windowing another ~32 dB by lowering the skirt's decay
+*rate*, and the mask a further ~34 dB by attenuating what is left directly in the
+frequency domain. They stack because the mechanisms are independent — which is
+the whole argument for shipping all three. Note the fourth row against the third
+in the *near-edge* column: the mask alone is **worse** there than the taper
+alone, since near-edge energy sits inside its transition band.
+
+Fixtures: `unit::ofdm::all_three_spectral_levers_stack` and
+`tx_lowpass_drops_out_of_band_below_the_windowing_floor` (both print their
+numbers under `--nocapture`).
+
+### COFDM frame, as configured from Python (n_fft 256, cp_len 64, edge guard 31, 45-tap 60 dB mask, roll_off 8)
+
+The same effect through the frame layer and the PyO3 bindings, on a shorter
+filter sized to leave room for a taper (group delay 22 + roll_off 8 = 30, inside
+the 32-sample slack at `backoff = cp_len/2`).
+
+| Configuration | Stop band (\|f\|/fs ∈ [0.47, 0.5]) | In band (\|f\|/fs ≤ 0.36) |
+| --- | ---: | ---: |
+| Baseline (edge guard only) | −25.3 | +6.1 |
+| + symbol windowing | −35.6 | +6.0 |
+| + baseband mask | −91.0 | +6.1 |
+| **Both** | **−101.0** | **+6.0** |
+| *no edge guard, for contrast* | *+5.6* | — |
+
+In-band power moves by less than 0.2 dB across every configuration: the shaping
+is paid for out of the guard interval, not out of the payload. The last row is
+why the edge guard is a prerequisite rather than an optional extra — with
+`edge_guard = 0` the plan fills every bin to Nyquist, so there is no null band
+for a mask's transition to live in and [0.47, 0.5] still holds real carriers.
+
+Fixture: `python/tests/test_spectral_shaping.py::TestCofdmSpectrum`.
+
+### DVB-T conformant frame (2K, G1/8, 89-tap 60 dB mask)
+
+DVB-T needs no edge guard — 343 of its 2048 bins are already inactive, which is
+the null band the mask works in — and could not have one anyway, since its
+extreme carriers are mandatory continual pilots.
+
+| Configuration | Null band (past the transition) | In band |
+| --- | ---: | ---: |
+| Plain | −15.7 | +0.5 |
+| + baseband mask | **−81.8** | +0.5 |
+
+**66 dB** of null-band attenuation with in-band power unchanged to within 0.1 dB,
+and TPS, pilots, and payload all recovered. Fixture:
+`roundtrip::dvb_t::dvb_t_tx_lowpass_attenuates_the_null_band`.
+
+### Cost: what shaping does to modulator throughput (DVB-T 2K, G1/8, 184-byte payload, 50 passes)
+
+Both levers are post-passes over an already-assembled frame, so the honest number
+is the delta against the same modulator with shaping off — everything upstream
+(TS packetization, payload FEC, mapping, pilots, TPS, IFFT, CP insertion) is
+identical work.
+
+| Configuration | mod Msps | vs. plain |
+| --- | ---: | ---: |
+| plain | ~35 | — |
+| symbol windowing (roll_off 16) | ~35 | free |
+| 45-tap mask | ~18.5 | −47% |
+| roll_off 16 + 89-tap mask | ~10.8 | −69% |
+
+**The taper is free; the mask is not.** The taper is `O(roll_off)` per symbol and
+touches 32 of 2304 samples; the mask is `O(num_taps)` per sample across the whole
+frame, so its cost scales linearly with the filter length the guard budget
+affords — and a longer guard, which buys a sharper mask, also buys a more
+expensive one. Halving the filter (89 → 45 taps) nearly halves the overhead.
+
+This is a **transmit-side compute** cost only. Receiving a shaped signal costs no
+extra compute: the back-off is a change of FFT-window offset, and the mask is
+absorbed by the channel estimate the equalizer was already computing. It does,
+however, cost *sensitivity* — see below.
+
+Fixture: `throughput::dvbt::throughput_dvb_t_spectral_shaping_cost`.
+
+### The RX window back-off costs sensitivity well before it aliases
+
+Measured on DVB-T 2K, G1/8, QPSK r1/2, 20 trials/point.
+
+`DVB_T_MAX_RX_WINDOW_BACKOFF` = 85 is where the scattered-pilot interpolation
+*aliases* (`n_fft / (2 · 12)`). It is **not** where the back-off becomes usable
+in noise, and the gap between the two is large. A back-off `b` puts a phase ramp
+on the spectrum that advances `2π·b·12/2048` per pilot gap, and the equalizer
+interpolates *linearly* between pilots — so it approximates an arc by a chord,
+with a fractional magnitude error of `1 − cos(θ/2)` in between. Aliasing needs
+`θ = 180°`; the error is already crippling well below it.
+
+| `b` | θ per pilot gap | interp. error | 100% decode at | penalty |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | 0° | 0% | 4 dB | — |
+| 32 | 68° | 17% | 4 dB | 0 dB |
+| 40 | 84° | 26% | 5 dB | ~1 dB |
+| 42 | 89° | 28% | 5 dB | ~1 dB |
+| 48 | 101° | 37% | 6 dB | ~2 dB |
+| 56 | 118° | 49% | 6 dB | ~2 dB |
+| 64 | 135° | 62% | 10 dB | ~6 dB |
+| 85 | 179° | 100% | never (0% at 15 dB) | — |
+
+Two practical rules follow, and they matter more than the aliasing cap:
+
+- **`b ≤ 32` is free** on DVB-T 2K. Keep the back-off here if you can.
+- **`b ≤ n_fft / (4 · pilot_spacing)` = 42** costs ≤1 dB — the `θ ≤ 90°` rule.
+  Past it the cost climbs fast, and at the aliasing cap itself the link does not
+  close at any SNR.
+
+So the usable shaping slack, `min(cp_len − b, b)`, saturates at **42 samples from
+G1/16 onward** — not the 85 the aliasing cap suggests. That in turn caps the
+practical mask at roughly 45 taps (group delay 22) plus a taper of ~20 samples.
+An 89-tap mask needs 44 samples of group delay alone, which only fits at `b ≥ 44`
+— already into the penalty region.
+
+**None of this applies to COFDM.** `TrainingSymbolHold` measures every bin from
+the training symbol, so it interpolates nothing and absorbs any `b` the guard
+allows; `b = cp_len/2` remains right there. This is a cost of *pilot
+interpolation*, which is the DVB-T scattered path's estimator.
+
+### Shaping itself is free once it fits the budget
+
+Same link (DVB-T 2K, G1/8, QPSK r1/2), 30 trials/point. With the shaping sized to fit — `roll_off` 8 + a 45-tap mask (group delay 22) =
+30 samples, inside the 32-sample slack at `b = 32`:
+
+| Configuration | 3 dB | 4 dB | 5 dB | 6 dB | 8 dB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| plain, `b = 0` | 53% | 100% | 100% | 100% | 100% |
+| plain, `b = 32` | 0% | 93% | 100% | 100% | 100% |
+| taper 8 + 45-tap mask, `b = 32` | 0% | 87% | 100% | 100% | 100% |
+
+The whole cost is the back-off's (~0.5 dB); adding the taper and the mask on top
+of it costs essentially nothing. That is the shaping's central claim, and it holds
+**only while the budget holds**. The same comparison with an over-budget
+configuration (`b = 64`, 89-tap mask, `roll_off` 16) decodes 53% at 10 dB against
+plain's 100% — about 6 dB of loss, all of it bought by the oversized back-off
+that oversized filter demanded.
 
 ## Running the Benchmarks
 

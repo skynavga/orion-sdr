@@ -461,13 +461,27 @@ answer is the opposite of the intuitive one:
 - `TrainingSymbolHold` (the COFDM default) measures every bin from the training
   symbol, so it absorbs any `b` the guard allows — verified up to `b = cp_len`.
 - `PerSymbolPilotInterp` (the DVB-T scattered path) only samples the channel
-  every `pilot_spacing` carriers. The ramp advances `2π·b·pilot_spacing/n_fft`
+  every `pilot_spacing` carriers. The ramp advances `θ = 2π·b·pilot_spacing/n_fft`
   per gap, and past `π` the interpolation aliases: `b < n_fft/(2·pilot_spacing)`
   (`SymbolFft::max_pilot_safe_backoff`), which is **85 samples for DVB-T 2K
   regardless of guard interval** (`DVB_T_MAX_RX_WINDOW_BACKOFF`).
 
 So holding one full-resolution estimate is the *stronger* option here, and
 pilot interpolation is what costs budget.
+
+And it costs it earlier than the aliasing bound suggests. The interpolation is
+*linear*, so it approximates the ramp's arc by a chord and is wrong by
+`1 − cos(θ/2)` between pilots — graded, not a cliff. Measured on DVB-T 2K:
+`b = 32` (θ = 68°) is free, `b = 42` (θ = 90°) costs ~1 dB, `b = 64` costs ~6 dB,
+and at `b = 85` the link does not close at any SNR. Budget against
+**`b ≤ n_fft/(4·pilot_spacing)`**, not the aliasing cap; see
+[performance.md](performance.md#the-rx-window-back-off-costs-sensitivity-well-before-it-aliases).
+Noiseless round trips pass well past this, which is exactly why it is easy to
+miss.
+
+Picking `b` is step 1 of the TX-side sizing recipe, since it sets the slack the
+taper and mask then share:
+[modulate.md → Choosing the numbers](modulate.md#choosing-the-numbers).
 
 ### Soft (LLR) demapping
 
@@ -644,13 +658,75 @@ enough lead-in for the guard-interval search). The **super-frame** and
 the guard interval; if a real front end may be off by whole subcarriers, enable
 **integer**-CFO correction with the builder flag (below).
 
-When the transmitter applies symbol windowing or a spectral mask, pair the demod
-with a matching window back-off — `DvbTFrameDemod::new(params)
-.with_rx_window_backoff(cp_len / 2)`, also on the super-frame and streaming
-receivers. The scattered-pilot estimate is measured at the same back-off and
-corrects the induced phase ramp, so nothing else changes. Note DVB-T's ceiling
-of 85 samples (above): `cp_len/2` is the right value up to G1/16, but at G1/8
-and G1/4 it exceeds the ceiling and must be clamped to ~85 or the decode fails.
+### Receiving a spectrally-shaped DVB-T signal
+
+When the transmitter applies symbol windowing or a baseband mask (see
+[modulate.md](modulate.md#spectral-shaping-on-dvb-t)), the receiver's only job is
+to supply the back-off those levers spend. Nothing about the *decoding* changes:
+the scattered-pilot estimate is measured at the same back-off, so it divides out
+both the phase ramp the shift induces and the mask's own frequency response,
+like any other channel.
+
+```rust
+use orion_sdr::demodulate::{DvbTFrameDemod, DvbTFrameStreamDemod, DvbTSuperFrameDemod};
+use orion_sdr::waveform::dvb_t::DVB_T_MAX_RX_WINDOW_BACKOFF;
+
+// The one DVB-T-specific rule: cp_len/2 is the COFDM answer, but DVB-T's
+// pilot-interpolated equalizer makes the back-off cost sensitivity. 32 is free,
+// 42 costs ~1 dB, 64 costs ~6 dB, and 85 (the aliasing cap) never decodes — so
+// clamping to DVB_T_MAX_RX_WINDOW_BACKOFF is NOT the right move.
+let _aliasing_cap = DVB_T_MAX_RX_WINDOW_BACKOFF;             // 85 — a ceiling, not a target
+let backoff = 32usize;                                       // free; use 42 if you need the slack
+
+// Set the same value on whichever receiver the link uses.
+let _batch = DvbTFrameDemod::new(params).with_rx_window_backoff(backoff);
+let _super = DvbTSuperFrameDemod::new(sf_params).with_rx_window_backoff(backoff);
+let _stream = DvbTFrameStreamDemod::new(params, n_symbols, payload_len)
+    .with_rx_window_backoff(backoff);
+```
+
+The back-off must match the transmitter's *budget*, not any single TX value —
+there is no TX/RX pair to keep numerically equal the way `roll_off` and `b` are
+often quoted together. What has to hold is
+`roll_off + group_delay ≤ min(cp_len − b, b)`, and `b` is one term in it.
+[modulate.md](modulate.md#choosing-the-numbers) works the choice through.
+
+Two failure modes are worth recognising, because neither reports itself as a
+back-off problem:
+
+- **Back-off sized against the aliasing cap.** This is the easy mistake, because
+  a noiseless round trip still passes at `b = 64` or `b = 85` — the FEC has the
+  margin to absorb the interpolation error when there is no noise to spend it on.
+  Under noise it does not: `b = 64` costs ~6 dB and `b = 85` never closes. Keep
+  `b ≤ 32` (free) or `≤ 42` (~1 dB).
+- **Nothing else.** Shaping used to have a second failure mode here — a tapered
+  frame beginning at sample 0 of the buffer would lock onto the wrong symbol —
+  which is now handled inside the estimator (below).
+
+#### Acquiring a shaped signal with no lead-in
+
+Symbol windowing biases the guard-interval ML timing estimate **early**, by
+roughly a third of `roll_off`: the taper attenuates each symbol's leading
+cyclic-prefix samples but not their unwindowed copies in the symbol's interior,
+so the correlation peaks slightly before the true boundary. A long baseband mask
+does the same by smearing the correlation.
+
+That bias is harmless where the receiver has lead-in — the peak simply lands a
+few samples early, which a backed-off window absorbs. It is not harmless where
+the frame begins at sample 0: the search range is `[0, period)`, a negative phase
+is not representable, and the argmax surfaces at `period − δ` instead. Right
+phase, wrong symbol — nearly a whole symbol late.
+
+Zero lead-in is not a corner case. `DvbTSuperFrameDemod` slices every constituent
+frame that way, and `DvbTFrameStreamDemod` re-acquires inside the slice it just
+acquired, which leaves that inner search almost none.
+
+`dvb_t_gi_sync` therefore reports the period boundary at or before the peak when
+two conditions hold: the peak sits within `cp_len/2` below that boundary, *and*
+the boundary's own **single-symbol** correlation reaches half the peak's. Both
+are needed — see `GiSyncConfig::origin_score_ratio`, which documents why the
+score rather than the ML metric, and why a single symbol rather than the
+accumulated one. Set `origin_score_ratio = 0.0` for the plain argmax.
 
 ### DVB-T super-frame demodulation
 
@@ -688,6 +764,7 @@ use orion_sdr::demodulate::DvbTFrameStreamDemod;
 // `params`, `n_symbols`, `payload_len` fix the frame geometry (as the batch demod
 // takes them); `stream` is a run of incoming IQ chunked arbitrarily.
 let mut rx = DvbTFrameStreamDemod::new(params, n_symbols, payload_len);
+// Add `.with_rx_window_backoff(b)` here when the transmitter is shaped.
 let mut frames = Vec::new();
 for chunk in stream.chunks(4096) {
     // `feed` returns the frames that completed on this call (decode errors are

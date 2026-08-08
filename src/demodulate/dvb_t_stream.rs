@@ -60,6 +60,22 @@ impl DvbTFrameStreamDemod {
         self
     }
 
+    /// Slides the FFT window `backoff` samples earlier into the guard on the
+    /// underlying frame demod — the receiver half of the TX spectral-shaping
+    /// pair (see [`DvbTFrameDemod::with_rx_window_backoff`]). Without it a
+    /// stream carrying a symbol taper or a baseband mask is received with the
+    /// shaping inside the FFT window rather than outside it. Capped at
+    /// [`DVB_T_MAX_RX_WINDOW_BACKOFF`](crate::waveform::dvb_t::DVB_T_MAX_RX_WINDOW_BACKOFF)
+    /// by the scattered-pilot grid, not by the guard.
+    ///
+    /// Guard-interval acquisition is unaffected: the back-off moves only the
+    /// per-symbol FFT window, not the frame's sample boundaries, so the
+    /// front-of-buffer GI search and the per-frame drain are unchanged.
+    pub fn with_rx_window_backoff(mut self, backoff: usize) -> Self {
+        self.demod = self.demod.with_rx_window_backoff(backoff);
+        self
+    }
+
     /// Accumulated (not-yet-consumed) sample count.
     pub fn len(&self) -> usize {
         self.buf.len()

@@ -67,6 +67,53 @@ pub struct GiSyncConfig {
     /// a batch while staying robust to residual CFO. Larger values risk coherent
     /// cancellation under CFO (see the module header).
     pub max_symbols: usize,
+    /// Unwrapping guard: the fraction of the peak's correlation score
+    /// (`|γ|/Φ`) that the period boundary at or before the peak must itself
+    /// reach before it is reported instead. `0.0` disables unwrapping entirely
+    /// and restores a plain argmax.
+    ///
+    /// Λ is periodic in the symbol period, so a peak at phase `−δ` can only
+    /// surface at `period − δ`, at the very top of the search range. Reporting
+    /// that offset is the right phase but the *next* symbol — nearly a whole
+    /// symbol late, which overruns a caller that sized its buffer for the frame.
+    /// TX symbol windowing puts the peak exactly there: the taper attenuates
+    /// each symbol's leading cyclic-prefix samples but not their unwindowed
+    /// copies in the symbol's interior, biasing the estimate early by roughly a
+    /// third of `roll_off`. A negative offset is not representable, so the only
+    /// admissible answer is the origin.
+    ///
+    /// The asymmetry is what justifies preferring it: a consumer absorbs a
+    /// slightly EARLY estimate for free — the guard sits ahead of the FFT window
+    /// and the residual is a phase ramp the channel estimate divides out — but
+    /// cannot absorb a symbol-late one.
+    ///
+    /// **Two conditions must both hold**, and neither suffices alone:
+    ///
+    /// 1. The peak sits within `cp_len/2` below a period boundary, so its phase
+    ///    really is a small negative number. A genuine lead-in of 200 samples
+    ///    peaks at 200, nowhere near a boundary.
+    /// 2. That boundary's own correlation score reaches `origin_score_ratio` of
+    ///    the peak's, so a symbol plausibly does start there.
+    ///
+    /// Condition 2 compares **scores** (`|γ|/Φ`), not the ML metric Λ, and that
+    /// choice is load-bearing. Λ rewards low energy — an all-silence window has
+    /// `Φ ≈ 0` and so `Λ ≈ 0`, which sits *near the peak* — so comparing Λ would
+    /// accept the origin of a buffer that begins with silence. The normalized
+    /// score has no such bias: silence-against-signal correlates at ~0.03.
+    ///
+    /// Measured across guard intervals and shaping, the score ratio separates
+    /// the two cases with a wide gap — 0.61–1.00 when the frame really does
+    /// start at the boundary, 0.03–0.41 when it does not — so the default `0.5`
+    /// sits between with ~20% margin either side. (For reference, Λ's own
+    /// deficit does *not* separate them: at G1/32 a true wrap sits 5.5% below
+    /// the peak and a genuine 200-sample lead-in 6.3%.)
+    ///
+    /// Note this considers exactly **two** candidates, the argmax and that one
+    /// boundary. Scanning for the earliest of all near-equal offsets would be
+    /// wrong: Λ's peak sits on a plateau roughly `cp_len` wide, so any width able
+    /// to jump the wrap also walks tens of samples down that plateau and
+    /// re-introduces the timing error it was meant to remove.
+    pub origin_score_ratio: f32,
 }
 
 impl Default for GiSyncConfig {
@@ -74,6 +121,7 @@ impl Default for GiSyncConfig {
         Self {
             rho: 0.95,
             max_symbols: 4,
+            origin_score_ratio: 0.5,
         }
     }
 }
@@ -113,9 +161,11 @@ pub fn dvb_t_gi_sync(
     dvb_t_gi_sync_with(iq, n_fft, cp_len, fs, search_len, &GiSyncConfig::default())
 }
 
-/// Like [`dvb_t_gi_sync`], with an explicit [`GiSyncConfig`] (`ρ` weight and the
-/// coherent-accumulation bound `max_symbols`). Selects the offset maximizing the
-/// van de Beek ML timing metric `|γ(d)| − ρ·Φ(d)`.
+/// Like [`dvb_t_gi_sync`], with an explicit [`GiSyncConfig`] (`ρ` weight, the
+/// coherent-accumulation bound `max_symbols`, and the `origin_score_ratio` unwrap guard).
+/// Ranks offsets by the van de Beek ML timing metric `|γ(d)| − ρ·Φ(d)` and
+/// reports the preceding period boundary instead when the peak wrapped past it —
+/// see [`GiSyncConfig::origin_score_ratio`] for why that is not simply the argmax.
 pub fn dvb_t_gi_sync_with(
     iq: &[C32],
     n_fft: usize,
@@ -136,10 +186,11 @@ pub fn dvb_t_gi_sync_with(
 
     let period = n_fft + cp_len;
     let max_syms = cfg.max_symbols.max(1);
-    let mut best_d = 0usize;
-    let mut best_metric = f32::NEG_INFINITY;
-    let mut best_gamma = C32::default();
-    let mut best_phi = 0.0f32;
+    // Score every offset, keeping γ and Φ so the winner needs no second pass over
+    // the (search_len × cp_len × max_syms) correlation — which dominates the cost.
+    let mut scored: Vec<(f32, C32, f32)> = Vec::with_capacity(search_len);
+    let mut max_metric = f32::NEG_INFINITY;
+    let mut min_metric = f32::INFINITY;
     for d in 0..search_len {
         // Accumulate γ and Φ over up to `max_syms` consecutive symbols whose
         // CP+tail windows fit within the buffer (coherent for γ).
@@ -161,13 +212,61 @@ pub fn dvb_t_gi_sync_with(
 
         // van de Beek ML timing metric: |γ| − ρ·Φ.
         let metric = gamma.norm() - cfg.rho * phi;
-        if metric > best_metric {
-            best_metric = metric;
-            best_d = d;
-            best_gamma = gamma;
-            best_phi = phi;
-        }
+        max_metric = max_metric.max(metric);
+        min_metric = min_metric.min(metric);
+        scored.push((metric, gamma, phi));
     }
+
+    let argmax = scored
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.0.total_cmp(&b.0))
+        .map(|(d, _)| d)
+        .unwrap_or(0);
+
+    // Normalized single-symbol correlation |γ|/Φ ∈ [0, 1] at one offset.
+    //
+    // Deliberately NOT accumulated over `max_symbols`, unlike the selection
+    // metric. Accumulation is what makes the unwrap test hard to get right: with
+    // four symbols summed, an offset whose *first* symbol is silence still scores
+    // well on the strength of the three behind it, so an accumulated score cannot
+    // tell "a symbol starts here" from "a symbol starts one period from here".
+    // A single symbol answers exactly the question being asked.
+    let single_score = |d: usize| {
+        if d + n_fft + cp_len > iq.len() {
+            return 0.0;
+        }
+        let mut gamma = C32::default();
+        let mut phi = 0.0f32;
+        for k in 0..cp_len {
+            let a = iq[d + k];
+            let b = iq[d + n_fft + k];
+            gamma += a * b.conj();
+            phi += a.norm_sqr() + b.norm_sqr();
+        }
+        phi *= 0.5;
+        if phi > 0.0 {
+            (gamma.norm() / phi).min(1.0)
+        } else {
+            0.0
+        }
+    };
+
+    // Unwrap a peak that landed just below a period boundary: that is phase `−δ`
+    // for small δ — the next symbol, not this one. Both conditions are required;
+    // see `GiSyncConfig::origin_score_ratio`.
+    let phase = argmax % period;
+    let origin = argmax - phase; // the period boundary at or before the peak
+    let best_d = if cfg.origin_score_ratio > 0.0
+        && phase != 0
+        && period - phase <= cp_len.div_ceil(2)
+        && single_score(origin) >= cfg.origin_score_ratio.clamp(0.0, 1.0) * single_score(argmax)
+    {
+        origin
+    } else {
+        argmax
+    };
+    let (_, best_gamma, best_phi) = scored[best_d];
 
     // Reported score: |γ| / Φ at the winning offset, in [0, 1] (1 for identical
     // noiseless windows). Selection used the ML metric above, not this ratio.
@@ -211,6 +310,12 @@ pub fn dvb_t_gi_refine(
 }
 
 /// Like [`dvb_t_gi_refine`], with an explicit [`GiSyncConfig`].
+///
+/// `cfg.origin_score_ratio` is deliberately ignored here (a plain argmax is used). The
+/// tie-break exists to resolve a peak that wrapped to the far end of a
+/// full-period search; a refine already knows the phase to within `±radius`, so
+/// there is nothing to unwrap — and applying it would just bias every refine
+/// toward the low end of its own window.
 pub fn dvb_t_gi_refine_with(
     iq: &[C32],
     n_fft: usize,
@@ -223,7 +328,11 @@ pub fn dvb_t_gi_refine_with(
     let start = coarse.saturating_sub(radius);
     let span = 2 * radius + 1;
     let sub = iq.get(start..)?;
-    let mut r = dvb_t_gi_sync_with(sub, n_fft, cp_len, fs, span.min(sub.len()), cfg)?;
+    let local = GiSyncConfig {
+        origin_score_ratio: 0.0,
+        ..*cfg
+    };
+    let mut r = dvb_t_gi_sync_with(sub, n_fft, cp_len, fs, span.min(sub.len()), &local)?;
     r.start_sample += start;
     Some(r)
 }

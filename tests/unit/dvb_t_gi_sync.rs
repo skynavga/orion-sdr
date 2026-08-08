@@ -141,6 +141,7 @@ fn gi_sync_single_symbol_van_de_beek() {
     let cfg = GiSyncConfig {
         rho: 0.9,
         max_symbols: 1,
+        ..GiSyncConfig::default()
     };
     let period = N_FFT + CP_LEN;
     let r = dvb_t_gi_sync_with(&iq, N_FFT, CP_LEN, FS, period, &cfg).expect("acquire");
@@ -151,10 +152,55 @@ fn gi_sync_single_symbol_van_de_beek() {
 #[test]
 fn gi_sync_config_default_is_documented() {
     // The default tuning: ρ = 0.95 (high-SNR energy weight), 4-symbol coherent
-    // accumulation.
+    // accumulation, and a 0.5 score-ratio unwrapping guard (see
+    // `gi_sync_unwraps_a_peak_that_landed_below_the_period`).
     let d = GiSyncConfig::default();
     assert_eq!(d.rho, 0.95);
     assert_eq!(d.max_symbols, 4);
+    assert_eq!(d.origin_score_ratio, 0.5);
+}
+
+#[test]
+fn gi_sync_does_not_unwrap_a_genuine_lead_in() {
+    // The guard against over-eager unwrapping. A lead-in that ends just below a
+    // period boundary makes the peak *look* wrapped — it sits within cp_len/2 of
+    // the boundary, exactly like a taper-biased peak does. What separates them is
+    // the boundary's own single-symbol correlation: here offset 0 is silence and
+    // does not correlate, so the frame does not start there and the true lead
+    // must survive.
+    //
+    // The single-symbol check is what makes this work. An accumulated score would
+    // pass: with `max_symbols = 4`, offset 0's second, third and fourth symbols
+    // are only 5 samples off alignment and correlate strongly, masking that the
+    // first one is silence.
+    let period = N_FFT + CP_LEN;
+    for lead in [200usize, period - 5, period - CP_LEN / 4] {
+        let iq = synth_ofdm(N_FFT, CP_LEN, 6, lead);
+        let r = dvb_t_gi_sync(&iq, N_FFT, CP_LEN, FS, period).expect("acquire");
+        assert_eq!(
+            r.start_sample, lead,
+            "lead={lead}: reported {} should track the true start, not collapse to 0",
+            r.start_sample
+        );
+    }
+}
+
+#[test]
+fn gi_sync_unwrapping_is_opt_out() {
+    // `origin_score_ratio = 0.0` restores the plain argmax, so a caller that
+    // wants the raw van de Beek estimate can have it.
+    let period = N_FFT + CP_LEN;
+    let iq = synth_ofdm(N_FFT, CP_LEN, 4, 40);
+    let off = GiSyncConfig {
+        origin_score_ratio: 0.0,
+        ..GiSyncConfig::default()
+    };
+    let a = dvb_t_gi_sync_with(&iq, N_FFT, CP_LEN, FS, period, &off).expect("acquire");
+    let b = dvb_t_gi_sync(&iq, N_FFT, CP_LEN, FS, period).expect("acquire");
+    // No wrap in this buffer, so both agree — the guard only ever fires on a peak
+    // sitting just below a boundary.
+    assert_eq!(a.start_sample, 40);
+    assert_eq!(b.start_sample, 40);
 }
 
 #[test]
