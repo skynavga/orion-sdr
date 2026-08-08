@@ -79,6 +79,7 @@ the OFDM/COFDM conventions.
 | QAM | Quadrature Amplitude Modulation | 16/64/256-QAM implemented |
 | QPSK | Quadrature Phase-Shift Keying | 2 bits/symbol |
 | RF | Radio Frequency | Upconverted (non-baseband) signal |
+| Roll-off | (symbol-window roll-off) | Raised-cosine taper length per symbol edge (samples), set on `CarrierPlan::with_window_roll_off`; the `β` fraction forms give `round(β·cp_len)` or `round(β·n_fft)`. See [ofdm.md](ofdm.md) |
 | RMS | Root Mean Square | Used by AGC and test SNR helpers |
 | RS | Reed–Solomon | Byte-symbol block code (`fec/reed_solomon.rs`); DVB-T RS(204,188) t=8; COFDM outer FEC option |
 | RX | Receive / Receiver | — |
@@ -89,6 +90,7 @@ the OFDM/COFDM conventions.
 | SSB | Single-Sideband | Phasing (Weaver) modulator; product demodulator |
 | TDF-II | Transposed Direct Form II | Biquad filter state-variable structure |
 | TPS | Transmission Parameter Signalling | DVB-T/DVB-H signalling on 17 carriers, DBPSK over a 68-symbol frame; `HeaderFormat::DvbTps` |
+| Tukey | Tukey (tapered-cosine) window | The raised-cosine symbol-edge taper `SymbolWindow` applies for TX out-of-band suppression; RX-transparent via the FFT-window back-off. See [ofdm.md](ofdm.md) |
 | TX | Transmit / Transmitter | — |
 | UHF | Ultra High Frequency | 300 MHz–3 GHz; secondary target band |
 | VHF | Very High Frequency | 30–300 MHz; lower end of the OFDM target-band range |

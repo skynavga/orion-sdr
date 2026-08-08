@@ -320,6 +320,45 @@ fn roundtrip_dvb_t_2k_tps_end_to_end() {
 }
 
 #[test]
+fn dvb_t_symbol_windowing_attenuates_symbol_edges() {
+    // R12 (DVB-T, cheap): confirm the taper is actually applied to a real DVB-T
+    // frame — its symbol-edge (guard) samples are attenuated versus the
+    // unwindowed frame, while an interior sample is untouched. (The spectral skirt
+    // reduction is proven once on the shared `SymbolWindow` primitive in the COFDM
+    // unit test; here we only verify DVB-T output is genuinely windowed, without a
+    // slow 2K×68-symbol FFT.)
+    use orion_sdr::waveform::dvb_t::GuardInterval;
+    let params = capstone_params(); // G1_32 -> cp_len = 64
+    let cp_len = GuardInterval::G1_32.cp_len_2k();
+    let roll_off = cp_len / 2;
+    let payload = sample_payload(184);
+
+    let plain = DvbTFrameMod::new(params).modulate(&payload);
+    let windowed = DvbTFrameMod::new(params)
+        .with_symbol_window(roll_off)
+        .modulate(&payload);
+    let sps = plain.samples_per_symbol;
+
+    // Take an interior symbol (skip the first). Its very first/last samples are in
+    // the ramp regions and must be attenuated; a mid-symbol sample is untouched.
+    let base = 2 * sps;
+    assert!(
+        windowed.iq[base].norm() < plain.iq[base].norm() * 0.5,
+        "leading edge sample should be strongly attenuated"
+    );
+    assert!(
+        windowed.iq[base + sps - 1].norm() < plain.iq[base + sps - 1].norm() * 0.5,
+        "trailing edge sample should be strongly attenuated"
+    );
+    // A sample in the flat interior is unchanged.
+    let mid = base + sps / 2;
+    assert!(
+        (windowed.iq[mid] - plain.iq[mid]).norm() < 1e-6,
+        "interior sample must be untouched by the taper"
+    );
+}
+
+#[test]
 fn roundtrip_dvb_t_frame_with_symbol_windowing() {
     // R11: a conformant DVB-T frame with TX symbol windowing (roll_off = cp_len/2)
     // decodes cleanly when the demod's RX window back-off is matched (cp_len/2).

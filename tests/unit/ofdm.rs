@@ -7,8 +7,7 @@ use orion_sdr::demodulate::{
     EqualizerMethod, OfdmDecider, OfdmDemod, OfdmEqualizer, OfdmSoftDemod, build_ofdm_rx_frame,
 };
 use orion_sdr::modulate::{ConstellationOrder, OfdmConfig, OfdmMod};
-use orion_sdr::multicarrier::SymbolWindow;
-use orion_sdr::multicarrier::{CarrierPlan, FftBlock};
+use orion_sdr::multicarrier::{CarrierPlan, FftBlock, SymbolWindow};
 use orion_sdr::sync::{OfdmPreamble, generate_ofdm_preamble};
 use orion_sdr::util::wb_spectrum_snr_db;
 use rustfft::FftPlanner;
@@ -971,5 +970,95 @@ fn symbol_windowing_reduces_skirt_power() {
         drop_db > 5.0,
         "windowing should cut skirt power by >5 dB \
          (plain={skirt_plain:.1} dB, windowed={skirt_win:.1} dB, drop={drop_db:.1} dB)"
+    );
+}
+
+/// Windows every `sps`-sample symbol of `stream` in place (used by the combined
+/// Track A + Track B spectral test).
+fn window_stream_in_place(stream: &mut [C32], sps: usize, roll_off: usize) {
+    if roll_off == 0 {
+        return;
+    }
+    let mut win = SymbolWindow::new(sps, roll_off);
+    let mut off = 0;
+    while off + sps <= stream.len() {
+        let sym: Vec<C32> = stream[off..off + sps].to_vec();
+        win.process(&sym, &mut stream[off..off + sps]);
+        off += sps;
+    }
+}
+
+#[test]
+fn edge_guard_and_windowing_combine() {
+    // Track A (edge-carrier nulling) and Track B (symbol windowing) are
+    // independent levers that compose: nulling moves the strongest sinc
+    // generators inward, windowing lowers the boundary-discontinuity skirt. Both
+    // together must beat either alone in the skirt region. Demonstrated (mirrors
+    // R4), COFDM only.
+    let n_fft = 128usize;
+    let cp_len = 32usize; // guard 1/4
+    let fs = 240_000.0f32;
+    let edge_guard = 8usize;
+    let roll_off = cp_len / 2;
+
+    // Same active span with/without the edge guard: the guard nulls the outer
+    // `edge_guard` carriers of a contiguous fill.
+    let cfg_plain = OfdmConfig::new(
+        CarrierPlan::new(n_fft, cp_len).with_contiguous_data(0, false),
+        fs,
+        0.0,
+        1.0,
+        ConstellationOrder::Qpsk,
+    );
+    let cfg_guard = OfdmConfig::new(
+        CarrierPlan::new(n_fft, cp_len).with_contiguous_data(edge_guard, false),
+        fs,
+        0.0,
+        1.0,
+        ConstellationOrder::Qpsk,
+    );
+
+    let bits: Vec<u8> = (0..16384u32)
+        .map(|i| ((i.wrapping_mul(2654435761)) >> 24) as u8)
+        .collect();
+    let sps = cfg_plain.samples_per_ofdm_symbol();
+
+    // Four variants: baseline, guard-only, window-only, both.
+    let baseline = OfdmMod::new(&cfg_plain).modulate(&bits);
+    let guard_only = OfdmMod::new(&cfg_guard).modulate(&bits);
+    let mut window_only = baseline.clone();
+    window_stream_in_place(&mut window_only, sps, roll_off);
+    let mut both = guard_only.clone();
+    window_stream_in_place(&mut both, sps, roll_off);
+
+    // Skirt band beyond the full-fill occupied edge (|k| ~ n_fft/2). Both levers
+    // act just outside the band; measure a window there.
+    let take = 4096.min(baseline.len() - sps);
+    let band = n_fft as i32 / 2; // full-fill occupied half-width
+    let lo_k = band - 20;
+    let hi_k = band - 2;
+    let skirt = |s: &[C32]| {
+        let pdb = complex_power_db(&s[sps..sps + take], take);
+        mean_skirt_power_db(&pdb, take, n_fft, lo_k, hi_k)
+    };
+
+    let s_base = skirt(&baseline);
+    let s_guard = skirt(&guard_only);
+    let s_win = skirt(&window_only);
+    let s_both = skirt(&both);
+
+    // Each lever alone beats the baseline, and both together beat either alone.
+    assert!(
+        s_guard < s_base,
+        "guard should beat baseline ({s_guard} vs {s_base})"
+    );
+    assert!(
+        s_win < s_base,
+        "window should beat baseline ({s_win} vs {s_base})"
+    );
+    assert!(
+        s_both < s_guard && s_both < s_win,
+        "combined should beat either alone (both={s_both:.1}, guard={s_guard:.1}, \
+         win={s_win:.1}, base={s_base:.1})"
     );
 }

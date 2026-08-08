@@ -165,6 +165,28 @@ pilot energy over several symbols (sum `|X|²` per bin) to firm it up under nois
 The estimator `sync::dvb_t_integer_cfo` (returning `k` and a confidence ratio) is
 also public for standalone use. See [demodulate.md](demodulate.md) for the flag.
 
+## Spectral shaping (symbol windowing)
+
+DVB-T's out-of-band skirt can be reduced with the crate's raised-cosine symbol
+windowing — the **only** OOB lever available to DVB-T, since its extreme carriers
+are mandatory continual pilots that cannot be nulled (unlike the COFDM
+edge-carrier guard). Windowing is **not** a DVB-T/DVB-T2 feature (both standards
+define a rectangular symbol; see [ofdm.md](ofdm.md) for the EN 302 755 detail),
+so this is an `orion-sdr`-internal, RX-transparent, off-by-default option.
+
+Because a DVB-T frame is preamble-less, **every** symbol is a CP-bearing OFDM
+symbol and every one is windowed (no S&C region to skip). The taper touches only
+time-domain guard samples, so the continual/scattered/TPS pilots and the
+subcarrier allocation are untouched. It is a matched TX/RX pair:
+`DvbTFrameMod::with_symbol_window(roll_off)` applies the taper, and
+`DvbTFrameDemod::with_rx_window_backoff(b)` slides the RX FFT window into the
+guard so the taper falls outside it (`roll_off = b = cp_len/2` is the
+transparent operating point; the scattered-pilot channel estimate, measured at
+the same back-off, corrects the induced phase ramp). Both propagate through the
+super-frame mod/demod to every constituent frame. Defaults (`0`/`0`) leave the
+on-air frame byte-identical. See [ofdm.md](ofdm.md) for the shared `SymbolWindow`
+/ `SymbolFft` geometry and the transparency argument.
+
 ## Header formats
 
 `HeaderFormat::DvbTps` sits alongside the retained `OrionSdr` (default) and
