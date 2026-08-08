@@ -135,6 +135,12 @@ impl DvbTFrameDemod {
         self.integer_cfo
     }
 
+    /// The receiver FFT-window back-off in samples (`0` = the standard
+    /// CP-boundary window).
+    pub fn rx_window_backoff(&self) -> usize {
+        self.rx_window_backoff
+    }
+
     /// Removes any whole-subcarrier CFO from `iq`, returning the corrected buffer,
     /// or `None` to leave `iq` untouched (correction disabled, acquisition failed,
     /// or the estimate is 0). Aligns to a symbol boundary, accumulates

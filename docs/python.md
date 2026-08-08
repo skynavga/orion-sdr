@@ -738,20 +738,35 @@ cfg = sdr.OfdmConfig(N_FFT, CP_LEN,
                      np.zeros(0, np.int32), np.zeros(0, np.complex64),
                      240_000.0, 0.0, 1.0, "qpsk", edge_guard=31)
 
+assert cfg.occupied_half_carriers == N_FFT // 2 - 1 - 31    # 96: reads the guard back
+
 # 2 + 3. Taper and mask share ONE guard budget with the RX back-off:
 #        roll_off + group_delay <= min(cp_len - b, b), maximized at b = cp_len/2.
-taps = cfg.tx_lowpass_suggested_taps(60.0)     # length that fits the null band
-cfg = (cfg.with_symbol_window(16)              # raised-cosine taper, samples/edge
+backoff, roll_off = CP_LEN // 2, 16
+taps = cfg.tx_lowpass_suggested_taps(60.0)     # shortest length fitting the null band
+assert cfg.tx_lowpass_group_delay(taps) + roll_off <= min(CP_LEN - backoff, backoff)
+assert cfg.tx_lowpass_fits_guard(taps, roll_off, backoff)   # the same check, packaged
+
+cfg = (cfg.with_symbol_window(roll_off)        # raised-cosine taper, samples/edge
           .with_tx_lowpass(taps, 60.0)         # cutoff placed at the band edge
-          .with_rx_window_backoff(CP_LEN // 2))
+          .with_rx_window_backoff(backoff))
 ```
 
 `with_tx_lowpass` takes the tap count because *that* is what the cyclic-prefix
 budget constrains — group delay is `(num_taps - 1) // 2`, and it plus the taper
-must fit `min(cp_len - backoff, backoff)`. The taper and mask are applied by
-`OfdmFrameMod.modulate_frame`; a bare `OfdmMod` applies neither. The back-off
-only works on the equalized (streaming) demod — see
-[demodulate.md](demodulate.md#rx-fft-window-back-off).
+must fit `min(cp_len - backoff, backoff)`. Four helpers cover the arithmetic:
+
+| Helper | Answers |
+| --- | --- |
+| `cfg.occupied_half_carriers` | where the occupied band ends (reads `edge_guard` back) |
+| `cfg.tx_lowpass_suggested_taps(db)` | shortest filter reaching its stop band inside the null band |
+| `cfg.tx_lowpass_group_delay(taps)` | what that filter costs the guard |
+| `cfg.tx_lowpass_fits_guard(taps, roll_off, backoff)` | whether it and the taper both fit |
+
+The taper and mask are applied by `OfdmFrameMod.modulate_frame`; a bare
+`OfdmMod` applies neither. The back-off only works on the equalized (streaming)
+demod — see [demodulate.md](demodulate.md#rx-fft-window-back-off).
+[modulate.md](modulate.md#choosing-the-numbers) walks the sizing through.
 
 ### DVB-T (narrowband, via the COFDM frame layer)
 
@@ -762,12 +777,17 @@ configurable from Python:
 
 ```python
 # A DVB-T-style link over the generic frame layer: K=7 conv inner + RS(204,188)
-# outer, DVB-T energy dispersal, on a 2K carrier plan.
+# outer, DVB-T energy dispersal, on a 2K carrier plan. Every positional argument
+# is required — n_fft, cp_len, data_carriers, pilot indices, pilot values, fs,
+# rf_hz, gain, constellation — so build the carrier arrays first.
+n_fft, cp_len = 2048, 256                        # 2K, guard 1/8
+data = np.arange(-852, 853, dtype=np.int32)      # the 1705 active carriers
 cfg = (
-    sdr.OfdmConfig(N_FFT, CP_LEN, data,
-                   fs=1_201_173.0,          # 1 MHz NB mode: 1e6 * 2048/1705
-                   constellation="qpsk")
-    .with_inner_fec("dvb_t")               # K=7 conv (alias: "convolutional_k7")
+    sdr.OfdmConfig(n_fft, cp_len, data,
+                   np.zeros(0, np.int32), np.zeros(0, np.complex64),
+                   sdr.nb_bandwidth_fs("1mhz"),   # 1 MHz NB mode: 1e6 * 2048/1705
+                   0.0, 1.0, "qpsk")
+    .with_inner_fec("dvb_t", "1/2")         # K=7 conv (alias: "convolutional_k7")
     .with_outer_fec("rs", 204, 16)          # RS(204,188), t=8
     .with_dvb_t_scrambler()                 # DVB-T energy dispersal
     .with_header_format("dvb_tps")          # TPS signalling (or "orion_sdr"/"none")
@@ -811,6 +831,73 @@ raises `ValueError` on an acquisition or decode failure. If a capture may carry 
 whole-subcarrier (integer) CFO, build the demod with
 `sdr.DvbTFrameDemod(params).with_integer_cfo_correction(True)` — a link-constant
 flag that removes it internally.
+
+#### Spectral shaping on DVB-T
+
+Two of the three levers apply (there is no edge guard — DVB-T's extreme carriers
+are mandatory continual pilots), and they are builders on the modulator rather
+than on a config. `TxLowpass` is not a Python class: DVB-T's band edge is fixed,
+so a mask is fully specified by `(num_taps, stopband_db)`, and the sizing
+arithmetic lives in five `dvb_t_*` module functions.
+
+```python
+GUARD = "1/8"
+cp_len = sdr.dvb_t_cp_len(GUARD)                        # 256
+
+# 1. Back-off. Do NOT size against dvb_t_max_rx_window_backoff() — that is the
+#    ALIASING cap (85), where the scattered-pilot interpolation breaks down
+#    entirely. Measured sensitivity cost: b=32 free, b=42 ~1 dB, b=64 ~6 dB,
+#    b=85 never decodes. Noiseless round trips pass well past this; noise does
+#    not. See performance.md.
+backoff = 32
+slack = min(cp_len - backoff, backoff)                  # 32
+
+# 2. Mask. On DVB-T the shortest filter that fits the null band is also the
+#    practical one — 45 taps' group delay of 22 is most of the slack.
+taps = sdr.dvb_t_tx_lowpass_suggested_taps(60.0)        # 45
+roll_off = 8
+assert sdr.dvb_t_tx_lowpass_group_delay(taps) == 22
+assert sdr.dvb_t_tx_lowpass_fits_guard(GUARD, taps, roll_off, backoff)
+assert roll_off + sdr.dvb_t_tx_lowpass_group_delay(taps) <= slack
+
+params = sdr.DvbTFrameParams(GUARD, "qpsk", "1/2")
+payload = np.frombuffer(bytes(range(184)), dtype=np.uint8)
+frame = (sdr.DvbTFrameMod(params)
+         .with_symbol_window(roll_off)                  # raised-cosine edge taper
+         .with_tx_lowpass(taps, 60.0)                   # cutoff at the fixed ±852 edge
+         .modulate(payload))
+
+# The receiver's only job is the matching back-off; decoding is unchanged.
+buf = np.concatenate([
+    np.zeros(200, dtype=np.complex64),
+    frame.iq,
+    np.zeros(frame.samples_per_symbol, dtype=np.complex64),
+])
+rx = (sdr.DvbTFrameDemod(params)
+      .with_rx_window_backoff(backoff)
+      .decode(buf, frame.n_symbols, len(payload)))
+assert rx.payload == payload.tobytes()
+```
+
+Both builders carry over to `DvbTSuperFrameMod`, and `with_rx_window_backoff` to
+`DvbTSuperFrameDemod`; the streaming receiver takes it as a constructor keyword,
+`DvbTFrameStreamDemod(params, n_symbols, payload_len, rx_window_backoff=32)`.
+Note the scope difference on the super-frame: the taper is per-symbol so it
+propagates to each frame, while the mask runs **once over the four concatenated
+frames** (the interior seams are continuous on air).
+
+Measured on a conformant frame: the null band drops **66 dB** with in-band power
+unchanged to within 0.1 dB, and a budget-legal configuration costs ~0.5 dB of
+sensitivity — all of it the back-off's, none of it the shaping's. See
+[performance.md](performance.md#out-of-band-emission-spectral-shaping).
+
+> Two current limitations, both pinned by
+> `python/tests/test_spectral_shaping.py`. A symbol taper biases guard-interval
+> acquisition a few samples early, and the search cannot express a negative
+> offset — so a frame that begins at sample 0 of the buffer locks onto the wrong
+> symbol. Real captures have lead-in and are fine; `DvbTSuperFrameDemod`, which
+> slices at exact frame boundaries, is not. Use the mask alone (45 taps) on the
+> super-frame path for now.
 
 The **super-frame** (four frames with alternating TPS sync + a 16-bit cell id
 split across them) is `DvbTSuperFrameMod` / `DvbTSuperFrameDemod`.

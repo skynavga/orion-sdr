@@ -210,24 +210,50 @@ filtering each frame separately would leave the filter's edge transient at each.
 ### Choosing a guard interval for DATV
 
 The two TX shaping levers share one budget,
-`roll_off + group_delay ≤ min(cp_len − b, b)`, so a longer guard buys a longer
-taper and a sharper mask. But it saturates, and it is worth knowing where:
+`roll_off + group_delay ≤ min(cp_len − b, b)`, so a longer guard *looks* like it
+buys a longer taper and a sharper mask. It does not, and the reason is worth
+stating precisely, because there are two different ceilings on `b` and only one
+of them is the one that matters.
 
-| Guard | `cp_len` | Best usable `b` | Shaping slack |
-| --- | --- | --- | --- |
-| G1/32 | 64 | 32 | 32 |
-| G1/16 | 128 | 64 | 64 |
-| G1/8 | 256 | 85 | 85 |
-| G1/4 | 512 | 85 | 85 |
+The **aliasing** ceiling is `DVB_T_MAX_RX_WINDOW_BACKOFF` = `n_fft/(2·12)` = 85:
+past it the scattered-pilot interpolation cannot represent the back-off's phase
+ramp at all. The **practical** ceiling is much lower. The equalizer interpolates
+*linearly* between pilots 12 carriers apart, and the ramp advances
+`θ = 2π·b·12/2048` per gap — so it approximates an arc by a chord, with a
+fractional magnitude error `1 − cos(θ/2)` in between. That error is graded, not a
+cliff, and it is already crippling well below 85 (measured in
+[performance.md](performance.md#the-rx-window-back-off-costs-sensitivity-well-before-it-aliases)):
 
-`b` is capped at 85 samples by the scattered-pilot spacing, *not* by the guard
-(`DVB_T_MAX_RX_WINDOW_BACKOFF`; see the derivation in [ofdm.md](ofdm.md)). So
-moving G1/32 → G1/8 more than doubles the shaping budget, while G1/8 → G1/4 adds
-nothing to it — the extra guard buys delay-spread tolerance only. For crowded
-narrowband DATV band plans, **G1/8 is the sweet spot**: the full 85 samples of
-shaping budget at a quarter of G1/4's guard overhead. All four guards are
-TPS-signalled and auto-detected, so this is a transmitter-side choice with no
-receiver cost.
+| `b` | θ per gap | interp. error | Sensitivity cost |
+| ---: | ---: | ---: | --- |
+| 32 | 68° | 17% | free |
+| 42 | 89° | 28% | ~1 dB |
+| 64 | 135° | 62% | ~6 dB |
+| 85 | 179° | 100% | link does not close |
+
+So the usable slack per guard interval is:
+
+| Guard | `cp_len` | Free `b` | Slack (free) | Slack (≤1 dB) |
+| --- | ---: | ---: | ---: | ---: |
+| G1/32 | 64 | 32 | 32 | 32 |
+| G1/16 | 128 | 32 | 32 | 42 |
+| G1/8 | 256 | 32 | 32 | 42 |
+| G1/4 | 512 | 32 | 32 | 42 |
+
+It saturates at **G1/16**, not G1/8, and at **42 samples**, not 85. Past G1/16
+the extra guard buys delay-spread tolerance only — nothing for shaping. Two
+consequences for a DATV transmitter:
+
+- **G1/16 is the shaping sweet spot**; choose beyond it for the multipath
+  environment, not for the spectrum.
+- **The practical mask is ~45 taps** (group delay 22), plus a taper of up to ~20.
+  An 89-tap mask needs 44 samples of group delay by itself, which only fits at
+  `b ≥ 44` — already into the penalty region, so it costs more sensitivity than
+  the extra sharpness is worth.
+
+All four guards are TPS-signalled and auto-detected, so the guard choice itself
+is transmitter-side with no receiver cost; the back-off is the part the receiver
+has to be told about.
 
 ## Header formats
 

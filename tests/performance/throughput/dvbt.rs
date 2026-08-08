@@ -332,3 +332,68 @@ fn throughput_dvb_t_integer_cfo() {
     let floor = minsps_from_env(0.02);
     assert!(base_msps >= floor && cfo_msps >= floor);
 }
+
+#[test]
+fn throughput_dvb_t_spectral_shaping_cost() {
+    // What the two TX out-of-band levers cost the modulator. Both are post-passes
+    // over an already-assembled frame, so the interesting number is the *delta*
+    // against the same modulator with shaping off — everything before them (TS
+    // packetization, payload FEC, mapping, pilots, TPS, IFFT, CP) is identical.
+    //
+    // The taper is O(roll_off) per symbol and touches only guard samples; the mask
+    // is O(num_taps) per sample across the whole frame, so it is the one that
+    // scales with the filter the guard budget affords.
+    let params = DvbTFrameParams {
+        link: DvbTLinkParams {
+            guard: GuardInterval::G1_8, // cp_len 256: room for a real filter
+            constellation: ConstellationOrder::Qpsk,
+            code_rate: DvbPunctureRate::R1_2,
+        },
+        frame_number: 0,
+        cell_id: 0,
+    };
+    let payload = random_bytes(184, 0xD7B1);
+    let frame_samples = DvbTFrameMod::new(params).modulate(&payload).iq.len();
+    let repeats = 50;
+
+    let roll_off = 16usize;
+    let variants: [(&str, DvbTFrameMod); 4] = [
+        ("plain", DvbTFrameMod::new(params)),
+        (
+            "taper",
+            DvbTFrameMod::new(params).with_symbol_window(roll_off),
+        ),
+        (
+            "mask-45",
+            DvbTFrameMod::new(params).with_tx_lowpass(DvbTFrameMod::tx_lowpass_for_2k(45, 60.0)),
+        ),
+        (
+            "taper+mask-89",
+            DvbTFrameMod::new(params)
+                .with_symbol_window(roll_off)
+                .with_tx_lowpass(DvbTFrameMod::tx_lowpass_for_2k(89, 60.0)),
+        ),
+    ];
+
+    let min_msps = minsps_from_env(1.0);
+    for (label, modulator) in &variants {
+        let (msps, dt) = measure_throughput(
+            || {
+                let f = modulator.modulate(black_box(&payload));
+                let mut acc = 0.0f32;
+                for s in &f.iq {
+                    acc += s.re;
+                }
+                black_box(acc);
+                frame_samples
+            },
+            frame_samples,
+            repeats,
+        );
+        println!("[DVB-T-Shaping-{label}] {msps:.4} Msps in {dt:.3}s");
+        assert!(
+            msps >= min_msps,
+            "{label} modulate {msps:.2} Msps below floor {min_msps:.2}"
+        );
+    }
+}

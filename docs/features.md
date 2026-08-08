@@ -58,7 +58,42 @@
   - Frame TX (`OfdmFrameMod`) and streaming RX (`OfdmFrameStreamDemod`,
     feed/flush) with in-band header, acquisition, CFO correction, equalization,
     concatenated decode, and CRC check; batch `OfdmFrameDemod` for a known start
-- Unit, roundtrip, throughput, and SNR-sensitivity tests (292 default `cargo
-  test --release`, 360 total including `--features throughput`)
-- Python bindings (51 classes/functions total, including full PSK31, OFDM, and
-  COFDM frame stacks)
+- Out-of-band spectral shaping — three independent, off-by-default levers that
+  compose, with a shared cyclic-prefix budget (see [ofdm.md](ofdm.md) for the
+  geometry, [modulate.md](modulate.md#choosing-the-numbers) for sizing):
+  - Edge-carrier guard band (COFDM only): `CarrierPlan::with_contiguous_data`
+    nulls `edge_guard` carriers per band edge, moving the loudest `sinc`
+    generators inward and creating the null band a mask filters into
+  - TX symbol windowing (`SymbolWindow`): raised-cosine (Tukey) per-symbol edge
+    taper, same-length and stateless; an `orion-sdr` original, **not** a DVB
+    standard mechanism, so RX-transparent by construction
+  - TX baseband spectral mask (`TxLowpass` over `dsp::FirLowpassIq`): a
+    Kaiser-designed linear-phase FIR across the assembled stream, applied
+    group-delay-compensated — the one lever not bounded by the windowing ceiling
+  - RX FFT-window back-off (`SymbolFft`): the shared enabler for both TX levers,
+    capped on DVB-T at 85 samples by the scattered-pilot grid rather than by the
+    guard interval
+- DVB-T / NB-DVB-T full stack, conformant to ETSI EN 300 744 2K
+  (see [dvb.md](dvb.md)):
+  - Fixed 2K numerology (`n_fft` 2048, 1705 active carriers) with all four guard
+    intervals (1/32, 1/16, 1/8, 1/4); NB-DVB-T amateur bandwidth modes
+    (`NbBandwidth`: 333 kHz / 1 MHz / 2 MHz) as a pure fs-scaling of that
+    structure — the baseband frame is identical
+  - Pilot grid: four-phase scattered pilots, 45 continual pilots, 17 TPS
+    carriers, and the constant-1512 data-carrier invariant
+  - Payload FEC chain: TS packetization + energy dispersal → RS(204,188) →
+    Forney convolutional interleaver (I=12) → K=7 punctured convolutional inner
+    code, with Figure-9a soft-decision demapping on RX
+  - TPS signalling (`TpsWord`): DBPSK woven across a 68-symbol block, BCH(67,53)
+    protected, carrying constellation / code rate / guard / frame number / cell id
+  - Preamble-less acquisition: van de Beek ML guard-interval timing + fractional
+    CFO (`dvb_t_gi_sync`), plus opt-in continual-pilot integer-CFO correction
+    (`dvb_t_integer_cfo`, a set-once builder flag)
+  - Frame TX/RX (`DvbTFrameMod`/`DvbTFrameDemod`), four-frame super-frame with
+    cell-id split and frame-sequence check (`DvbTSuperFrameMod`/`Demod`), and a
+    streaming receiver (`DvbTFrameStreamDemod`, feed/flush)
+- Unit, roundtrip, throughput, and SNR-sensitivity tests (453 default `cargo
+  test --release`, 531 total including `--features throughput`)
+- Python bindings (70 classes/functions total, including full PSK31, OFDM, COFDM
+  frame, DVB-T frame/super-frame/streaming, and spectral-shaping stacks), with
+  201 pytest tests

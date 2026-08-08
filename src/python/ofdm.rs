@@ -254,6 +254,45 @@ impl PyOfdmConfig {
         )
     }
 
+    /// A mask's group delay in samples, `(num_taps - 1) // 2` after the odd/>=3
+    /// clamp the designer applies — the filter's reach on each side of a sample,
+    /// and the quantity the guard budget has to cover.
+    fn tx_lowpass_group_delay(&self, num_taps: usize) -> usize {
+        crate::multicarrier::TxLowpass::new(0.25, num_taps, 60.0).group_delay()
+    }
+
+    /// Whether a `num_taps` mask and a `roll_off`-sample symbol taper both fit in
+    /// the guard samples a receiver at `backoff` discards:
+    /// `roll_off + group_delay <= min(cp_len - backoff, backoff)`, reading
+    /// `cp_len` off this config's carrier plan. Pass `roll_off = 0` when symbol
+    /// windowing is off. The slack is maximized at `backoff = cp_len/2`.
+    ///
+    /// This is the check `tx_lowpass_suggested_taps` refers to: the suggestion
+    /// sizes the transition against the *null band*, and this says whether the
+    /// resulting length fits the *guard*. If it does not, a longer cyclic prefix
+    /// (or a shallower `stopband_db`) is the lever.
+    #[pyo3(signature = (num_taps, roll_off = 0, backoff = None))]
+    fn tx_lowpass_fits_guard(
+        &self,
+        num_taps: usize,
+        roll_off: usize,
+        backoff: Option<usize>,
+    ) -> bool {
+        let cp_len = self.0.carrier_plan.cp_len();
+        let backoff = backoff.unwrap_or(cp_len / 2);
+        crate::multicarrier::TxLowpass::new(0.25, num_taps, 60.0)
+            .fits_guard(cp_len, roll_off, backoff)
+    }
+
+    /// The outermost occupied subcarrier's distance from DC, in carriers — the
+    /// band edge a mask's transition is placed against. With an `edge_guard` of
+    /// `g` on an `n_fft`-point plan this is `n_fft/2 - 1 - g`, so it is also how
+    /// a caller reads back the guard the plan was built with.
+    #[getter]
+    fn occupied_half_carriers(&self) -> usize {
+        self.0.carrier_plan.occupied_half_carriers()
+    }
+
     /// Sets a rectangular block interleaver on the given stage
     /// (`"inner"` or `"outer"`). `rows`/`cols` = 0 disables it.
     #[pyo3(signature = (stage, rows, cols))]

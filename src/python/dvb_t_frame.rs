@@ -12,6 +12,15 @@
 // constellation, code rate) are passed as strings, matching the convention used
 // by the config-level DVB-T bindings in `python/ofdm.rs`. Integer-CFO correction
 // is a construction-time flag on the demod objects (`with_integer_cfo_correction`).
+//
+// The out-of-band spectral-shaping levers are builders too: `with_symbol_window`
+// and `with_tx_lowpass` on the modulators, `with_rx_window_backoff` on the
+// demodulators. `TxLowpass` itself is not a Python class — the DVB-T band edge is
+// fixed, so the mask is specified by `(num_taps, stopband_db)` and built
+// internally by `DvbTFrameMod::tx_lowpass_for_2k`. The `dvb_t_*` module functions
+// below expose the sizing arithmetic (cp_len, the back-off ceiling, a suggested
+// tap count, group delay, the guard-budget check) so a Python caller can pick
+// those numbers without re-deriving them.
 
 use num_complex::Complex32;
 use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
@@ -22,7 +31,10 @@ use pyo3::types::PyBytes;
 use crate::demodulate::{DvbTFrameDemod, DvbTFrameStreamDemod, DvbTSuperFrameDemod};
 use crate::fec::PunctureRate;
 use crate::modulate::{ConstellationOrder, DvbTFrameMod, DvbTSuperFrameMod, DvbTSuperFrameParams};
-use crate::waveform::dvb_t::{DvbTFrameParams, DvbTLinkParams, GuardInterval, NbBandwidth};
+use crate::multicarrier::TxLowpass;
+use crate::waveform::dvb_t::{
+    DVB_T_MAX_RX_WINDOW_BACKOFF, DvbTFrameParams, DvbTLinkParams, GuardInterval, NbBandwidth,
+};
 use crate::waveform::dvb_t_tps::TpsWord;
 
 // ── String <-> enum helpers (crate Python convention) ───────────────────────
@@ -251,6 +263,8 @@ impl PyDvbTRxFrame {
 
 /// A conformant, preamble-less DVB-T frame modulator. Built from
 /// `DvbTFrameParams`; `modulate(payload)` produces one `DvbTFrame` per call.
+/// Out-of-band spectral shaping is off by default — see `with_symbol_window`
+/// and `with_tx_lowpass`.
 #[pyclass(name = "DvbTFrameMod")]
 pub struct PyDvbTFrameMod {
     inner: DvbTFrameMod,
@@ -262,6 +276,43 @@ impl PyDvbTFrameMod {
     fn new(params: &PyDvbTFrameParams) -> Self {
         Self {
             inner: DvbTFrameMod::new(params.inner),
+        }
+    }
+
+    /// Returns a modulator that applies a `roll_off`-sample raised-cosine taper
+    /// to each symbol's edges, reducing out-of-band emission. `0` (the default)
+    /// leaves the on-air frame byte-identical. DVB-T is preamble-less, so every
+    /// symbol is CP-bearing and every one is tapered.
+    ///
+    /// Only RX-transparent when paired with a matching back-off on the
+    /// demodulator: `roll_off = backoff = cp_len/2` is the transparent operating
+    /// point, subject to the `dvb_t_max_rx_window_backoff()` ceiling.
+    fn with_symbol_window(&self, roll_off: usize) -> Self {
+        Self {
+            inner: self.inner.clone().with_symbol_window(roll_off),
+        }
+    }
+
+    /// Returns a modulator that applies a TX baseband low-pass (spectral mask)
+    /// across the assembled frame, after any symbol taper. Absent by default.
+    ///
+    /// The cutoff is placed against DVB-T's fixed `±852`-of-2048 band edge, so
+    /// only the filter length — the quantity the guard budget constrains — and
+    /// the stop-band target are the caller's. Unlike the taper this is not
+    /// bounded by the windowing ceiling: it attenuates out-of-band energy
+    /// directly in the frequency domain, so its gain stacks on top.
+    ///
+    /// It needs no decoding change (the scattered-pilot equalizer absorbs the
+    /// filter like any other channel), but its group delay must land in guard
+    /// the receiver discards. Size it with `dvb_t_tx_lowpass_suggested_taps` and
+    /// check it with `dvb_t_tx_lowpass_fits_guard`.
+    #[pyo3(signature = (num_taps, stopband_db = 60.0))]
+    fn with_tx_lowpass(&self, num_taps: usize, stopband_db: f32) -> Self {
+        Self {
+            inner: self
+                .inner
+                .clone()
+                .with_tx_lowpass(DvbTFrameMod::tx_lowpass_for_2k(num_taps, stopband_db)),
         }
     }
 
@@ -310,6 +361,29 @@ impl PyDvbTFrameDemod {
     #[getter]
     fn integer_cfo_correction(&self) -> bool {
         self.inner.integer_cfo_correction()
+    }
+
+    /// Returns a demod whose per-symbol FFT window sits `backoff` samples
+    /// earlier in the guard (default `0` = the standard CP-boundary window).
+    ///
+    /// This is the receiver half of the TX shaping pair: a symbol taper and a
+    /// baseband mask both live in guard samples, and only a backed-off window
+    /// leaves them outside the FFT. It also buys pre-echo and timing-error
+    /// tolerance on its own. The scattered-pilot estimate is measured at the
+    /// same back-off, so the phase ramp the shift induces is corrected.
+    ///
+    /// Capped at `dvb_t_max_rx_window_backoff()` (85) by the scattered-pilot
+    /// spacing — **not** by the guard interval.
+    fn with_rx_window_backoff(&self, backoff: usize) -> Self {
+        Self {
+            inner: self.inner.clone().with_rx_window_backoff(backoff),
+        }
+    }
+
+    /// The receiver FFT-window back-off in samples.
+    #[getter]
+    fn rx_window_backoff(&self) -> usize {
+        self.inner.rx_window_backoff()
     }
 
     /// Demodulates one conformant DVB-T frame from `iq`, acquiring the symbol grid
@@ -363,6 +437,89 @@ fn parse_nb_bandwidth(s: &str) -> PyResult<NbBandwidth> {
             "unknown NB bandwidth {other:?} (expected 333khz, 1mhz, 2mhz)"
         ))),
     }
+}
+
+// ── Spectral-shaping sizing helpers ─────────────────────────────────────────
+//
+// The arithmetic a caller needs to choose `roll_off`, `num_taps` and `backoff`
+// without re-deriving it. `TxLowpass` is not a Python class (DVB-T's band edge is
+// fixed, so a mask is fully specified by its length and stop-band target), so
+// these are module functions rather than methods.
+
+/// The cyclic-prefix length in samples for a DVB-T 2K guard interval:
+/// 64 / 128 / 256 / 512 for `"1/32"` / `"1/16"` / `"1/8"` / `"1/4"`. This is the
+/// guard the two TX shaping levers and the RX window back-off share.
+#[pyfunction]
+#[pyo3(name = "dvb_t_cp_len")]
+fn dvb_t_cp_len(guard: &str) -> PyResult<usize> {
+    Ok(parse_guard(guard)?.cp_len_2k())
+}
+
+/// The largest usable RX FFT-window back-off for DVB-T 2K: **85 samples**,
+/// whatever the guard interval.
+///
+/// The cap comes from the scattered-pilot grid, not the guard. The back-off
+/// induces a per-bin phase ramp that the equalizer removes from its channel
+/// estimate, but that estimate is only sampled every 12 carriers; past
+/// `n_fft / (2 · 12)` the interpolation aliases. So the shaping budget
+/// saturates: 32 / 64 / 85 / 85 samples for G1/32 … G1/4, which makes G1/8 the
+/// sweet spot — the full budget at a quarter of G1/4's guard overhead.
+#[pyfunction]
+#[pyo3(name = "dvb_t_max_rx_window_backoff")]
+fn dvb_t_max_rx_window_backoff() -> usize {
+    DVB_T_MAX_RX_WINDOW_BACKOFF
+}
+
+/// The shortest mask whose transition fits inside DVB-T's null band (the 343 of
+/// 2048 bins the standard leaves inactive) at `stopband_db` — a starting point
+/// for `DvbTFrameMod.with_tx_lowpass`, to be checked against the guard budget
+/// with `dvb_t_tx_lowpass_fits_guard`.
+///
+/// A shorter filter cannot reach its stop band before Nyquist; a longer one
+/// reaches it sooner, at the cost of more group delay to fit in the guard.
+#[pyfunction]
+#[pyo3(name = "dvb_t_tx_lowpass_suggested_taps")]
+#[pyo3(signature = (stopband_db = 60.0))]
+fn dvb_t_tx_lowpass_suggested_taps(stopband_db: f32) -> usize {
+    TxLowpass::taps_for_null_band(
+        crate::waveform::dvb_t::DVB_T_N_FFT,
+        crate::waveform::dvb_t::DVB_T_KMAX / 2,
+        stopband_db,
+    )
+}
+
+/// A mask's group delay in samples, `(num_taps − 1) / 2` after the odd/≥3 clamp
+/// the designer applies — the filter's reach on each side of a sample, and the
+/// quantity the guard budget has to cover.
+#[pyfunction]
+#[pyo3(name = "dvb_t_tx_lowpass_group_delay")]
+fn dvb_t_tx_lowpass_group_delay(num_taps: usize) -> usize {
+    TxLowpass::new(0.25, num_taps, 60.0).group_delay()
+}
+
+/// Whether a `num_taps` mask and a `roll_off`-sample symbol taper both fit in
+/// the guard samples a receiver at `backoff` discards:
+///
+/// ```text
+/// roll_off + group_delay <= min(cp_len - backoff, backoff)
+/// ```
+///
+/// Pass `roll_off = 0` when symbol windowing is off. The slack is maximized at
+/// `backoff = cp_len/2` — but on DVB-T that is only reachable up to
+/// `dvb_t_max_rx_window_backoff()`. Overrunning the budget degrades gradually
+/// (a little inter-symbol leakage the equalizer cannot invert) rather than
+/// failing abruptly, but it is the budget to design against.
+#[pyfunction]
+#[pyo3(name = "dvb_t_tx_lowpass_fits_guard")]
+#[pyo3(signature = (guard, num_taps, roll_off, backoff))]
+fn dvb_t_tx_lowpass_fits_guard(
+    guard: &str,
+    num_taps: usize,
+    roll_off: usize,
+    backoff: usize,
+) -> PyResult<bool> {
+    let cp_len = parse_guard(guard)?.cp_len_2k();
+    Ok(DvbTFrameMod::tx_lowpass_for_2k(num_taps, 60.0).fits_guard(cp_len, roll_off, backoff))
 }
 
 // ── Super-frame ─────────────────────────────────────────────────────────────
@@ -477,6 +634,32 @@ impl PyDvbTSuperFrameMod {
         }
     }
 
+    /// Returns a modulator that tapers every symbol of every constituent frame
+    /// (see `DvbTFrameMod.with_symbol_window`). The taper is per-symbol, so it
+    /// simply propagates to each frame.
+    fn with_symbol_window(&self, roll_off: usize) -> Self {
+        Self {
+            inner: self.inner.clone().with_symbol_window(roll_off),
+        }
+    }
+
+    /// Returns a modulator that applies a TX baseband mask to the super-frame
+    /// (see `DvbTFrameMod.with_tx_lowpass` for sizing).
+    ///
+    /// Note the scope: unlike the taper, the mask runs **once over the four
+    /// concatenated frames**, not per frame. The three interior frame seams are
+    /// continuous on air, and filtering each frame alone would leave the
+    /// filter's edge transient at every one of them.
+    #[pyo3(signature = (num_taps, stopband_db = 60.0))]
+    fn with_tx_lowpass(&self, num_taps: usize, stopband_db: f32) -> Self {
+        Self {
+            inner: self
+                .inner
+                .clone()
+                .with_tx_lowpass(DvbTFrameMod::tx_lowpass_for_2k(num_taps, stopband_db)),
+        }
+    }
+
     /// Modulates `payload` into one conformant DVB-T super-frame. Returns a
     /// `DvbTSuperFrame` (`.iq`, `.symbols_per_frame`, `.samples_per_symbol`,
     /// `.frame_payload_lens`).
@@ -523,6 +706,20 @@ impl PyDvbTSuperFrameDemod {
         self.inner.integer_cfo_correction()
     }
 
+    /// Returns a super-frame demod with the FFT-window back-off applied to every
+    /// constituent frame (see `DvbTFrameDemod.with_rx_window_backoff`).
+    fn with_rx_window_backoff(&self, backoff: usize) -> Self {
+        Self {
+            inner: self.inner.clone().with_rx_window_backoff(backoff),
+        }
+    }
+
+    /// The receiver FFT-window back-off in samples.
+    #[getter]
+    fn rx_window_backoff(&self) -> usize {
+        self.inner.rx_window_backoff()
+    }
+
     /// Demodulates one conformant DVB-T super-frame from `iq`. `symbols_per_frame`
     /// and `frame_payload_lens` come from the paired `DvbTSuperFrameMod.modulate`
     /// result. Verifies the frame-number sequence 0,1,2,3, reassembles the 16-bit
@@ -551,11 +748,13 @@ impl PyDvbTSuperFrameDemod {
 /// and decodes each fixed-size frame as its samples arrive, returning the
 /// completed ones. `flush()` runs a final pass over the residual buffer. Pass
 /// `integer_cfo_correction=True` to enable internal integer-CFO correction on each
-/// decoded frame (a link-constant knob, set once here).
+/// decoded frame, and `rx_window_backoff=b` to receive a spectrally-shaped stream
+/// (both are link-constant knobs, set once here).
 #[pyclass(name = "DvbTFrameStreamDemod")]
 pub struct PyDvbTFrameStreamDemod {
     inner: DvbTFrameStreamDemod,
     integer_cfo: bool,
+    rx_window_backoff: usize,
 }
 
 #[pymethods]
@@ -563,19 +762,25 @@ impl PyDvbTFrameStreamDemod {
     /// Builds a receiver for a link whose frames are `n_symbols` OFDM symbols
     /// carrying `payload_len` payload bytes each, under `params`. When
     /// `integer_cfo_correction` is `True`, each frame's whole-subcarrier CFO is
-    /// estimated and removed internally before decoding.
+    /// estimated and removed internally before decoding. `rx_window_backoff`
+    /// slides each symbol's FFT window that many samples earlier into the guard
+    /// — set it to match a transmitter running `with_symbol_window` and/or
+    /// `with_tx_lowpass`. Frame acquisition is unaffected either way.
     #[new]
-    #[pyo3(signature = (params, n_symbols, payload_len, integer_cfo_correction = false))]
+    #[pyo3(signature = (params, n_symbols, payload_len, integer_cfo_correction = false, rx_window_backoff = 0))]
     fn new(
         params: &PyDvbTFrameParams,
         n_symbols: usize,
         payload_len: usize,
         integer_cfo_correction: bool,
+        rx_window_backoff: usize,
     ) -> Self {
         Self {
             inner: DvbTFrameStreamDemod::new(params.inner, n_symbols, payload_len)
-                .with_integer_cfo_correction(integer_cfo_correction),
+                .with_integer_cfo_correction(integer_cfo_correction)
+                .with_rx_window_backoff(rx_window_backoff),
             integer_cfo: integer_cfo_correction,
+            rx_window_backoff,
         }
     }
 
@@ -583,6 +788,12 @@ impl PyDvbTFrameStreamDemod {
     #[getter]
     fn integer_cfo_correction(&self) -> bool {
         self.integer_cfo
+    }
+
+    /// The receiver FFT-window back-off in samples.
+    #[getter]
+    fn rx_window_backoff(&self) -> usize {
+        self.rx_window_backoff
     }
 
     /// Feeds IQ and returns the frames that completed. Frames that failed to
@@ -665,5 +876,10 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDvbTFrameStreamDemod>()?;
     m.add_function(wrap_pyfunction!(nb_bandwidth_fs, m)?)?;
     m.add_function(wrap_pyfunction!(nb_bandwidth_occupied_hz, m)?)?;
+    m.add_function(wrap_pyfunction!(dvb_t_cp_len, m)?)?;
+    m.add_function(wrap_pyfunction!(dvb_t_max_rx_window_backoff, m)?)?;
+    m.add_function(wrap_pyfunction!(dvb_t_tx_lowpass_suggested_taps, m)?)?;
+    m.add_function(wrap_pyfunction!(dvb_t_tx_lowpass_group_delay, m)?)?;
+    m.add_function(wrap_pyfunction!(dvb_t_tx_lowpass_fits_guard, m)?)?;
     Ok(())
 }

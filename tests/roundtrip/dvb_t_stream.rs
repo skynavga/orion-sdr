@@ -163,3 +163,39 @@ fn dvb_t_stream_holds_partial_frame() {
     assert_eq!(ok.len(), 1);
     assert_eq!(ok[0].payload, payload);
 }
+
+#[test]
+fn dvb_t_stream_receives_a_spectrally_masked_frame() {
+    // The streaming receiver needs the RX window back-off as much as the batch
+    // one does: a TX baseband mask puts its group delay in the guard, and only a
+    // backed-off FFT window leaves it outside the window the FFT integrates.
+    // Frame acquisition is untouched — the back-off moves the per-symbol window,
+    // not the frame's sample boundaries — so the feed/drain bookkeeping is the
+    // same as the unshaped path's.
+    let p = params();
+    let cp_len = GuardInterval::G1_8.cp_len_2k(); // 256
+    let backoff = 64usize; // inside the 85-sample scattered-pilot ceiling
+    let mask = DvbTFrameMod::tx_lowpass_for_2k(89, 60.0); // group delay 44
+    assert!(mask.fits_guard(cp_len, 0, backoff));
+
+    let payload = sample_payload(184);
+    let frame = DvbTFrameMod::new(p)
+        .with_tx_lowpass(mask)
+        .modulate(&payload);
+
+    let mut iq = vec![C32::default(); 200];
+    iq.extend_from_slice(&frame.iq);
+    iq.extend(vec![C32::default(); frame.samples_per_symbol]);
+
+    let mut rx = DvbTFrameStreamDemod::new(p, frame.n_symbols, payload.len())
+        .with_rx_window_backoff(backoff);
+    let mut got = rx.feed(&iq);
+    got.extend(rx.flush());
+    let ok: Vec<_> = got.into_iter().filter_map(|r| r.ok()).collect();
+    assert_eq!(
+        ok.len(),
+        1,
+        "band-limited frame decodes on the streaming path"
+    );
+    assert_eq!(ok[0].payload, payload);
+}

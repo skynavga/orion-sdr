@@ -717,7 +717,31 @@ class OfdmConfig:
     def tx_lowpass_suggested_taps(self, stopband_db: float = 60.0) -> int:
         """The tap count whose transition just fits this plan's unoccupied band
         at *stopband_db* — a starting point for ``with_tx_lowpass``, to be
-        checked against the guard budget."""
+        checked against the guard budget with ``tx_lowpass_fits_guard``."""
+        ...
+    def tx_lowpass_group_delay(self, num_taps: int) -> int:
+        """A mask's group delay in samples, ``(num_taps - 1) // 2`` after the
+        odd/>=3 clamp — its reach on each side, and what the guard must cover."""
+        ...
+    def tx_lowpass_fits_guard(
+        self, num_taps: int, roll_off: int = 0, backoff: int | None = None
+    ) -> bool:
+        """Whether a *num_taps* mask and a *roll_off*-sample taper both fit the
+        guard a receiver at *backoff* discards: ``roll_off + group_delay <=
+        min(cp_len - backoff, backoff)``, reading ``cp_len`` off this plan.
+        *backoff* defaults to ``cp_len // 2``, where the slack is maximized.
+
+        This is the check ``tx_lowpass_suggested_taps`` refers to: the suggestion
+        sizes the transition against the *null band*, this says whether the length
+        fits the *guard*. If it does not, a longer cyclic prefix (or a shallower
+        *stopband_db*) is the lever."""
+        ...
+    @property
+    def occupied_half_carriers(self) -> int:
+        """The outermost occupied subcarrier's distance from DC, in carriers — the
+        band edge a mask's transition is placed against. With *edge_guard* ``g`` on
+        an *n_fft*-point plan this is ``n_fft//2 - 1 - g``, so it is also how to
+        read back the guard a plan was built with."""
         ...
     def with_interleaver(self, stage: str, rows: int, cols: int) -> "OfdmConfig":
         """Set a rectangular block interleaver on *stage* (``"inner"`` |
@@ -1081,9 +1105,28 @@ class DvbTRxFrame:
 
 class DvbTFrameMod:
     """A conformant, preamble-less DVB-T frame modulator. Built from
-    ``DvbTFrameParams``; ``modulate`` produces one frame per call."""
+    ``DvbTFrameParams``; ``modulate`` produces one frame per call.
+    Out-of-band spectral shaping is off by default — see ``with_symbol_window``
+    and ``with_tx_lowpass``."""
 
     def __init__(self, params: DvbTFrameParams) -> None: ...
+    def with_symbol_window(self, roll_off: int) -> DvbTFrameMod:
+        """Return a modulator that applies a *roll_off*-sample raised-cosine taper
+        to each symbol's edges (default 0 = off, on-air frame byte-identical).
+        DVB-T is preamble-less, so every symbol is tapered. Only RX-transparent
+        when paired with a matching ``DvbTFrameDemod.with_rx_window_backoff``."""
+        ...
+    def with_tx_lowpass(
+        self, num_taps: int, stopband_db: float = 60.0
+    ) -> DvbTFrameMod:
+        """Return a modulator that applies a TX baseband low-pass (spectral mask)
+        across the assembled frame, after any symbol taper (default: off). The
+        cutoff is placed against DVB-T's fixed ±852-of-2048 band edge, so only the
+        length and stop-band target are yours. Unlike the taper this is not bounded
+        by the windowing ceiling, so its attenuation stacks on top. Size it with
+        ``dvb_t_tx_lowpass_suggested_taps`` and check it with
+        ``dvb_t_tx_lowpass_fits_guard``."""
+        ...
     def modulate(self, payload: NDArray[np.uint8]) -> DvbTFrame:
         """Modulate *payload* (MPEG-TS payload bytes) into one conformant,
         preamble-less DVB-T frame."""
@@ -1104,6 +1147,16 @@ class DvbTFrameDemod:
         ...
     @property
     def integer_cfo_correction(self) -> bool: ...
+    def with_rx_window_backoff(self, backoff: int) -> DvbTFrameDemod:
+        """Return a demod whose per-symbol FFT window sits *backoff* samples
+        earlier in the guard (default 0). The receiver half of the TX shaping
+        pair: a taper and a mask both live in guard samples, and only a backed-off
+        window leaves them outside the FFT. Capped at
+        ``dvb_t_max_rx_window_backoff()`` by the scattered-pilot grid, not by the
+        guard interval."""
+        ...
+    @property
+    def rx_window_backoff(self) -> int: ...
     def decode(
         self,
         iq: NDArray[np.complex64],
@@ -1124,6 +1177,50 @@ def nb_bandwidth_fs(mode: str) -> float:
 
 def nb_bandwidth_occupied_hz(mode: str) -> float:
     """Nominal occupied RF bandwidth (Hz) for a narrowband DVB-T mode."""
+    ...
+
+# ---------------------------------------------------------------------------
+# DVB-T spectral-shaping sizing helpers
+#
+# The arithmetic behind choosing *roll_off*, *num_taps* and *backoff*. ``TxLowpass``
+# is not a Python class — DVB-T's band edge is fixed, so a mask is fully specified
+# by its length and stop-band target — hence these are module functions.
+# ---------------------------------------------------------------------------
+
+def dvb_t_cp_len(guard: str) -> int:
+    """Cyclic-prefix length in samples for a DVB-T 2K guard interval: 64 / 128 /
+    256 / 512 for ``"1/32" | "1/16" | "1/8" | "1/4"``. This is the guard the two TX
+    shaping levers and the RX window back-off share."""
+    ...
+
+def dvb_t_max_rx_window_backoff() -> int:
+    """The largest usable RX FFT-window back-off for DVB-T 2K: **85 samples**,
+    whatever the guard interval. The cap is the scattered-pilot grid, not the
+    guard — the estimate is only sampled every 12 carriers, and past
+    ``n_fft / (2 * 12)`` the interpolation aliases. So the shaping budget saturates
+    at 32 / 64 / 85 / 85 for G1/32…G1/4, making G1/8 the sweet spot."""
+    ...
+
+def dvb_t_tx_lowpass_suggested_taps(stopband_db: float = 60.0) -> int:
+    """The shortest mask whose transition fits inside DVB-T's null band (the 343 of
+    2048 inactive bins) at *stopband_db* — a starting point for
+    ``DvbTFrameMod.with_tx_lowpass``, to be checked with
+    ``dvb_t_tx_lowpass_fits_guard``."""
+    ...
+
+def dvb_t_tx_lowpass_group_delay(num_taps: int) -> int:
+    """A mask's group delay in samples, ``(num_taps - 1) // 2`` after the odd/>=3
+    clamp — its reach on each side, and what the guard budget must cover."""
+    ...
+
+def dvb_t_tx_lowpass_fits_guard(
+    guard: str, num_taps: int, roll_off: int, backoff: int
+) -> bool:
+    """Whether a *num_taps* mask and a *roll_off*-sample taper both fit the guard a
+    receiver at *backoff* discards: ``roll_off + group_delay <= min(cp_len -
+    backoff, backoff)``. Pass ``roll_off=0`` when windowing is off. Maximized at
+    ``backoff = cp_len/2``, but only reachable up to
+    ``dvb_t_max_rx_window_backoff()``."""
     ...
 
 # ---------------------------------------------------------------------------
@@ -1181,6 +1278,20 @@ class DvbTSuperFrameMod:
     ``modulate`` produces one super-frame per call."""
 
     def __init__(self, params: DvbTSuperFrameParams) -> None: ...
+    def with_symbol_window(self, roll_off: int) -> DvbTSuperFrameMod:
+        """Return a modulator that tapers every symbol of every constituent frame
+        (see ``DvbTFrameMod.with_symbol_window``). Being per-symbol, the taper
+        simply propagates to each frame."""
+        ...
+    def with_tx_lowpass(
+        self, num_taps: int, stopband_db: float = 60.0
+    ) -> DvbTSuperFrameMod:
+        """Return a modulator that applies a TX baseband mask to the super-frame
+        (see ``DvbTFrameMod.with_tx_lowpass`` for sizing). Note the scope: the mask
+        runs **once over the four concatenated frames**, not per frame — the three
+        interior seams are continuous on air, and per-frame filtering would leave
+        the filter's edge transient at every one of them."""
+        ...
     def modulate(self, payload: NDArray[np.uint8]) -> DvbTSuperFrame:
         """Modulate *payload* into one conformant DVB-T super-frame."""
         ...
@@ -1198,6 +1309,12 @@ class DvbTSuperFrameDemod:
         ...
     @property
     def integer_cfo_correction(self) -> bool: ...
+    def with_rx_window_backoff(self, backoff: int) -> DvbTSuperFrameDemod:
+        """Return a super-frame demod with the FFT-window back-off applied to every
+        constituent frame (see ``DvbTFrameDemod.with_rx_window_backoff``)."""
+        ...
+    @property
+    def rx_window_backoff(self) -> int: ...
     def decode(
         self,
         iq: NDArray[np.complex64],
@@ -1216,7 +1333,8 @@ class DvbTFrameStreamDemod:
     acquires and decodes each fixed-size frame as its samples arrive, returning
     the completed ones. ``flush()`` runs a final pass over the residual buffer.
     Pass ``integer_cfo_correction=True`` to remove each frame's whole-subcarrier
-    CFO internally (a link-constant knob, set once here).
+    CFO internally, and ``rx_window_backoff=b`` to receive a spectrally-shaped
+    stream (both link-constant knobs, set once here).
     """
 
     def __init__(
@@ -1225,9 +1343,12 @@ class DvbTFrameStreamDemod:
         n_symbols: int,
         payload_len: int,
         integer_cfo_correction: bool = False,
+        rx_window_backoff: int = 0,
     ) -> None: ...
     @property
     def integer_cfo_correction(self) -> bool: ...
+    @property
+    def rx_window_backoff(self) -> int: ...
     def feed(self, iq: NDArray[np.complex64]) -> list[DvbTRxFrame]:
         """Feed IQ; return the frames that completed. Failed decodes are omitted
         (see ``feed_with_errors``)."""

@@ -64,6 +64,11 @@ from orion_sdr.orion_sdr import (
     DvbTFrameStreamDemod,
     nb_bandwidth_fs,
     nb_bandwidth_occupied_hz,
+    dvb_t_cp_len,
+    dvb_t_max_rx_window_backoff,
+    dvb_t_tx_lowpass_suggested_taps,
+    dvb_t_tx_lowpass_group_delay,
+    dvb_t_tx_lowpass_fits_guard,
 )
 
 __all__ = [
@@ -132,4 +137,9 @@ __all__ = [
     "DvbTFrameStreamDemod",
     "nb_bandwidth_fs",
     "nb_bandwidth_occupied_hz",
+    "dvb_t_cp_len",
+    "dvb_t_max_rx_window_backoff",
+    "dvb_t_tx_lowpass_suggested_taps",
+    "dvb_t_tx_lowpass_group_delay",
+    "dvb_t_tx_lowpass_fits_guard",
 ]

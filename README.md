@@ -7,7 +7,8 @@
 
 A composable SDR/DSP library in Rust with Python bindings, targeting HF
 through EHF signal processing — analog modes, single-carrier digital modes,
-FT8/FT4, PSK31, OFDM, and a coded, framed COFDM link.
+FT8/FT4, PSK31, OFDM, a coded and framed COFDM link, and a conformant
+DVB-T / NB-DVB-T waveform for amateur DATV.
 
 ## Status
 
@@ -24,11 +25,12 @@ Pre-alpha (v0.0.55). See [CHANGELOG.md](CHANGELOG.md) for release history.
 - [Build and test commands](docs/commands.md) — cargo aliases, maturin
 - [Source layout](docs/source.md) — module tree
 - [Design patterns](docs/design.md) — Block trait, inner-loop style, IIR structure
-- [OFDM / COFDM design](docs/ofdm.md) — OFDM PHY conventions and the coded frame (MAC) layer
+- [OFDM / COFDM design](docs/ofdm.md) — OFDM PHY conventions, the coded frame (MAC) layer, and out-of-band spectral shaping
+- [DVB-T / NB-DVB-T design](docs/dvb.md) — DVB-T 2K structure, pilots, TPS, GI acquisition, TS payload
 - [Coding conventions](docs/conventions.md) — language, safety, feature flags
 - [Performance benchmarks](docs/performance.md) — throughput results, SNR curves, and how to run them
-- [Demodulator usage](docs/demodulate.md) — Rust examples for CW/AM/SSB/FM/PM, BPSK/QPSK/QAM, FT8/FT4, and OFDM demodulators
-- [Modulator usage](docs/modulate.md) — Rust examples for CW/AM/SSB/FM/PM, BPSK/QPSK/QAM, FT8/FT4, and OFDM modulators
+- [Demodulator usage](docs/demodulate.md) — Rust examples for CW/AM/SSB/FM/PM, BPSK/QPSK/QAM, FT8/FT4, OFDM/COFDM, and DVB-T demodulators
+- [Modulator usage](docs/modulate.md) — Rust examples for CW/AM/SSB/FM/PM, BPSK/QPSK/QAM, FT8/FT4, OFDM/COFDM, and DVB-T modulators
 - [Python bindings](docs/python.md) — installation, type stubs, Python examples and round-trip demo
 - [API reference](docs/api.md) — class summary, array types, graph schedulers, DSP primitives
 - [Acronym glossary](docs/acronyms.md) — expansions for acronyms used across the source and docs
