@@ -82,6 +82,23 @@ pub struct OfdmConfig {
     /// symbol underneath. Only valid for a 2K DVB-T plan. Defaults to `false`,
     /// so every non-DVB-T link is unaffected.
     pub dvb_t_scattered: bool,
+    /// Receiver FFT-window back-off in samples: how far the demodulator pulls
+    /// its `n_fft`-sample window *earlier* from the cyclic-prefix boundary into
+    /// the guard interval (clamped to `cp_len` at use). `0` (the default) is the
+    /// standard CP-boundary window. A positive value leaves guard on both sides
+    /// of the useful part — receiver practice for multipath/pre-echo robustness,
+    /// and the enabler for RX-transparent TX symbol windowing. **RX-only:**
+    /// TX paths ignore this, so on-air output is unaffected.
+    ///
+    /// **Requires an equalizer.** Sliding the window by `b` multiplies every
+    /// subcarrier by a linear phase ramp `exp(-j2πkb/n_fft)` (FFT shift
+    /// theorem). This is transparent only on the *equalized* path (the streaming
+    /// demod, or the DVB-T scattered path), where the training/pilot estimate is
+    /// measured at the same back-off and divides the ramp back out. On a bare,
+    /// unequalized demod (`OfdmDemod` / batch `OfdmFrameDemod` with no channel
+    /// estimate) a nonzero back-off leaves the ramp uncorrected and corrupts the
+    /// decode — leave it `0` there.
+    pub rx_window_backoff: usize,
 }
 
 /// Rejects an [`OfdmConfig`] whose frame-layer settings are mutually
@@ -128,6 +145,7 @@ impl OfdmConfig {
             scrambler_pos: ScramblerPos::BeforeOuterFec,
             ldpc_decode_rule: DecodeRule::SumProduct,
             dvb_t_scattered: false,
+            rx_window_backoff: 0,
         }
     }
 
@@ -197,6 +215,14 @@ impl OfdmConfig {
     /// be a 2K DVB-T phase-0 plan (1512 data carriers).
     pub fn with_dvb_t_scattered(mut self, scattered: bool) -> Self {
         self.dvb_t_scattered = scattered;
+        self
+    }
+
+    /// Sets the receiver FFT-window back-off in samples (see
+    /// [`rx_window_backoff`](Self::rx_window_backoff)). RX-only; TX output is
+    /// unaffected. Clamped to `cp_len` where the window is selected.
+    pub fn with_rx_window_backoff(mut self, backoff: usize) -> Self {
+        self.rx_window_backoff = backoff;
         self
     }
 

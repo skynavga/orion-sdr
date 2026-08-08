@@ -308,6 +308,9 @@ fn estimate_integer_cfo_bins(
     rot.rotate_block(raw, &mut corrected);
 
     let n_fft = training.n_fft;
+    // Integer-CFO estimation uses the standard CP-boundary window (no back-off):
+    // it correlates the training symbol against a known frequency-domain pattern
+    // to detect a whole-subcarrier shift, independent of the data window.
     let mut symbol_fft = SymbolFft::new(n_fft, training.cp_len);
     let freq = match symbol_fft.demod_symbol(&corrected) {
         Some(f) => f,

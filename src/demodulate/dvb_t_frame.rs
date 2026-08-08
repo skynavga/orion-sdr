@@ -140,6 +140,10 @@ impl DvbTFrameDemod {
         }
         let sps = n_fft + cp_len;
         let acq = dvb_t_gi_sync(iq, n_fft, cp_len, fs, sps)?;
+        // Integer-CFO estimation uses the standard CP-boundary window (no
+        // back-off): it detects a whole-subcarrier *frequency* shift from
+        // continual-pilot energy and does not equalize a channel, so the data
+        // window back-off is deliberately not applied here.
         let mut symbol_fft = SymbolFft::new(n_fft, cp_len);
         let mut accum = vec![C32::default(); n_fft];
         for s in 0..INTEGER_CFO_ACCUM_SYMBOLS {
@@ -213,7 +217,8 @@ impl DvbTFrameDemod {
         //    data LLRs + TPS cells.
         let mut extractor = ScatteredPilotExtractor::new(params.guard());
         let mut eq = OfdmEqualizer::new(&base, EqualizerMethod::PerSymbolPilotInterp);
-        let mut symbol_fft = SymbolFft::new(n_fft, cp_len);
+        let mut symbol_fft =
+            SymbolFft::new(n_fft, cp_len).with_window_backoff(base.rx_window_backoff);
         let mut tps_dec = TpsDecoder::new();
         let tps_bins = tps_carrier_bins();
 

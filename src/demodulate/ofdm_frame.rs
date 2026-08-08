@@ -86,7 +86,8 @@ fn soft_demap(
             let n_fft = cfg.carrier_plan.n_fft();
             let cp_len = cfg.carrier_plan.cp_len();
             let grid = CarrierGrid::from_plan(&cfg.carrier_plan);
-            let mut symbol_fft = SymbolFft::new(n_fft, cp_len);
+            let mut symbol_fft =
+                SymbolFft::new(n_fft, cp_len).with_window_backoff(base.rx_window_backoff);
             let mut grid_extract = GridExtract::new(grid);
             let mut equalized = vec![C32::default(); n_fft];
             let mut in_off = 0;
@@ -149,7 +150,7 @@ fn soft_demap_scattered(
     // A per-symbol-interpolating equalizer; its pilot set is re-installed for
     // each symbol's phase before `process`.
     let mut eq = OfdmEqualizer::new(&cfg, EqualizerMethod::PerSymbolPilotInterp);
-    let mut symbol_fft = SymbolFft::new(n_fft, cp_len);
+    let mut symbol_fft = SymbolFft::new(n_fft, cp_len).with_window_backoff(cfg.rx_window_backoff);
     let mut equalized = vec![C32::default(); n_fft];
     let mut symbols = vec![C32::default(); n_data];
     let mut llrs = vec![0.0f32; n_symbols * bps];
@@ -872,7 +873,11 @@ impl OfdmFrameStreamDemod {
         if corrected.len() < end {
             return None;
         }
-        let mut symbol_fft = SymbolFft::new(n_fft, cp_len);
+        // Estimate the channel at the same window position the data symbols use
+        // (see `soft_demap`), or the held estimate would be applied at a
+        // different window than it was measured at.
+        let mut symbol_fft =
+            SymbolFft::new(n_fft, cp_len).with_window_backoff(self.cfg.rx_window_backoff);
         let freq = symbol_fft.demod_symbol(&corrected[training_start..end])?;
         Some(freq.to_vec())
     }

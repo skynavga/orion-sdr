@@ -716,6 +716,10 @@ fn map_bits_to_iq_scattered(
 /// constellation, sharing the base plan/fs/rf/gain. Used to drive `OfdmMod`
 /// for the header (BPSK) and payload (MCS) symbol streams.
 pub fn symbol_config(base: &OfdmConfig, constellation: ConstellationOrder) -> OfdmConfig {
+    // The bare symbol config drops the frame-layer FEC/interleaver settings (a
+    // single symbol carries no coded block), but must carry the RX window
+    // back-off: it is per-symbol demod geometry, and a reconstructed config that
+    // reset it to 0 would silently demodulate at the wrong window position.
     OfdmConfig::new(
         base.carrier_plan.clone(),
         base.fs,
@@ -723,6 +727,7 @@ pub fn symbol_config(base: &OfdmConfig, constellation: ConstellationOrder) -> Of
         base.gain,
         constellation,
     )
+    .with_rx_window_backoff(base.rx_window_backoff)
 }
 
 /// The OFDM frame modulator.

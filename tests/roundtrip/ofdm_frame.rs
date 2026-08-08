@@ -62,6 +62,35 @@ fn roundtrip_frame_noiseless_ldpc_bch() {
 }
 
 #[test]
+fn stream_frame_with_rx_window_backoff() {
+    // A nonzero RX FFT-window back-off slides the window earlier into the guard.
+    // This introduces a per-bin linear phase ramp (FFT shift theorem), so it is
+    // only transparent on the *equalized* path, where the training-symbol
+    // estimate is measured at the SAME back-off and divides the ramp back out.
+    // The streaming demod is that path; prove a clean frame still round-trips
+    // with the back-off set on the shared config.
+    let cfg = plan_config().with_rx_window_backoff(3); // cp_len is 8
+    let pre = preamble(&cfg);
+    let table = McsTable::default_ladder();
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+
+    let payload = sample_payload(30);
+    let frame = FramePacket::new(FrameMetadata::new(0xABCD, 1), payload.clone()); // mcs 1 = QPSK
+    let mut buf = vec![C32::default(); 24];
+    buf.extend_from_slice(&modu.modulate_frame(&frame, 0));
+    buf.extend(vec![C32::default(); 64]);
+
+    let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre);
+    let frames: Vec<_> = rx.feed(&buf).into_iter().filter_map(|r| r.ok()).collect();
+    assert_eq!(
+        frames.len(),
+        1,
+        "clean frame decodes with RX window back-off"
+    );
+    assert_eq!(frames[0].packet.payload, payload);
+}
+
+#[test]
 fn roundtrip_frame_awgn() {
     let cfg = plan_config();
     let pre = preamble(&cfg);

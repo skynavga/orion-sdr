@@ -42,7 +42,7 @@ impl OfdmDemod {
             samples_per_symbol: cfg.samples_per_ofdm_symbol(),
             num_data_carriers,
             gain: 1.0,
-            symbol_fft: SymbolFft::new(n_fft, cp_len),
+            symbol_fft: SymbolFft::new(n_fft, cp_len).with_window_backoff(cfg.rx_window_backoff),
             grid_extract: GridExtract::new(grid),
         }
     }

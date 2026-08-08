@@ -177,6 +177,67 @@ fn symbol_fft_partial_input_is_none() {
 }
 
 #[test]
+fn symbol_fft_default_backoff_is_zero() {
+    let n_fft = 16;
+    let cp_len = 4;
+    let sf = SymbolFft::new(n_fft, cp_len);
+    assert_eq!(sf.window_backoff(), 0, "default back-off must be 0");
+}
+
+#[test]
+fn symbol_fft_backoff_clamps_to_cp_len() {
+    let n_fft = 16;
+    let cp_len = 4;
+    // A back-off larger than the guard is clamped to cp_len (the window cannot
+    // start before the symbol's first sample).
+    let sf = SymbolFft::new(n_fft, cp_len).with_window_backoff(100);
+    assert_eq!(sf.window_backoff(), cp_len);
+    let sf2 = SymbolFft::new(n_fft, cp_len).with_window_backoff(3);
+    assert_eq!(sf2.window_backoff(), 3);
+}
+
+#[test]
+fn symbol_fft_backoff_applies_expected_phase_ramp() {
+    // For a properly cyclic symbol (CP is a verbatim copy of the tail), backing
+    // the window off by `b` reads a circularly-shifted time window. By the FFT
+    // shift theorem the spectrum gains a per-bin linear phase
+    // exp(-j 2π k b / n_fft) relative to the back-off-0 spectrum, with unchanged
+    // magnitudes. This pins the window-slide direction and amount precisely.
+    let n_fft = 32;
+    let cp_len = 8;
+    let b = 3usize;
+    let core: Vec<C32> = (0..n_fft)
+        .map(|k| C32::new((k as f32 * 0.3).cos(), (k as f32 * 0.17).sin()))
+        .collect();
+    let mut symbol = vec![C32::default(); n_fft + cp_len];
+    CyclicPrefixInsert::new(n_fft, cp_len).process(&core, &mut symbol);
+
+    let mut sf0 = SymbolFft::new(n_fft, cp_len);
+    let f0: Vec<C32> = sf0.demod_symbol(&symbol).unwrap().to_vec();
+
+    let mut sfb = SymbolFft::new(n_fft, cp_len).with_window_backoff(b);
+    let fb: Vec<C32> = sfb.demod_symbol(&symbol).unwrap().to_vec();
+
+    let eps = 1e-3f32;
+    for k in 0..n_fft {
+        // magnitudes preserved
+        assert!(
+            (f0[k].norm() - fb[k].norm()).abs() < eps,
+            "bin {k}: magnitude changed by back-off"
+        );
+        // phase ramp: fb[k] == f0[k] * exp(-j 2π k b / n_fft)
+        let theta = -std::f32::consts::TAU * (k as f32) * (b as f32) / n_fft as f32;
+        let expected = f0[k] * C32::new(theta.cos(), theta.sin());
+        assert!(
+            (fb[k] - expected).norm() < eps,
+            "bin {k}: back-off phase ramp mismatch: {:?} vs {:?}",
+            fb[k],
+            expected
+        );
+    }
+}
+
+#[test]
 fn carrier_plan_validate_rejects_overlap() {
     let plan = CarrierPlan::new(64, 8)
         .with_data_carriers([1, 2, 3])
