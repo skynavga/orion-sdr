@@ -12,7 +12,7 @@ DVB-T / NB-DVB-T waveform for amateur DATV.
 
 ## Status
 
-Pre-alpha (v0.0.55). See [CHANGELOG.md](CHANGELOG.md) for release history.
+Pre-alpha (v0.0.56). See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Next Milestones
 

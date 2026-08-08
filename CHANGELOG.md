@@ -9,6 +9,82 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.56] - 2026-08-08
+
+Corrects the guidance for the DVB-T receive window back-off, fixes a
+guard-interval acquisition failure that shaped transmissions triggered, and binds
+the DVB-T spectral-shaping builders to Python so the levers v0.0.54 and v0.0.55
+added are reachable from both languages.
+
+**The back-off ceiling was being read as a target, and it is not one.**
+`DVB_T_MAX_RX_WINDOW_BACKOFF` (85) is where the scattered-pilot interpolation
+*aliases*. It is far above where the back-off stops being usable, because that
+interpolation is linear between pilots 12 carriers apart while the back-off's
+phase ramp advances `2π·b·12/2048` per gap — a chord approximating an arc, wrong
+by `1 − cos(θ/2)` in between. Measured on a G1/8 QPSK r1/2 frame: `b = 32` is
+free, `b = 42` costs ~1 dB, `b = 64` costs ~6 dB, and at the aliasing cap itself
+the link does not close at any SNR. Usable shaping slack is therefore 32 samples
+free or 42 for about a dB, saturating from **G1/16** onward rather than G1/8, and
+the practical DVB-T mask is ~45 taps rather than 89. Noiseless round trips pass
+well past all of this, which is why it went unnoticed through two releases.
+
+**Shaped frames beginning at sample 0 could not be acquired.** Symbol windowing
+biases the guard-interval ML timing estimate early — the taper attenuates each
+symbol's leading cyclic-prefix samples but not their unwindowed copies in the
+interior — and a long mask smears the correlation similarly. Where the receiver
+has lead-in that is free, but where the frame starts at the buffer origin the
+`[0, period)` search cannot express a negative phase, so the peak surfaced at
+`period − δ`: the right phase, the next symbol, nearly a whole symbol late. Zero
+lead-in is not a corner case — `DvbTSuperFrameDemod` slices every constituent
+frame that way, and `DvbTFrameStreamDemod` re-acquires inside the slice it just
+acquired.
+
+### Added
+
+- `GiSyncConfig::origin_score_ratio` — `dvb_t_gi_sync` now reports the period
+  boundary at or before the peak when the peak sits within `cp_len/2` of it *and*
+  that boundary's own single-symbol correlation reaches half the peak's. Both
+  conditions are required: comparing the ML metric instead of the score would
+  accept a buffer beginning with silence (low energy drives Λ toward zero, near
+  the peak), and scoring over the accumulated symbols would hide a first symbol
+  of silence behind the aligned ones after it. Set it to `0.0` for a plain
+  argmax; `dvb_t_gi_refine` opts out, having nothing to unwrap.
+- `DvbTFrameStreamDemod::with_rx_window_backoff`, and `rx_window_backoff()`
+  accessors on `DvbTFrameDemod` / `DvbTSuperFrameDemod`.
+- Python: `with_symbol_window` and `with_tx_lowpass` on `DvbTFrameMod` and
+  `DvbTSuperFrameMod`; `with_rx_window_backoff` on both demodulators and as a
+  `DvbTFrameStreamDemod` constructor keyword; the sizing helpers `dvb_t_cp_len`,
+  `dvb_t_max_rx_window_backoff`, `dvb_t_tx_lowpass_suggested_taps`,
+  `dvb_t_tx_lowpass_group_delay`, and `dvb_t_tx_lowpass_fits_guard`.
+- Python: `OfdmConfig.tx_lowpass_group_delay`, `tx_lowpass_fits_guard`, and
+  `occupied_half_carriers` — `tx_lowpass_suggested_taps` previously told callers
+  to check a guard budget they had no way to evaluate.
+- `throughput::dvbt::throughput_dvb_t_spectral_shaping_cost`, measuring what each
+  lever costs the modulator.
+
+### Changed
+
+- Sizing guidance across `modulate.md`, `demodulate.md`, `dvb.md`, and `ofdm.md`
+  now budgets against `b ≤ n_fft/(4·pilot_spacing)`, not the aliasing cap. The
+  worked DVB-T configuration uses `backoff = 32` with a 45-tap mask.
+- `performance.md` gains measured out-of-band attenuation per lever for both
+  chains, the back-off sensitivity table, and the modulator cost: the taper is
+  free, a 45-tap mask roughly halves modulate throughput, 89 taps thirds it.
+- `api.md` documents the DVB-T and COFDM frame-layer surfaces (Python and Rust)
+  and the channel-coding primitives, none of which it previously covered;
+  `features.md` gains the DVB-T and spectral-shaping feature blocks.
+- `roundtrip_dvb_t_super_frame_with_tx_lowpass` now sweeps tap count against
+  stop-band depth. It previously ran only at 89 taps and 80 dB — the one depth
+  whose acquisition peak happened to land on zero — so it passed by luck rather
+  than by working.
+- README, `Cargo.toml`, and `pyproject.toml` descriptions mention DVB-T.
+
+### Fixed
+
+- Two latent errors in `python.md`'s DVB-T `OfdmConfig` example: four omitted
+  required positional arguments, and an inner FEC kind given without its
+  puncture rate. Both would raise on execution.
+
 ## [0.0.55] - 2026-08-08
 
 A third, deeper out-of-band lever for the OFDM/COFDM and DVB-T transmitters: an
