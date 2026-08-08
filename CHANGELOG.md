@@ -9,6 +9,56 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.54] - 2026-08-07
+
+Out-of-band spectral shaping for the OFDM/COFDM and DVB-T paths: two opt-in,
+default-off levers that reduce the transmitted signal's out-of-band skirt. An
+**edge-carrier guard band** nulls a configurable number of outer subcarriers on
+the caller-owned COFDM layout (moving the loudest `sinc` generators inward), and
+a **raised-cosine symbol-window taper** softens the symbol-boundary discontinuity
+on both chains. The taper is RX-transparent when paired with a matching **RX
+FFT-window back-off** — a new receiver knob (independently useful for
+multipath/pre-echo robustness) that slides the FFT window into the guard so the
+taper falls on samples the receiver discards; transparency holds on the equalized
+paths (streaming COFDM, DVB-T scattered), where the pilot/training channel
+estimate divides out the induced phase ramp. All new knobs default off, so the
+on-air waveform and every existing decode are byte-identical unless a caller
+opts in.
+
+### Added
+
+- `CarrierPlan::with_contiguous_data(edge_guard, include_dc)` and
+  `validate_edge_guard(g)` — build a contiguous data-carrier span leaving an
+  edge-guard null band (pilot-aware; skips pilot indices). Exposed on the Python
+  `OfdmConfig(edge_guard=...)`.
+- `SymbolFft` (shared CP-remove + FFT RX kernel) with
+  `with_window_backoff(b)`, and `OfdmConfig::rx_window_backoff` /
+  `with_rx_window_backoff`. Inherited by the DVB-T demod via
+  `DvbTFrameDemod::with_rx_window_backoff` (and the super-frame equivalent).
+- `SymbolWindow` (stateless raised-cosine edge taper) and
+  `CarrierPlan::with_window_roll_off`; `OfdmConfig::with_symbol_window(roll_off)`
+  plus fraction forms `with_symbol_window_beta_guard(β)` (`round(β·cp_len)`) and
+  `with_symbol_window_beta_tu(β)` (`round(β·n_fft)`). Wired into the COFDM frame
+  modulator (boundary-aware: skips the raw S&C preamble) and the DVB-T frame /
+  super-frame modulators. Exposed on the Python `OfdmConfig` (`with_symbol_window`,
+  `with_rx_window_backoff`).
+
+### Changed
+
+- The ~9 inline `CyclicPrefixRemove → FftBlock` receive paths (batch/streaming
+  COFDM, DVB-T frame/super-frame, integer-CFO, channel estimation) now route
+  through the single shared `SymbolFft` kernel — behavior-preserving, byte-for-byte
+  identical output.
+- `CarrierPlan::index_bounds` is now `pub`.
+
+### Fixed
+
+- DVB-T integer-CFO accumulation guarded on `off + n_fft` instead of the full
+  symbol `off + n_fft + cp_len`; a trailing partial symbol could double-count the
+  previous symbol's spectrum. Tightened to require the whole symbol (latent — the
+  frame body always supplies more symbols than the estimator accumulates — so no
+  observable change).
+
 ## [0.0.53] - 2026-08-03
 
 COFDM Phase 6: replaces the batch COFDM frame demodulator free function with a
