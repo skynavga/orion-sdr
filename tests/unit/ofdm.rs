@@ -7,6 +7,7 @@ use orion_sdr::demodulate::{
     EqualizerMethod, OfdmDecider, OfdmDemod, OfdmEqualizer, OfdmSoftDemod, build_ofdm_rx_frame,
 };
 use orion_sdr::modulate::{ConstellationOrder, OfdmConfig, OfdmMod};
+use orion_sdr::multicarrier::SymbolWindow;
 use orion_sdr::multicarrier::{CarrierPlan, FftBlock};
 use orion_sdr::sync::{OfdmPreamble, generate_ofdm_preamble};
 use orion_sdr::util::wb_spectrum_snr_db;
@@ -844,5 +845,131 @@ fn edge_guard_reduces_out_of_band_power() {
         drop_db > 10.0,
         "edge guard should cut mean OOB power by >10 dB \
          (full={oob_full:.1} dB, guarded={oob_guarded:.1} dB, drop={drop_db:.1} dB)"
+    );
+}
+
+// ── Symbol-window roll-off: samples and the two beta conventions (R10) ──────
+
+fn window_cfg(n_fft: usize, cp_len: usize) -> OfdmConfig {
+    let plan = qpsk_plan(n_fft, cp_len);
+    OfdmConfig::new(plan, 48_000.0, 0.0, 1.0, ConstellationOrder::Qpsk)
+}
+
+#[test]
+fn symbol_window_roll_off_samples_and_default() {
+    let cfg = window_cfg(64, 16);
+    assert_eq!(cfg.carrier_plan.window_roll_off(), 0, "default is off");
+    let cfg = cfg.with_symbol_window(5);
+    assert_eq!(cfg.carrier_plan.window_roll_off(), 5);
+}
+
+#[test]
+fn symbol_window_beta_guard_is_fraction_of_cp() {
+    // beta * cp_len, rounded; beta=0.5 is the max-transparent cp_len/2.
+    let n_fft = 64;
+    let cp_len = 16;
+    let cases = [(0.0f32, 0), (0.25, 4), (0.5, 8), (0.375, 6)];
+    for (beta, expect) in cases {
+        let cfg = window_cfg(n_fft, cp_len).with_symbol_window_beta_guard(beta);
+        assert_eq!(
+            cfg.carrier_plan.window_roll_off(),
+            expect,
+            "beta_guard={beta} -> roll_off"
+        );
+    }
+    // Clamped to 0.5 (never exceeds cp_len/2).
+    let cfg = window_cfg(n_fft, cp_len).with_symbol_window_beta_guard(0.9);
+    assert_eq!(cfg.carrier_plan.window_roll_off(), cp_len / 2);
+}
+
+#[test]
+fn symbol_window_beta_tu_is_fraction_of_n_fft() {
+    // beta * n_fft, rounded (the DVB-family Tu-relative convention).
+    let n_fft = 64;
+    let cp_len = 16;
+    let cases = [(0.0f32, 0), (1.0 / 32.0, 2), (1.0 / 16.0, 4), (0.125, 8)];
+    for (beta, expect) in cases {
+        let cfg = window_cfg(n_fft, cp_len).with_symbol_window_beta_tu(beta);
+        assert_eq!(
+            cfg.carrier_plan.window_roll_off(),
+            expect,
+            "beta_tu={beta} -> roll_off"
+        );
+    }
+}
+
+/// Mean power (dB, linear-averaged) over the `take`-point FFT bins whose
+/// carrier-equivalent index (`bin * n_fft / take`, signed) lands in the
+/// skirt band `[lo_k, hi_k]` outside the occupied cluster.
+fn mean_skirt_power_db(pdb: &[f32], take: usize, n_fft: usize, lo_k: i32, hi_k: i32) -> f32 {
+    let t = take as i32;
+    let mut acc = 0.0f64;
+    let mut count = 0usize;
+    for (bin, &p) in pdb.iter().enumerate().take(take) {
+        let signed = if (bin as i32) <= t / 2 {
+            bin as i32
+        } else {
+            bin as i32 - t
+        };
+        // take-FFT bin -> carrier-equivalent index (in n_fft units)
+        let k = (signed.abs() * n_fft as i32) / t;
+        if k >= lo_k && k <= hi_k {
+            acc += 10f64.powf(p as f64 / 10.0);
+            count += 1;
+        }
+    }
+    (10.0 * (acc / count.max(1) as f64).log10()) as f32
+}
+
+#[test]
+fn symbol_windowing_reduces_skirt_power() {
+    // Windowing softens the inter-symbol boundary discontinuity, pulling down the
+    // `~1/f` spectral skirt of the concatenated stream. The effect is in the
+    // sidelobe region a little outside the occupied band (not the immediate
+    // main-lobe transition, nor the far noise floor); measure there and require a
+    // clear reduction. Demonstrated, not asserted (mirrors R4). ~11 dB observed.
+    let n_fft = 128usize;
+    let cp_len = 32usize; // guard 1/4
+    let fs = 240_000.0f32;
+    let roll_off = cp_len / 2; // 16, the max-transparent taper
+
+    let half = (n_fft / 2) as i32;
+    let occupied = half / 2; // carriers -occupied..=occupied
+    let data: Vec<i32> = (1..occupied).chain(-(occupied - 1)..0).collect();
+    let plan = CarrierPlan::new(n_fft, cp_len).with_data_carriers(data);
+    let cfg = OfdmConfig::new(plan, fs, 0.0, 1.0, ConstellationOrder::Qpsk);
+
+    let bits: Vec<u8> = (0..8192u32)
+        .map(|i| ((i.wrapping_mul(2654435761)) >> 24) as u8)
+        .collect();
+    let plain = OfdmMod::new(&cfg).modulate(&bits);
+
+    // Window a copy in place, per symbol.
+    let sps = cfg.samples_per_ofdm_symbol();
+    let mut windowed = plain.clone();
+    let mut win = SymbolWindow::new(sps, roll_off);
+    let mut off = 0;
+    while off + sps <= windowed.len() {
+        let sym: Vec<C32> = windowed[off..off + sps].to_vec();
+        win.process(&sym, &mut windowed[off..off + sps]);
+        off += sps;
+    }
+
+    let take = 4096.min(plain.len() - sps);
+    let pdb_plain = complex_power_db(&plain[sps..sps + take], take);
+    let pdb_win = complex_power_db(&windowed[sps..sps + take], take);
+
+    // Skirt band: a few carriers beyond the occupied edge, out to a modest
+    // distance — where the sidelobe rolloff (not the main-lobe transition) lives.
+    let lo_k = occupied + 4;
+    let hi_k = occupied + 24;
+    let skirt_plain = mean_skirt_power_db(&pdb_plain, take, n_fft, lo_k, hi_k);
+    let skirt_win = mean_skirt_power_db(&pdb_win, take, n_fft, lo_k, hi_k);
+
+    let drop_db = skirt_plain - skirt_win;
+    assert!(
+        drop_db > 5.0,
+        "windowing should cut skirt power by >5 dB \
+         (plain={skirt_plain:.1} dB, windowed={skirt_win:.1} dB, drop={drop_db:.1} dB)"
     );
 }

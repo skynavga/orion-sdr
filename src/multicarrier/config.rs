@@ -40,6 +40,11 @@ pub struct CarrierPlan {
     cp_len: usize,
     data_carriers: Vec<i32>,
     pilot_carriers: Vec<(i32, C32)>,
+    /// TX symbol-window roll-off in samples (raised-cosine taper per symbol
+    /// edge). `0` (the default) means no windowing. Symbol geometry, like
+    /// `cp_len`, so every waveform/profile that funnels through `CarrierPlan`
+    /// inherits it. See [`with_window_roll_off`](Self::with_window_roll_off).
+    window_roll_off: usize,
 }
 
 impl CarrierPlan {
@@ -49,6 +54,7 @@ impl CarrierPlan {
             cp_len,
             data_carriers: Vec::new(),
             pilot_carriers: Vec::new(),
+            window_roll_off: 0,
         }
     }
 
@@ -60,6 +66,23 @@ impl CarrierPlan {
     pub fn with_pilot_carriers(mut self, carriers: impl IntoIterator<Item = (i32, C32)>) -> Self {
         self.pilot_carriers.extend(carriers);
         self
+    }
+
+    /// Sets the TX symbol-window roll-off in samples: a raised-cosine taper of
+    /// `roll_off` samples at each symbol edge, applied by the modulator to soften
+    /// the boundary discontinuity and reduce out-of-band emission. `0` (the
+    /// default) disables windowing. The taper is only RX-transparent when the
+    /// receiver's window back-off is set so the ramp falls outside the FFT
+    /// window (`roll_off ≤ min(cp_len - b, b)`, maximized at `b = cp_len/2`); the
+    /// caller is responsible for pairing the two (see `rx_window_backoff`).
+    pub fn with_window_roll_off(mut self, roll_off: usize) -> Self {
+        self.window_roll_off = roll_off;
+        self
+    }
+
+    /// TX symbol-window roll-off in samples (`0` = no windowing).
+    pub fn window_roll_off(&self) -> usize {
+        self.window_roll_off
     }
 
     /// Fill `data_carriers` with a contiguous span that leaves `edge_guard`

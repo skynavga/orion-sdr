@@ -91,6 +91,36 @@ fn stream_frame_with_rx_window_backoff() {
 }
 
 #[test]
+fn stream_frame_with_symbol_windowing() {
+    // End-to-end B2: a TX symbol-window taper of roll_off = cp_len/2, paired with
+    // the matching RX window back-off cp_len/2, must still decode cleanly — the
+    // taper falls entirely in guard samples the backed-off RX window discards, so
+    // it is transparent to the demod while shaping the transmitted spectrum.
+    let cp_len = 8; // from plan_config
+    let cfg = plan_config()
+        .with_symbol_window(cp_len / 2) // 4-sample raised-cosine taper per edge
+        .with_rx_window_backoff(cp_len / 2); // 4-sample back-off pairs with it
+    let pre = preamble(&cfg);
+    let table = McsTable::default_ladder();
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+
+    let payload = sample_payload(30);
+    let frame = FramePacket::new(FrameMetadata::new(0x5A5A, 1), payload.clone()); // mcs 1 = QPSK
+    let mut buf = vec![C32::default(); 24];
+    buf.extend_from_slice(&modu.modulate_frame(&frame, 0));
+    buf.extend(vec![C32::default(); 64]);
+
+    let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre);
+    let frames: Vec<_> = rx.feed(&buf).into_iter().filter_map(|r| r.ok()).collect();
+    assert_eq!(
+        frames.len(),
+        1,
+        "windowed frame decodes with matched back-off"
+    );
+    assert_eq!(frames[0].packet.payload, payload);
+}
+
+#[test]
 fn roundtrip_frame_awgn() {
     let cfg = plan_config();
     let pre = preamble(&cfg);

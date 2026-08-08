@@ -226,6 +226,48 @@ impl OfdmConfig {
         self
     }
 
+    /// Enables TX symbol windowing with a `roll_off`-sample raised-cosine taper
+    /// per symbol edge (see
+    /// [`CarrierPlan::with_window_roll_off`](crate::multicarrier::CarrierPlan::with_window_roll_off)).
+    /// `0` disables it (the default). The taper reduces out-of-band emission but
+    /// is only RX-transparent when paired with a compatible
+    /// [`rx_window_backoff`](Self::rx_window_backoff) (`roll_off ≤ cp_len/2` with
+    /// back-off `cp_len/2` is the transparent operating point).
+    ///
+    /// See [`with_symbol_window_beta_guard`](Self::with_symbol_window_beta_guard)
+    /// and [`with_symbol_window_beta_tu`](Self::with_symbol_window_beta_tu) to
+    /// specify the roll-off as a fraction instead of raw samples.
+    pub fn with_symbol_window(mut self, roll_off: usize) -> Self {
+        self.carrier_plan = self.carrier_plan.with_window_roll_off(roll_off);
+        self
+    }
+
+    /// Enables TX symbol windowing with a roll-off given as a fraction of the
+    /// **guard** (cyclic prefix): `roll_off = round(beta * cp_len)`. `beta` in
+    /// `0.0..=0.5`; `beta = 0.5` is the maximum RX-transparent taper
+    /// (`roll_off = cp_len/2`, paired with `rx_window_backoff = cp_len/2`). This
+    /// convention makes the transparency budget explicit, since the taper is
+    /// bounded by half the guard. Clamped to `[0, 0.5]`.
+    pub fn with_symbol_window_beta_guard(self, beta: f32) -> Self {
+        let cp_len = self.carrier_plan.cp_len();
+        let roll_off = (beta.clamp(0.0, 0.5) * cp_len as f32).round() as usize;
+        self.with_symbol_window(roll_off)
+    }
+
+    /// Enables TX symbol windowing with a roll-off given as a fraction of the
+    /// **useful symbol** `Tu` (`n_fft`): `roll_off = round(beta * n_fft)` — the
+    /// convention used by DVB-family windowing tables (which express roll-offs
+    /// relative to `Tu`). Note the resulting `roll_off` must still satisfy the
+    /// transparency bound `roll_off ≤ cp_len/2` for a matched back-off to keep
+    /// the decode transparent; a larger `beta` shapes the spectrum more but is
+    /// only transparent if the guard is long enough. Clamped so `2*roll_off` does
+    /// not exceed the symbol length.
+    pub fn with_symbol_window_beta_tu(self, beta: f32) -> Self {
+        let n_fft = self.carrier_plan.n_fft();
+        let roll_off = (beta.max(0.0) * n_fft as f32).round() as usize;
+        self.with_symbol_window(roll_off)
+    }
+
     /// Validates the frame-layer configuration. Returns `Ok(())` for the bare
     /// (no-FEC, no-frame) defaults.
     pub fn validate(&self) -> Result<(), FrameConfigError> {
