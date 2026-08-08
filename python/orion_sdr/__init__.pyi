@@ -637,9 +637,16 @@ class OfdmConfig:
     empty arrays for no pilots. *constellation* is one of ``"bpsk"``,
     ``"qpsk"``, ``"qam16"``, ``"qam64"``, ``"qam256"``.
 
-    Raises ``ValueError`` for an unknown constellation or an invalid carrier
+    *edge_guard* (optional): when given, the data carriers are generated as a
+    contiguous span leaving *edge_guard* null carriers at each band edge (DC
+    excluded), skipping any pilot index — reducing out-of-band emission. In
+    that mode *data_carriers* must be an empty array (the span is generated
+    automatically). When omitted, *data_carriers* is used verbatim.
+
+    Raises ``ValueError`` for an unknown constellation, an invalid carrier
     plan (overlapping data/pilot carriers, out-of-range indices, or an empty
-    data set).
+    data set), or a non-empty *data_carriers* passed together with
+    *edge_guard*.
     """
 
     def __init__(
@@ -653,6 +660,7 @@ class OfdmConfig:
         rf_hz: float,
         gain: float,
         constellation: str,
+        edge_guard: int | None = None,
     ) -> None: ...
     @property
     def bits_per_ofdm_symbol(self) -> int: ...
@@ -678,6 +686,18 @@ class OfdmConfig:
         (default, exact) | ``"min_sum"`` | ``"scaled_min_sum"``. *scale* applies
         only to ``"scaled_min_sum"`` (≈0.75 recovers most of the coding gain).
         Min-sum trades ≲0.3 dB of coding gain for ~2× decode throughput."""
+        ...
+    def with_rx_window_backoff(self, backoff: int) -> "OfdmConfig":
+        """Set the receiver FFT-window back-off in samples (RX-only, default 0).
+        Pulls the demod window earlier into the guard for multipath robustness
+        and to make a matched TX symbol-window taper transparent. Only
+        RX-transparent on the equalized (streaming/scattered) path."""
+        ...
+    def with_symbol_window(self, roll_off: int) -> "OfdmConfig":
+        """Enable TX symbol windowing: a *roll_off*-sample raised-cosine edge
+        taper per symbol (default 0 = off), reducing out-of-band emission. Only
+        RX-transparent when paired with a matching ``with_rx_window_backoff``
+        (``roll_off = cp_len/2`` with back-off ``cp_len/2``)."""
         ...
     def with_interleaver(self, stage: str, rows: int, cols: int) -> "OfdmConfig":
         """Set a rectangular block interleaver on *stage* (``"inner"`` |

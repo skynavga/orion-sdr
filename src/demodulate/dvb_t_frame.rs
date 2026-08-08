@@ -25,7 +25,7 @@ use crate::core::Block;
 use crate::dsp::Rotator;
 use crate::fec::{CrcKind, DecodeRule, InterleaverKind, ScramblerKind, ScramblerPos};
 use crate::modulate::ofdm_frame::{CodecCache, block_plan};
-use crate::multicarrier::{CyclicPrefixRemove, FftBlock};
+use crate::multicarrier::SymbolFft;
 use crate::sync::{dvb_t_gi_sync, dvb_t_integer_cfo};
 use crate::waveform::dvb_t::{
     DVB_T_DATA_CARRIERS, DVB_T_FRAME_OUTER, DVB_T_FRAME_OUTER_IL, DVB_T_N_FFT, DvbTFrameParams,
@@ -88,6 +88,7 @@ pub enum DvbTRxError {
 pub struct DvbTFrameDemod {
     params: DvbTFrameParams,
     integer_cfo: bool,
+    rx_window_backoff: usize,
 }
 
 impl DvbTFrameDemod {
@@ -98,6 +99,7 @@ impl DvbTFrameDemod {
         Self {
             params,
             integer_cfo: false,
+            rx_window_backoff: 0,
         }
     }
 
@@ -108,6 +110,18 @@ impl DvbTFrameDemod {
     /// buffer is decoded unchanged.
     pub fn with_integer_cfo_correction(mut self, on: bool) -> Self {
         self.integer_cfo = on;
+        self
+    }
+
+    /// Sets the receiver FFT-window back-off in samples (default 0). Pull the
+    /// per-symbol FFT window earlier into the guard for multipath/pre-echo
+    /// robustness, and to make a matching TX symbol-window taper transparent
+    /// (`roll_off = back_off = cp_len/2` is the transparent operating point; see
+    /// [`DvbTFrameMod::with_symbol_window`](crate::modulate::DvbTFrameMod::with_symbol_window)).
+    /// The scattered-pilot channel estimate is measured at the same back-off, so
+    /// the induced phase ramp is corrected — required for a clean decode.
+    pub fn with_rx_window_backoff(mut self, backoff: usize) -> Self {
+        self.rx_window_backoff = backoff;
         self
     }
 
@@ -140,18 +154,29 @@ impl DvbTFrameDemod {
         }
         let sps = n_fft + cp_len;
         let acq = dvb_t_gi_sync(iq, n_fft, cp_len, fs, sps)?;
-        let mut cpr = CyclicPrefixRemove::new(n_fft, cp_len);
-        let mut fft = FftBlock::new(n_fft);
-        let mut time = vec![C32::default(); n_fft];
-        let mut freq = vec![C32::default(); n_fft];
+        // Integer-CFO estimation uses the standard CP-boundary window (no
+        // back-off): it detects a whole-subcarrier *frequency* shift from
+        // continual-pilot energy and does not equalize a channel, so the data
+        // window back-off is deliberately not applied here.
+        let mut symbol_fft = SymbolFft::new(n_fft, cp_len);
         let mut accum = vec![C32::default(); n_fft];
         for s in 0..INTEGER_CFO_ACCUM_SYMBOLS {
             let off = acq.start_sample + s * sps;
-            if off + n_fft > iq.len() {
+            // Accumulate only fully-present symbols. CP-remove reads
+            // `iq[off+cp_len .. off+cp_len+n_fft]`, so a full symbol needs
+            // `off + sps` samples; guarding on that, `demod_symbol` always
+            // succeeds. (The earlier `off + n_fft` guard was too loose — a
+            // symbol whose core fit but whose CP did not made CP-remove a
+            // no-op, and the loop then double-counted the previous symbol's
+            // spectrum into `accum`. Unreachable for a real frame, which always
+            // carries far more than the few accumulated symbols, but a latent
+            // correctness bug regardless.)
+            if off + sps > iq.len() {
                 break;
             }
-            cpr.process(&iq[off..], &mut time);
-            fft.process(&time, &mut freq);
+            let Some(freq) = symbol_fft.demod_symbol(&iq[off..]) else {
+                break;
+            };
             for (a, &x) in accum.iter_mut().zip(freq.iter()) {
                 *a += C32::new(x.norm_sqr(), 0.0);
             }
@@ -183,7 +208,12 @@ impl DvbTFrameDemod {
     ) -> Result<DvbTRxFrame, DvbTRxError> {
         let params = self.params;
         let cache = CodecCache::new();
-        let base = params.config();
+        // Carry the RX window back-off into the derived config so every
+        // `SymbolFft` in the per-symbol loop reads at the configured window
+        // position (the scattered-pilot estimate then corrects the phase ramp).
+        let base = params
+            .config()
+            .with_rx_window_backoff(self.rx_window_backoff);
         let n_fft = DVB_T_N_FFT;
         let cp_len = base.carrier_plan.cp_len();
         let sps = n_fft + cp_len;
@@ -206,13 +236,11 @@ impl DvbTFrameDemod {
         //    data LLRs + TPS cells.
         let mut extractor = ScatteredPilotExtractor::new(params.guard());
         let mut eq = OfdmEqualizer::new(&base, EqualizerMethod::PerSymbolPilotInterp);
-        let mut cp_remove = CyclicPrefixRemove::new(n_fft, cp_len);
-        let mut fft = FftBlock::new(n_fft);
+        let mut symbol_fft =
+            SymbolFft::new(n_fft, cp_len).with_window_backoff(base.rx_window_backoff);
         let mut tps_dec = TpsDecoder::new();
         let tps_bins = tps_carrier_bins();
 
-        let mut time = vec![C32::default(); n_fft];
-        let mut freq = vec![C32::default(); n_fft];
         let mut equalized = vec![C32::default(); n_fft];
         let mut data_syms = vec![C32::default(); DVB_T_DATA_CARRIERS];
         let bits_per_sym = DVB_T_DATA_CARRIERS * vbits;
@@ -221,10 +249,10 @@ impl DvbTFrameDemod {
         let mut tps_word: Option<TpsWord> = None;
         for s in 0..n_symbols {
             let off = start + s * sps;
-            if cp_remove.process(&iq[off..], &mut time).out_written != n_fft {
-                return Err(DvbTRxError::Incomplete);
-            }
-            fft.process(&time, &mut freq);
+            let freq = match symbol_fft.demod_symbol(&iq[off..]) {
+                Some(f) => f,
+                None => return Err(DvbTRxError::Incomplete),
+            };
             // TPS cells from the raw (pre-equalization) bins — DBPSK is differential
             // and needs no channel estimate.
             let cells: Vec<C32> = tps_bins.iter().map(|&b| freq[b]).collect();
@@ -237,7 +265,7 @@ impl DvbTFrameDemod {
             let pilots = extractor.current_pilot_bins().to_vec();
             let data_bins = extractor.data_bins().to_vec();
             eq.set_pilot_bins(&pilots, &data_bins);
-            eq.process(&freq, &mut equalized);
+            eq.process(freq, &mut equalized);
             extractor.extract_symbol(&equalized, &mut data_syms);
             let sym_llrs = &mut llrs[s * bits_per_sym..(s + 1) * bits_per_sym];
             for (c, &sym) in data_syms.iter().enumerate() {

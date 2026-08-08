@@ -59,6 +59,84 @@ Once `n_fft`/`cp_len`/carrier layout are chosen, they flow straight into
 (`multicarrier/config.rs`) and `OfdmConfig` (`modulate/ofdm.rs`); nothing
 downstream re-derives or second-guesses them.
 
+**Edge-carrier guard band (out-of-band emission).** Plain OFDM's out-of-band
+spectrum decays only as `~1/f` (each subcarrier is a rectangular-windowed
+sinusoid, so a `sinc`), and the loudest skirt generators are the carriers at the
+band edges. Because the COFDM carrier layout is caller-owned (no standard
+mandates edge pilots), the cheapest way to clean up the emission is to leave a
+guard band of null carriers at each edge, pulling those generators inward.
+`CarrierPlan::with_contiguous_data(edge_guard, include_dc)` builds the
+data-carrier span for exactly this: it fills a contiguous span leaving
+`edge_guard` null carriers at each edge (beyond the always-null Nyquist bin),
+skips DC unless `include_dc`, and skips any index already in `pilot_carriers` so
+data and pilots never overlap. Use it *instead of* `with_data_carriers` but
+*alongside* `with_pilot_carriers` (call `with_pilot_carriers` first so the fill
+can exclude the pilot indices). `edge_guard == 0` reproduces the full-fill span,
+so it is a regression-safe default. `validate_edge_guard(g)` optionally asserts
+no data/pilot carrier intrudes into the guard.
+
+- **Sizing.** `edge_guard ≈ ceil(0.02 … 0.05 · n_fft)` per edge is the useful
+  range: it trades a few percent of throughput (each nulled carrier removes
+  `bits_per_ofdm_symbol` capacity) for the strongest `sinc` generators moving
+  inward by that many bins, lowering the skirt onset. It narrows the occupied
+  bandwidth below `fs` but leaves `fs`, `n_fft`, and the CP fraction untouched —
+  the CP is a *time-domain* guard, orthogonal to this *frequency-domain* edge
+  guard; do not conflate the two.
+- **Limits.** Nulling shifts where the skirt starts; it does **not** change the
+  `~1/f` sidelobe decay. For deep suppression (tens of dB across the decay),
+  combine it with time-domain symbol windowing (raised-cosine / Tukey
+  overlap-add).
+- **DVB-T cannot use this.** DVB-T's extreme carriers (active indices `0` and
+  `1704`) are *mandatory* continual pilots that conformant receivers rely on
+  (`waveform/dvb_t.rs`); they cannot be nulled or moved inward. Symbol
+  windowing is DVB-T's only skirt-suppression lever.
+
+**Symbol windowing (out-of-band emission, both chains).** The deeper
+skirt-suppression lever is a time-domain raised-cosine (Tukey) taper applied to
+each symbol's edges, softening the symbol-boundary discontinuity behind OFDM's
+`~1/f` skirt. It is an **`orion-sdr` original capability, not a standard
+mechanism** — DVB-T and DVB-T2 both specify a rectangular OFDM symbol (EN 302 755
+defines the per-carrier PSD as a plain `sinc²`, with no windowing/roll-off;
+the `1/128 … 19/256` figures often seen are DVB-T2 *guard-interval* fractions,
+not roll-offs). So a standards-conformant receiver expects a rectangular symbol;
+our windowing must therefore stay strictly **RX-transparent** and is off by
+default.
+
+The taper is applied by `SymbolWindow` (`multicarrier/symbol_window.rs`), a
+stateless per-symbol `Block` — same-length (symbols abut, no overlap-add), so it
+needs no cross-call state and respects the block-boundary contract below. The
+modulator windows every CP-bearing symbol; for the COFDM frame it **skips the raw
+Schmidl & Cox preamble repeats** (which the receiver correlates sample-for-sample
+and must not see altered), starting at the training symbol. DVB-T is
+preamble-less, so every symbol is windowed.
+
+RX transparency is achieved by a paired **FFT-window back-off**, not by avoiding
+an RX change. With back-off `b` the receiver reads the window
+`symbol[cp_len - b .. cp_len - b + n_fft]` (`SymbolFft::with_window_backoff`),
+sliding it into the guard; a symmetric taper of `roll_off ≤ min(cp_len - b, b)`
+samples per side then falls entirely on guard samples the FFT never integrates,
+maximized at **`b = cp_len/2 ⇒ roll_off = cp_len/2`**. The back-off imposes a
+per-bin phase ramp `exp(-j2πkb/n_fft)` (FFT shift theorem), so it is transparent
+**only on the equalized path** (streaming demod / DVB-T scattered), where the
+training/pilot channel estimate is measured at the same back-off and divides the
+ramp out. A bare, unequalized demod must keep back-off `0`.
+
+- **Config.** `CarrierPlan::with_window_roll_off` (samples) is the geometry home,
+  inherited by every profile. `OfdmConfig` exposes `with_symbol_window(roll_off)`
+  plus two fraction forms — `with_symbol_window_beta_guard(β)` = `round(β·cp_len)`
+  (β∈[0,0.5], β=0.5 is the max-transparent taper) and
+  `with_symbol_window_beta_tu(β)` = `round(β·n_fft)` (the DVB-family Tu-relative
+  convention) — and `with_rx_window_backoff(b)`. DVB-T uses builders on the
+  frame/super-frame mod/demod objects (`DvbTFrameMod::with_symbol_window`,
+  `DvbTFrameDemod::with_rx_window_backoff`, and the super-frame equivalents).
+- **Sizing and payoff.** The taper is bounded by `cp_len/2` (a fraction of the
+  guard), so suppression is real but **modest** — a measured ~11 dB drop in the
+  sidelobe skirt a few carriers beyond the band edge, *not* the immediate edge
+  nor the far noise floor. It also competes with the equalizer's delay-spread
+  budget (both live in the guard). For COFDM it composes with the edge guard
+  above (nulling moves the skirt inward; windowing lowers its rolloff); combined
+  beats either alone. Default `roll_off = 0` leaves on-air output byte-identical.
+
 **CFO acquisition capture range.** `ofdm_sync`'s Schmidl & Cox fractional
 estimator is unambiguous only within `±fs / (2 · repeat_len)` — note this is
 **not** always `±½` the subcarrier spacing; it equals that only when

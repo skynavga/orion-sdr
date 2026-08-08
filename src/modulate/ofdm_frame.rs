@@ -30,7 +30,7 @@ use crate::fec::{
     ReedSolomon, ScramblerKind, ScramblerPos, SeedMode, conv_encode_punctured_with,
     punctured_coded_len_with,
 };
-use crate::multicarrier::CarrierPlan;
+use crate::multicarrier::{CarrierPlan, SymbolWindow};
 use crate::sync::{OfdmPreamble, generate_ofdm_preamble};
 use num_complex::Complex32 as C32;
 use std::sync::{Arc, Mutex};
@@ -716,6 +716,10 @@ fn map_bits_to_iq_scattered(
 /// constellation, sharing the base plan/fs/rf/gain. Used to drive `OfdmMod`
 /// for the header (BPSK) and payload (MCS) symbol streams.
 pub fn symbol_config(base: &OfdmConfig, constellation: ConstellationOrder) -> OfdmConfig {
+    // The bare symbol config drops the frame-layer FEC/interleaver settings (a
+    // single symbol carries no coded block), but must carry the RX window
+    // back-off: it is per-symbol demod geometry, and a reconstructed config that
+    // reset it to 0 would silently demodulate at the wrong window position.
     OfdmConfig::new(
         base.carrier_plan.clone(),
         base.fs,
@@ -723,6 +727,7 @@ pub fn symbol_config(base: &OfdmConfig, constellation: ConstellationOrder) -> Of
         base.gain,
         constellation,
     )
+    .with_rx_window_backoff(base.rx_window_backoff)
 }
 
 /// The OFDM frame modulator.
@@ -849,7 +854,42 @@ impl OfdmFrameMod {
         );
         out.extend_from_slice(&map(mcs.constellation, &payload_bits));
 
+        // 4. Optional TX symbol windowing (raised-cosine edge taper). Applied as
+        //    a post-pass over the assembled stream: every CP-bearing symbol from
+        //    the training symbol onward is windowed, but the raw S&C preamble
+        //    repeats (no CP, correlated raw by `ofdm_sync`) are skipped — see
+        //    the RX-transparency and preamble constraints in the windowing design.
+        self.apply_symbol_windowing(&mut out);
+
         out
+    }
+
+    /// In-place raised-cosine edge taper over the CP-bearing symbols of an
+    /// assembled frame. No-op when the carrier plan's `window_roll_off` is 0.
+    ///
+    /// The raw S&C preamble repeats (`num_repeats * repeat_len` leading samples)
+    /// carry no cyclic prefix and are correlated sample-for-sample by the
+    /// receiver's timing/CFO stage, so they must not be tapered. Everything from
+    /// the training symbol onward (training, header, payload) is a contiguous run
+    /// of `samples_per_ofdm_symbol()`-sized CP'd symbols and is windowed.
+    fn apply_symbol_windowing(&self, out: &mut [C32]) {
+        let roll_off = self.cfg.carrier_plan.window_roll_off();
+        if roll_off == 0 {
+            return;
+        }
+        let sps = self.cfg.samples_per_ofdm_symbol();
+        // Start of the first windowable (CP-bearing) symbol: past the raw S&C
+        // repeats. The training symbol (if any) is the first such symbol; without
+        // one, the first header/payload symbol sits here instead.
+        let start = self.preamble.num_repeats * self.preamble.repeat_len;
+        let mut win = SymbolWindow::new(sps, roll_off);
+        let mut off = start;
+        while off + sps <= out.len() {
+            // Window in place: read the symbol, write it back tapered.
+            let symbol: Vec<C32> = out[off..off + sps].to_vec();
+            win.process(&symbol, &mut out[off..off + sps]);
+            off += sps;
+        }
     }
 }
 

@@ -7,7 +7,7 @@ use orion_sdr::demodulate::{
     EqualizerMethod, OfdmDecider, OfdmDemod, OfdmEqualizer, OfdmSoftDemod, build_ofdm_rx_frame,
 };
 use orion_sdr::modulate::{ConstellationOrder, OfdmConfig, OfdmMod};
-use orion_sdr::multicarrier::{CarrierPlan, FftBlock};
+use orion_sdr::multicarrier::{CarrierPlan, FftBlock, SymbolWindow};
 use orion_sdr::sync::{OfdmPreamble, generate_ofdm_preamble};
 use orion_sdr::util::wb_spectrum_snr_db;
 use rustfft::FftPlanner;
@@ -755,4 +755,310 @@ fn ofdm_equalizer_pilot_interp_extrapolates_outside_pilot_span() {
             equalized[bin]
         );
     }
+}
+
+// ── Edge-carrier guard band: out-of-band emission (Track A, R4) ─────────────
+
+/// Full complex-baseband power spectrum in natural rustfft bin order (bin 0 =
+/// DC, negative freqs in the upper half). `util::power_spectrum` is real-input
+/// (one-sided) and would fold negative onto positive frequencies — wrong for a
+/// complex OFDM signal — so this test measures the complex spectrum directly.
+fn complex_power_db(samples: &[C32], n_fft: usize) -> Vec<f32> {
+    let mut buf: Vec<rustfft::num_complex::Complex<f32>> = (0..n_fft)
+        .map(|i| {
+            let s = samples.get(i).copied().unwrap_or_default();
+            rustfft::num_complex::Complex::new(s.re, s.im)
+        })
+        .collect();
+    FftPlanner::new().plan_fft_forward(n_fft).process(&mut buf);
+    buf.iter()
+        .map(|c| 10.0 * ((c.re * c.re + c.im * c.im) + 1e-12).log10())
+        .collect()
+}
+
+/// Mean power (dB) over the out-of-band bins: those signed indices with
+/// `|idx| > band_half`, i.e. outside the occupied span. Averaged in the linear
+/// domain to reflect actual leaked energy, then returned in dB.
+fn mean_oob_power_db(power_db: &[f32], n_fft: usize, band_half: i32) -> f32 {
+    let n = n_fft as i32;
+    let mut acc = 0.0f64;
+    let mut count = 0usize;
+    for (bin, &pdb) in power_db.iter().enumerate().take(n_fft) {
+        // rustfft bin -> signed index
+        let signed = if (bin as i32) <= n / 2 {
+            bin as i32
+        } else {
+            bin as i32 - n
+        };
+        if signed.abs() > band_half {
+            acc += 10f64.powf(pdb as f64 / 10.0);
+            count += 1;
+        }
+    }
+    let mean_lin = acc / count.max(1) as f64;
+    (10.0 * mean_lin.log10()) as f32
+}
+
+#[test]
+fn edge_guard_reduces_out_of_band_power() {
+    let n_fft = 256usize;
+    let cp_len = n_fft / 4;
+    let fs = 240_000.0f32;
+    let edge_guard = 12usize; // ~5% of n_fft per edge
+
+    // A deterministic bit pattern that exercises many subcarriers.
+    let bits: Vec<u8> = (0..4096u32)
+        .map(|i| ((i * 2654435761) >> 24) as u8)
+        .collect();
+
+    // Baseline: full-fill span (guard 0). Guarded: same but edge_guard nulls.
+    let full = CarrierPlan::new(n_fft, cp_len).with_contiguous_data(0, false);
+    let guarded = CarrierPlan::new(n_fft, cp_len).with_contiguous_data(edge_guard, false);
+
+    let cfg_full = OfdmConfig::new(full, fs, 0.0, 1.0, ConstellationOrder::Qpsk);
+    let cfg_guarded = OfdmConfig::new(guarded, fs, 0.0, 1.0, ConstellationOrder::Qpsk);
+
+    let out_full = OfdmMod::new(&cfg_full).modulate(&bits);
+    let out_guarded = OfdmMod::new(&cfg_guarded).modulate(&bits);
+
+    // Analyze one interior symbol (skip the first, to avoid transient edges),
+    // dropping its CP so the FFT sees exactly one n_fft-sample OFDM symbol.
+    let sps = cfg_full.samples_per_ofdm_symbol();
+    let sym_full = &out_full[sps + cp_len..sps + cp_len + n_fft];
+    let sym_guarded = &out_guarded[sps + cp_len..sps + cp_len + n_fft];
+
+    let pdb_full = complex_power_db(sym_full, n_fft);
+    let pdb_guarded = complex_power_db(sym_guarded, n_fft);
+
+    // Occupied half-width of the GUARDED signal: its outermost data carrier.
+    let band_half = (n_fft as i32 / 2 - 1) - edge_guard as i32;
+
+    let oob_full = mean_oob_power_db(&pdb_full, n_fft, band_half);
+    let oob_guarded = mean_oob_power_db(&pdb_guarded, n_fft, band_half);
+
+    // The guard should drop mean out-of-band power well below the full-fill
+    // case (the outer carriers that were the loudest sinc generators are now
+    // null). Demonstrated, not merely asserted: require a clear margin.
+    let drop_db = oob_full - oob_guarded;
+    assert!(
+        drop_db > 10.0,
+        "edge guard should cut mean OOB power by >10 dB \
+         (full={oob_full:.1} dB, guarded={oob_guarded:.1} dB, drop={drop_db:.1} dB)"
+    );
+}
+
+// ── Symbol-window roll-off: samples and the two beta conventions (R10) ──────
+
+fn window_cfg(n_fft: usize, cp_len: usize) -> OfdmConfig {
+    let plan = qpsk_plan(n_fft, cp_len);
+    OfdmConfig::new(plan, 48_000.0, 0.0, 1.0, ConstellationOrder::Qpsk)
+}
+
+#[test]
+fn symbol_window_roll_off_samples_and_default() {
+    let cfg = window_cfg(64, 16);
+    assert_eq!(cfg.carrier_plan.window_roll_off(), 0, "default is off");
+    let cfg = cfg.with_symbol_window(5);
+    assert_eq!(cfg.carrier_plan.window_roll_off(), 5);
+}
+
+#[test]
+fn symbol_window_beta_guard_is_fraction_of_cp() {
+    // beta * cp_len, rounded; beta=0.5 is the max-transparent cp_len/2.
+    let n_fft = 64;
+    let cp_len = 16;
+    let cases = [(0.0f32, 0), (0.25, 4), (0.5, 8), (0.375, 6)];
+    for (beta, expect) in cases {
+        let cfg = window_cfg(n_fft, cp_len).with_symbol_window_beta_guard(beta);
+        assert_eq!(
+            cfg.carrier_plan.window_roll_off(),
+            expect,
+            "beta_guard={beta} -> roll_off"
+        );
+    }
+    // Clamped to 0.5 (never exceeds cp_len/2).
+    let cfg = window_cfg(n_fft, cp_len).with_symbol_window_beta_guard(0.9);
+    assert_eq!(cfg.carrier_plan.window_roll_off(), cp_len / 2);
+}
+
+#[test]
+fn symbol_window_beta_tu_is_fraction_of_n_fft() {
+    // beta * n_fft, rounded (the DVB-family Tu-relative convention).
+    let n_fft = 64;
+    let cp_len = 16;
+    let cases = [(0.0f32, 0), (1.0 / 32.0, 2), (1.0 / 16.0, 4), (0.125, 8)];
+    for (beta, expect) in cases {
+        let cfg = window_cfg(n_fft, cp_len).with_symbol_window_beta_tu(beta);
+        assert_eq!(
+            cfg.carrier_plan.window_roll_off(),
+            expect,
+            "beta_tu={beta} -> roll_off"
+        );
+    }
+}
+
+/// Mean power (dB, linear-averaged) over the `take`-point FFT bins whose
+/// carrier-equivalent index (`bin * n_fft / take`, signed) lands in the
+/// skirt band `[lo_k, hi_k]` outside the occupied cluster.
+fn mean_skirt_power_db(pdb: &[f32], take: usize, n_fft: usize, lo_k: i32, hi_k: i32) -> f32 {
+    let t = take as i32;
+    let mut acc = 0.0f64;
+    let mut count = 0usize;
+    for (bin, &p) in pdb.iter().enumerate().take(take) {
+        let signed = if (bin as i32) <= t / 2 {
+            bin as i32
+        } else {
+            bin as i32 - t
+        };
+        // take-FFT bin -> carrier-equivalent index (in n_fft units)
+        let k = (signed.abs() * n_fft as i32) / t;
+        if k >= lo_k && k <= hi_k {
+            acc += 10f64.powf(p as f64 / 10.0);
+            count += 1;
+        }
+    }
+    (10.0 * (acc / count.max(1) as f64).log10()) as f32
+}
+
+#[test]
+fn symbol_windowing_reduces_skirt_power() {
+    // Windowing softens the inter-symbol boundary discontinuity, pulling down the
+    // `~1/f` spectral skirt of the concatenated stream. The effect is in the
+    // sidelobe region a little outside the occupied band (not the immediate
+    // main-lobe transition, nor the far noise floor); measure there and require a
+    // clear reduction. Demonstrated, not asserted (mirrors R4). ~11 dB observed.
+    let n_fft = 128usize;
+    let cp_len = 32usize; // guard 1/4
+    let fs = 240_000.0f32;
+    let roll_off = cp_len / 2; // 16, the max-transparent taper
+
+    let half = (n_fft / 2) as i32;
+    let occupied = half / 2; // carriers -occupied..=occupied
+    let data: Vec<i32> = (1..occupied).chain(-(occupied - 1)..0).collect();
+    let plan = CarrierPlan::new(n_fft, cp_len).with_data_carriers(data);
+    let cfg = OfdmConfig::new(plan, fs, 0.0, 1.0, ConstellationOrder::Qpsk);
+
+    let bits: Vec<u8> = (0..8192u32)
+        .map(|i| ((i.wrapping_mul(2654435761)) >> 24) as u8)
+        .collect();
+    let plain = OfdmMod::new(&cfg).modulate(&bits);
+
+    // Window a copy in place, per symbol.
+    let sps = cfg.samples_per_ofdm_symbol();
+    let mut windowed = plain.clone();
+    let mut win = SymbolWindow::new(sps, roll_off);
+    let mut off = 0;
+    while off + sps <= windowed.len() {
+        let sym: Vec<C32> = windowed[off..off + sps].to_vec();
+        win.process(&sym, &mut windowed[off..off + sps]);
+        off += sps;
+    }
+
+    let take = 4096.min(plain.len() - sps);
+    let pdb_plain = complex_power_db(&plain[sps..sps + take], take);
+    let pdb_win = complex_power_db(&windowed[sps..sps + take], take);
+
+    // Skirt band: a few carriers beyond the occupied edge, out to a modest
+    // distance — where the sidelobe rolloff (not the main-lobe transition) lives.
+    let lo_k = occupied + 4;
+    let hi_k = occupied + 24;
+    let skirt_plain = mean_skirt_power_db(&pdb_plain, take, n_fft, lo_k, hi_k);
+    let skirt_win = mean_skirt_power_db(&pdb_win, take, n_fft, lo_k, hi_k);
+
+    let drop_db = skirt_plain - skirt_win;
+    assert!(
+        drop_db > 5.0,
+        "windowing should cut skirt power by >5 dB \
+         (plain={skirt_plain:.1} dB, windowed={skirt_win:.1} dB, drop={drop_db:.1} dB)"
+    );
+}
+
+/// Windows every `sps`-sample symbol of `stream` in place (used by the combined
+/// Track A + Track B spectral test).
+fn window_stream_in_place(stream: &mut [C32], sps: usize, roll_off: usize) {
+    if roll_off == 0 {
+        return;
+    }
+    let mut win = SymbolWindow::new(sps, roll_off);
+    let mut off = 0;
+    while off + sps <= stream.len() {
+        let sym: Vec<C32> = stream[off..off + sps].to_vec();
+        win.process(&sym, &mut stream[off..off + sps]);
+        off += sps;
+    }
+}
+
+#[test]
+fn edge_guard_and_windowing_combine() {
+    // Track A (edge-carrier nulling) and Track B (symbol windowing) are
+    // independent levers that compose: nulling moves the strongest sinc
+    // generators inward, windowing lowers the boundary-discontinuity skirt. Both
+    // together must beat either alone in the skirt region. Demonstrated (mirrors
+    // R4), COFDM only.
+    let n_fft = 128usize;
+    let cp_len = 32usize; // guard 1/4
+    let fs = 240_000.0f32;
+    let edge_guard = 8usize;
+    let roll_off = cp_len / 2;
+
+    // Same active span with/without the edge guard: the guard nulls the outer
+    // `edge_guard` carriers of a contiguous fill.
+    let cfg_plain = OfdmConfig::new(
+        CarrierPlan::new(n_fft, cp_len).with_contiguous_data(0, false),
+        fs,
+        0.0,
+        1.0,
+        ConstellationOrder::Qpsk,
+    );
+    let cfg_guard = OfdmConfig::new(
+        CarrierPlan::new(n_fft, cp_len).with_contiguous_data(edge_guard, false),
+        fs,
+        0.0,
+        1.0,
+        ConstellationOrder::Qpsk,
+    );
+
+    let bits: Vec<u8> = (0..16384u32)
+        .map(|i| ((i.wrapping_mul(2654435761)) >> 24) as u8)
+        .collect();
+    let sps = cfg_plain.samples_per_ofdm_symbol();
+
+    // Four variants: baseline, guard-only, window-only, both.
+    let baseline = OfdmMod::new(&cfg_plain).modulate(&bits);
+    let guard_only = OfdmMod::new(&cfg_guard).modulate(&bits);
+    let mut window_only = baseline.clone();
+    window_stream_in_place(&mut window_only, sps, roll_off);
+    let mut both = guard_only.clone();
+    window_stream_in_place(&mut both, sps, roll_off);
+
+    // Skirt band beyond the full-fill occupied edge (|k| ~ n_fft/2). Both levers
+    // act just outside the band; measure a window there.
+    let take = 4096.min(baseline.len() - sps);
+    let band = n_fft as i32 / 2; // full-fill occupied half-width
+    let lo_k = band - 20;
+    let hi_k = band - 2;
+    let skirt = |s: &[C32]| {
+        let pdb = complex_power_db(&s[sps..sps + take], take);
+        mean_skirt_power_db(&pdb, take, n_fft, lo_k, hi_k)
+    };
+
+    let s_base = skirt(&baseline);
+    let s_guard = skirt(&guard_only);
+    let s_win = skirt(&window_only);
+    let s_both = skirt(&both);
+
+    // Each lever alone beats the baseline, and both together beat either alone.
+    assert!(
+        s_guard < s_base,
+        "guard should beat baseline ({s_guard} vs {s_base})"
+    );
+    assert!(
+        s_win < s_base,
+        "window should beat baseline ({s_win} vs {s_base})"
+    );
+    assert!(
+        s_both < s_guard && s_both < s_win,
+        "combined should beat either alone (both={s_both:.1}, guard={s_guard:.1}, \
+         win={s_win:.1}, base={s_base:.1})"
+    );
 }

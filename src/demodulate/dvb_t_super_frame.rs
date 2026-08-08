@@ -63,6 +63,7 @@ pub enum DvbTRxSuperFrameError {
 pub struct DvbTSuperFrameDemod {
     params: DvbTSuperFrameParams,
     integer_cfo: bool,
+    rx_window_backoff: usize,
 }
 
 impl DvbTSuperFrameDemod {
@@ -72,6 +73,7 @@ impl DvbTSuperFrameDemod {
         Self {
             params,
             integer_cfo: false,
+            rx_window_backoff: 0,
         }
     }
 
@@ -80,6 +82,14 @@ impl DvbTSuperFrameDemod {
     /// [`DvbTFrameDemod::with_integer_cfo_correction`]).
     pub fn with_integer_cfo_correction(mut self, on: bool) -> Self {
         self.integer_cfo = on;
+        self
+    }
+
+    /// Sets the receiver FFT-window back-off on every constituent frame (see
+    /// [`DvbTFrameDemod::with_rx_window_backoff`]). `0` (the default) is the
+    /// standard CP-boundary window.
+    pub fn with_rx_window_backoff(mut self, backoff: usize) -> Self {
+        self.rx_window_backoff = backoff;
         self
     }
 
@@ -127,6 +137,7 @@ impl DvbTSuperFrameDemod {
             let sub = iq.get(start..).ok_or(DvbTRxSuperFrameError::Incomplete)?;
             let rx = DvbTFrameDemod::new(params.frame(f as u8))
                 .with_integer_cfo_correction(self.integer_cfo)
+                .with_rx_window_backoff(self.rx_window_backoff)
                 .decode(sub, symbols_per_frame, frame_payload_lens[f])
                 .map_err(|source| DvbTRxSuperFrameError::Frame { frame: f, source })?;
 

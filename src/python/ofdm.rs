@@ -53,8 +53,17 @@ impl PyOfdmConfig {
     /// `pilot_carrier_indices`/`pilot_carrier_values` are parallel arrays
     /// (same length): `pilot_carrier_indices[i]` carries the known symbol
     /// `pilot_carrier_values[i]`. Pass empty arrays for no pilots.
+    ///
+    /// `edge_guard` (optional): when given, the data carriers are built as a
+    /// contiguous span leaving `edge_guard` null carriers at each band edge
+    /// (DC excluded), skipping any pilot index — reducing out-of-band
+    /// emission. In that mode the explicit `data_carriers` array is ignored
+    /// and must be empty (a non-empty array with `edge_guard` set is an error,
+    /// to avoid silently discarding a caller's layout). When `edge_guard` is
+    /// omitted, behavior is unchanged: the explicit `data_carriers` array is
+    /// used verbatim.
     #[new]
-    #[pyo3(signature = (n_fft, cp_len, data_carriers, pilot_carrier_indices, pilot_carrier_values, fs, rf_hz, gain, constellation))]
+    #[pyo3(signature = (n_fft, cp_len, data_carriers, pilot_carrier_indices, pilot_carrier_values, fs, rf_hz, gain, constellation, edge_guard=None))]
     #[allow(clippy::too_many_arguments)] // mirrors the Python-facing signature
     fn new<'py>(
         n_fft: usize,
@@ -66,6 +75,7 @@ impl PyOfdmConfig {
         rf_hz: f32,
         gain: f32,
         constellation: &str,
+        edge_guard: Option<usize>,
     ) -> PyResult<Self> {
         let pilot_indices = pilot_carrier_indices.as_slice()?;
         let pilot_values = pilot_carrier_values.as_slice()?;
@@ -82,9 +92,24 @@ impl PyOfdmConfig {
             .copied()
             .zip(pilot_values.iter().copied())
             .collect();
-        let plan = CarrierPlan::new(n_fft, cp_len)
-            .with_data_carriers(data_carriers.as_slice()?.iter().copied())
-            .with_pilot_carriers(pilots);
+        let data = data_carriers.as_slice()?;
+        let plan = match edge_guard {
+            Some(g) => {
+                if !data.is_empty() {
+                    return Err(PyValueError::new_err(
+                        "OfdmConfig: pass an empty data_carriers array when edge_guard is set \
+                         (the contiguous span is generated automatically)",
+                    ));
+                }
+                // Pilots first so the contiguous data fill excludes them.
+                CarrierPlan::new(n_fft, cp_len)
+                    .with_pilot_carriers(pilots)
+                    .with_contiguous_data(g, false)
+            }
+            None => CarrierPlan::new(n_fft, cp_len)
+                .with_data_carriers(data.iter().copied())
+                .with_pilot_carriers(pilots),
+        };
         plan.validate()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(Self(OfdmConfig::new(plan, fs, rf_hz, gain, order)))
@@ -176,6 +201,25 @@ impl PyOfdmConfig {
         let mut cfg = self.0.clone();
         cfg.ldpc_decode_rule = rule;
         Ok(Self(cfg))
+    }
+
+    /// Sets the receiver FFT-window back-off in samples (RX-only; default 0).
+    /// Pulls the demod window earlier into the guard for multipath robustness
+    /// and to make a matched TX symbol-window taper transparent. Only
+    /// RX-transparent on the equalized (streaming / scattered) path — see the
+    /// Rust `OfdmConfig::rx_window_backoff` docs.
+    #[pyo3(signature = (backoff))]
+    fn with_rx_window_backoff(&self, backoff: usize) -> PyResult<Self> {
+        Ok(Self(self.0.clone().with_rx_window_backoff(backoff)))
+    }
+
+    /// Enables TX symbol windowing with a `roll_off`-sample raised-cosine edge
+    /// taper (default 0 = off). Reduces out-of-band emission; only
+    /// RX-transparent when paired with a matching `with_rx_window_backoff`
+    /// (`roll_off = cp_len/2` with back-off `cp_len/2`).
+    #[pyo3(signature = (roll_off))]
+    fn with_symbol_window(&self, roll_off: usize) -> PyResult<Self> {
+        Ok(Self(self.0.clone().with_symbol_window(roll_off)))
     }
 
     /// Sets a rectangular block interleaver on the given stage

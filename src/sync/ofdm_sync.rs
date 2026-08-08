@@ -35,7 +35,7 @@
 use crate::core::Block;
 use crate::dsp::Rotator;
 use crate::modulate::OfdmConfig;
-use crate::multicarrier::{CyclicPrefixRemove, FftBlock};
+use crate::multicarrier::SymbolFft;
 use num_complex::Complex32 as C32;
 
 /// Repeated-segment preamble parameters: `num_repeats` identical segments of
@@ -308,17 +308,14 @@ fn estimate_integer_cfo_bins(
     rot.rotate_block(raw, &mut corrected);
 
     let n_fft = training.n_fft;
-    let mut cp_remove = CyclicPrefixRemove::new(n_fft, training.cp_len);
-    let mut time = vec![C32::default(); n_fft];
-    if cp_remove.process(&corrected, &mut time).out_written != n_fft {
-        return 0;
-    }
-
-    let mut fft = FftBlock::new(n_fft);
-    let mut freq = vec![C32::default(); n_fft];
-    if fft.process(&time, &mut freq).out_written != n_fft {
-        return 0;
-    }
+    // Integer-CFO estimation uses the standard CP-boundary window (no back-off):
+    // it correlates the training symbol against a known frequency-domain pattern
+    // to detect a whole-subcarrier shift, independent of the data window.
+    let mut symbol_fft = SymbolFft::new(n_fft, training.cp_len);
+    let freq = match symbol_fft.demod_symbol(&corrected) {
+        Some(f) => f,
+        None => return 0,
+    };
 
     let known = training_symbol_freq_pattern(n_fft);
 
