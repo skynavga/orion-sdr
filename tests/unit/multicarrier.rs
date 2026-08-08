@@ -5,7 +5,7 @@ use num_complex::Complex32 as C32;
 use orion_sdr::core::Block;
 use orion_sdr::multicarrier::{
     CarrierGrid, CarrierPlan, CarrierPlanError, CyclicPrefixInsert, CyclicPrefixRemove, FftBlock,
-    GridExtract, GridMap, IfftBlock, SubcarrierRole, SymbolFft,
+    GridExtract, GridMap, IfftBlock, SubcarrierRole, SymbolFft, SymbolWindow,
 };
 
 fn tone(n: usize, cycles: f32) -> Vec<C32> {
@@ -233,6 +233,120 @@ fn symbol_fft_backoff_applies_expected_phase_ramp() {
             "bin {k}: back-off phase ramp mismatch: {:?} vs {:?}",
             fb[k],
             expected
+        );
+    }
+}
+
+// ── SymbolWindow (TX raised-cosine edge taper, Piece B2 / R9) ───────────────
+
+#[test]
+fn symbol_window_zero_rolloff_is_identity() {
+    let sps = 40;
+    let input: Vec<C32> = (0..sps).map(|k| C32::new(k as f32, -(k as f32))).collect();
+    let mut out = vec![C32::default(); sps];
+    let wr = SymbolWindow::new(sps, 0).process(&input, &mut out);
+    assert_eq!(wr.out_written, sps);
+    assert_eq!(out, input, "roll_off=0 must be identity");
+}
+
+#[test]
+fn symbol_window_rolloff_clamps_to_half() {
+    let sps = 40;
+    // A roll-off past half the symbol would make the two ramps overlap.
+    let w = SymbolWindow::new(sps, 100);
+    assert_eq!(w.roll_off(), sps / 2);
+}
+
+#[test]
+fn symbol_window_tapers_edges_leaves_interior() {
+    let sps = 40;
+    let l = 6;
+    let ones = vec![C32::new(1.0, 0.0); sps];
+    let mut out = vec![C32::default(); sps];
+    SymbolWindow::new(sps, l).process(&ones, &mut out);
+
+    // Interior (flat region) untouched.
+    for s in out.iter().take(sps - l).skip(l) {
+        assert!((s.re - 1.0).abs() < 1e-6 && s.im.abs() < 1e-6);
+    }
+    // Edges strictly attenuated and symmetric (leading i mirrors trailing).
+    for i in 0..l {
+        let lead = out[i].norm();
+        let trail = out[sps - 1 - i].norm();
+        assert!(lead < 1.0, "leading edge {i} not attenuated: {lead}");
+        assert!((lead - trail).abs() < 1e-6, "edge {i} not symmetric");
+        // Monotone rise toward the interior.
+        if i > 0 {
+            assert!(
+                out[i].norm() > out[i - 1].norm(),
+                "ramp not monotone at {i}"
+            );
+        }
+    }
+    // The very outermost samples are the most attenuated (near zero).
+    assert!(out[0].norm() < 0.1, "symbol edge should be near-zero");
+    assert!(out[sps - 1].norm() < 0.1);
+}
+
+#[test]
+fn symbol_window_is_rx_transparent_at_half_cp_backoff() {
+    // The load-bearing B2 property: a TX taper of L = cp_len/2 with the RX
+    // window backed off by b = cp_len/2 leaves the receiver's n_fft-sample core
+    // BIT-IDENTICAL to the unwindowed symbol's core (up to f32 rounding), because
+    // both ramps fall entirely in guard samples the RX at that back-off discards.
+    let n_fft = 64;
+    let cp_len = 16;
+    let sps = n_fft + cp_len;
+    let b = cp_len / 2; // 8
+    let l = cp_len / 2; // 8  == min(cp_len - b, b)
+
+    // A realistic CP'd symbol (IFFT of a data grid, then CP).
+    let core: Vec<C32> = (0..n_fft)
+        .map(|k| C32::new((k as f32 * 0.21).cos(), (k as f32 * 0.13).sin()))
+        .collect();
+    let mut symbol = vec![C32::default(); sps];
+    CyclicPrefixInsert::new(n_fft, cp_len).process(&core, &mut symbol);
+
+    // Windowed copy.
+    let mut windowed = vec![C32::default(); sps];
+    SymbolWindow::new(sps, l).process(&symbol, &mut windowed);
+
+    // RX at back-off b reads symbol[cp_len - b .. cp_len - b + n_fft].
+    let mut sf = SymbolFft::new(n_fft, cp_len).with_window_backoff(b);
+    let core_plain: Vec<C32> = sf.demod_symbol(&symbol).unwrap().to_vec();
+    let core_windowed: Vec<C32> = sf.demod_symbol(&windowed).unwrap().to_vec();
+
+    // The FFT'd cores must match — the taper touched only discarded guard.
+    let eps = 1e-5f32;
+    for (a, b) in core_plain.iter().zip(core_windowed.iter()) {
+        assert!(
+            (a - b).norm() < eps,
+            "RX core changed by TX taper: {a:?} vs {b:?}"
+        );
+    }
+}
+
+#[test]
+fn symbol_window_time_window_leaves_rx_range_untouched() {
+    // Directly (time domain): at b = cp_len/2, L = cp_len/2, the taper must not
+    // touch any sample the RX reads, i.e. indices [cp_len - b, cp_len - b + n_fft).
+    let n_fft = 32;
+    let cp_len = 12;
+    let sps = n_fft + cp_len;
+    let b = cp_len / 2; // 6
+    let l = cp_len / 2; // 6
+    let win_start = cp_len - b; // 6
+    let win_end = win_start + n_fft; // 38
+
+    let input: Vec<C32> = (0..sps).map(|k| C32::new(1.0 + k as f32, 2.0)).collect();
+    let mut out = vec![C32::default(); sps];
+    SymbolWindow::new(sps, l).process(&input, &mut out);
+
+    // Every sample inside the RX window is unchanged; only outer guard changes.
+    for i in win_start..win_end {
+        assert!(
+            (out[i] - input[i]).norm() < 1e-6,
+            "RX-window sample {i} was modified by the taper"
         );
     }
 }

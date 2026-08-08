@@ -20,3 +20,6 @@ pub use grid::{CarrierGrid, GridExtract, GridMap};
 
 pub mod symbol_fft;
 pub use symbol_fft::SymbolFft;
+
+pub mod symbol_window;
+pub use symbol_window::SymbolWindow;
