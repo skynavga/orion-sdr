@@ -55,6 +55,10 @@ src/
     dvb_t_frame.rs     — DvbTFrameDemod, DvbTRxFrame (conformant preamble-less
                         DVB-T RX: GI-acquire → equalize → soft-demap → TPS + FEC;
                         optional integer-CFO builder flag)
+    dvb_t_super_frame.rs — DvbTSuperFrameDemod, DvbTRxSuperFrame (four-frame RX:
+                        verifies the 0..3 frame sequence, reassembles the 16-bit cell id)
+    dvb_t_stream.rs    — DvbTFrameStreamDemod (streaming feed/flush DVB-T RX over a
+                        continuous sample stream)
     pm.rs             — PmQuadratureDemod
     psk31.rs          — Bpsk31Demod, Bpsk31Decider, Qpsk31Demod, Qpsk31Decider
     qam.rs            — QamDemod, QamDecider<BITS>, Qam16/64/256Decider
@@ -74,6 +78,8 @@ src/
                         shared coding chain and block-size bookkeeping)
     dvb_t_frame.rs     — DvbTFrameMod, DvbTFrame (conformant preamble-less
                         DVB-T TX: TS + energy dispersal → FEC → map → scattered grid + TPS)
+    dvb_t_super_frame.rs — DvbTSuperFrameMod, DvbTSuperFrameParams, DvbTSuperFrame
+                        (four frames: alternating TPS sync word, cell id split across them)
     pm.rs             — PmDirectPhaseMod
     psk31.rs          — Bpsk31Mod, Qpsk31Mod (DBPSK/DQPSK, 31.25 baud, Hann pulse shaping)
     qam.rs            — QamMapper<BITS>, QamMod, Qam16/64/256Mapper

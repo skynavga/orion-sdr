@@ -434,6 +434,70 @@ let per_frame_seed = 0xABCD_1234;               // draw a fresh one per frame
 let iq = modu.modulate_frame(&frame, per_frame_seed);
 ```
 
+## Out-of-band spectral shaping (TX)
+
+Plain OFDM's out-of-band spectrum decays only as `~1/f`, so the transmitted
+signal carries a wide skirt beyond its occupied band. Three independent,
+**off-by-default** levers reduce it; they compose, and the full stack beats any
+pair. [ofdm.md](ofdm.md) has the geometry and the transparency arguments — this
+section is the TX-side API surface.
+
+| Lever | Where it is set | Takes effect in | Chains |
+| --- | --- | --- | --- |
+| Edge-carrier guard | `CarrierPlan::with_contiguous_data` | any mapping (incl. bare `OfdmMod`) | COFDM only |
+| Symbol-window taper | `OfdmConfig::with_symbol_window` | `OfdmFrameMod::modulate_frame` | both |
+| Baseband mask | `OfdmConfig::with_tx_lowpass*` | `OfdmFrameMod::modulate_frame` | both |
+
+Note the middle column: the taper and the mask are **post-passes over an
+assembled frame**, so a bare `OfdmMod` (single symbols, no frame) applies
+neither. The edge guard is different — it only changes which carriers exist, so
+every path inherits it.
+
+```rust
+use orion_sdr::{
+    modulate::{ConstellationOrder, OfdmConfig},
+    multicarrier::{CarrierPlan, TxLowpass},
+};
+
+let (n_fft, cp_len) = (256usize, 64usize);
+
+// 1. Edge guard: a contiguous data span leaving 31 null carriers per edge. This
+//    also creates the unoccupied bandwidth the mask below needs to filter into.
+let plan = CarrierPlan::new(n_fft, cp_len).with_contiguous_data(31, false);
+let occupied = plan.occupied_half_carriers();       // 96 of 128
+
+// 2 + 3. Taper and mask share ONE guard budget with the RX window back-off:
+//        roll_off + group_delay <= min(cp_len - b, b), maximized at b = cp_len/2.
+let roll_off = 16usize;
+let taps = TxLowpass::taps_for_null_band(n_fft, occupied, 60.0);  // suggested length
+let mask = TxLowpass::for_null_band(n_fft, occupied, taps, 60.0);
+assert!(mask.fits_guard(cp_len, roll_off, cp_len / 2));
+
+let cfg = OfdmConfig::new(plan, 240_000.0, 0.0, 1.0, ConstellationOrder::Qpsk)
+    .with_symbol_window(roll_off)          // or with_symbol_window_beta_guard(0.25)
+    .with_tx_lowpass(mask)                 // or with_tx_lowpass_null_band(taps, 60.0)
+    .with_rx_window_backoff(cp_len / 2);   // RX-side; see demodulate.md
+```
+
+**The receiver is not free of this.** Neither the taper nor the mask changes how
+a receiver *decodes*, but both spend guard samples the receiver has to be
+discarding — which is what `with_rx_window_backoff` arranges (see
+[demodulate.md](demodulate.md#rx-fft-window-back-off)). Configure the two
+together, or the shaping is not transparent. `TxLowpass::fits_guard` is the
+check. The edge guard needs no RX change at all.
+
+Sizing rules worth knowing before picking numbers:
+
+- **The mask needs somewhere to filter.** It can only attenuate bandwidth the
+  signal does not occupy, so on COFDM pair it with the edge guard — *the guard
+  makes the room, the mask uses it*. `TxLowpass::transition_fits` says whether a
+  given length reaches its stop band inside that room.
+- **A preamble-bearing frame adds a second rule.** The mask is applied to the
+  whole burst, preamble included, and Schmidl & Cox repetition only survives
+  where the filter's taps see repeated samples: keep `group_delay ≪ repeat_len`.
+- **Defaults are off**, so a config that asks for none of this emits exactly
+  what it emitted before.
+
 ## DVB-T Frame Modulator (conformant, preamble-less)
 
 `DvbTFrameMod` emits a fully conformant DVB-T on-air frame (ETSI EN 300 744): no
@@ -478,6 +542,31 @@ let frame = modulator.modulate(&payload);
 let _fs = NbBandwidth::Bw1MHz.fs();
 ```
 
+Both spectral-shaping post-passes are available here as builders (the edge guard
+is not — DVB-T's extreme carriers are mandatory continual pilots that cannot be
+nulled). DVB-T is preamble-less, so *every* symbol is CP-bearing and gets
+tapered, and there is no Schmidl & Cox region to keep clear of the mask:
+
+```rust
+use orion_sdr::modulate::DvbTFrameMod;
+
+let cp_len = GuardInterval::G1_8.cp_len_2k();          // 256
+let backoff = 64usize;                                  // see the ceiling below
+let mask = DvbTFrameMod::tx_lowpass_for_2k(89, 60.0);   // group delay 44
+assert!(mask.fits_guard(cp_len, 16, backoff));
+
+let frame = DvbTFrameMod::new(params)
+    .with_symbol_window(16)      // raised-cosine taper, samples per edge
+    .with_tx_lowpass(mask)       // cutoff placed against the fixed ±852 band edge
+    .modulate(&payload);
+```
+
+Pair with `DvbTFrameDemod::with_rx_window_backoff(backoff)`. **The back-off is
+capped at 85 samples by the scattered-pilot spacing, not by the guard**, so the
+shaping budget saturates: 32 / 64 / 85 / 85 samples for G1/32 … G1/4. G1/8 is
+the sweet spot for crowded DATV band plans — the full budget at a quarter of
+G1/4's overhead. See [dvb.md](dvb.md) for the table and the derivation.
+
 ## DVB-T Super-Frame Modulator (four frames)
 
 `DvbTSuperFrameMod` sequences **four** consecutive conformant frames into one
@@ -514,3 +603,10 @@ let sf = DvbTSuperFrameMod::new(params).modulate(&payload);
 // are what the RX needs to re-slice and trim.
 let _n_symbols = sf.n_symbols(); // 4 · symbols_per_frame
 ```
+
+Both shaping builders carry over — `DvbTSuperFrameMod::with_symbol_window` and
+`with_tx_lowpass` — but they apply at different scopes, deliberately. The taper
+is per-symbol, so it propagates to each constituent frame; the mask is a
+spectral filter and runs **once over the concatenated four frames**. Filtering
+each frame separately would leave the filter's edge transient at all three
+interior seams, which are continuous on air.
