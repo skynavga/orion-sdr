@@ -9,6 +9,126 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.57] - 2026-08-09
+
+Turns the COFDM frame receiver's diagnostics from a pass/fail verdict into a
+measured picture of the link: sync confidence, the per-bin channel estimate,
+per-stage FEC convergence, EVM on the frame path, and true pre- and
+post-inner-FEC bit error rates. It also fixes two ways a good frame could be
+lost — a preamble transmitted at the wrong amplitude, and an acceptance rule
+that discarded payloads its own CRC had verified.
+
+**A pass/fail flag cannot show margin.** A link can be losing 7% of its bits to
+the channel while the inner code absorbs every one and the frame arrives intact
+— indistinguishable from a clean link through a convergence flag, and exactly
+the margin an operator needs to see before it runs out. Re-encoding a frame that
+passed its CRC reconstructs precisely what the transmitter sent, so the
+difference from what arrived at each stage is a real error rate: `channel_ber`
+compares the demapped hard decisions against the transmitted coded bits,
+`inner_ber` compares the inner decoder's output against what it should have
+produced. This needs no prior knowledge of the payload, which is what makes it
+usable over the air rather than only against a known test vector. Opt-in via
+`with_error_rates`, though the cost is small — one encode per frame, measured at
+0.4% of a full frame decode (11.236 → 11.282 ms), since sync and demap dominate
+and FEC is under 1% of the total.
+
+**`generate_ofdm_preamble` ignored its config**, emitting the Schmidl & Cox
+repeats and the training symbol at unit amplitude while `OfdmMod` scaled every
+data symbol by `cfg.gain`. Any caller using a non-unit gain transmitted a frame
+its own receiver could not decode, in two independent ways. The S&C timing
+metric normalizes against received energy, so a preamble quiet relative to the
+payload collapses the score: at gain 121 the best score falls from 1.00 to
+0.095, under the streaming receiver's 0.5 threshold, so no candidate is accepted
+and `feed` returns nothing at all — not even an error. And `TrainingSymbolHold`
+estimates the channel from the training symbol, so unscaled, that estimate omits
+the gain, the equalizer never divides it out, and the demapper's LLRs are
+miscalibrated by that factor. This bites synthetic wideband sources hardest,
+since bare OFDM at unit gain sits below typical detection thresholds and a large
+gain is the usual remedy.
+
+**Acceptance required `crc_ok && inner_ok && outer_ok`.** `inner_ok` reports
+whether the inner decoder's parity checks converged — how hard it worked, not
+whether the answer is right — so requiring it discarded frames that had decoded
+correctly. Measured on an unequalized multipath channel: a byte-exact payload,
+CRC-32 verified, with both FEC stages reporting non-convergence and 14.7% of
+channel bits wrong. Thrown away. `is_valid` now defers to the strongest
+end-to-end check the configuration actually provides. DVB-T's verdict is
+unchanged, its convolutional inner code reporting convergence unconditionally,
+so the old and new rules agree there by construction.
+
+### Added
+
+- `OfdmRxFrame::sync_score` — the normalized Schmidl & Cox timing-metric score
+  in `[0, 1]` for the candidate a frame was acquired from, so a caller can show
+  lock confidence. `None` on the batch path, which is handed an already-located
+  body and never acquires.
+- `OfdmRxFrame::channel_estimate` — the per-bin `H[k] = received[k] / known[k]`
+  measured from the training symbol, opt-in via
+  `OfdmFrameStreamDemod::with_channel_estimate` since it costs an `n_fft`-sized
+  allocation per frame (16 KB at DVB-T 2K) that only a diagnostic consumer
+  should pay for. It carries the *channel*, not the raw received bins: the known
+  training pattern is crate-internal, so a caller could not divide it out
+  itself. A power delay profile — and from it delay spread and whether echoes
+  fall inside the guard — is the inverse FFT of this.
+- `OfdmRxFrame::inner_fec_ok` / `outer_fec_ok` — per-stage payload convergence.
+  Errors the inner code corrects never reach the outer code, so an inner failure
+  alongside an outer success is a link running hot but still delivering, a state
+  a folded flag cannot express.
+- `OfdmRxFrame::channel_ber` / `inner_ber` — bit error rates at the channel's
+  output (the classic pre-FEC BER / CBER) and at the inner decoder's output
+  (IBER), opt-in via `OfdmFrameStreamDemod::with_error_rates`. Only frames that
+  decode are measured — an undecodable frame has no ground truth, so a rising
+  rate that stops reporting is itself the signal that the link has given up.
+- `ChainOutcome` — `decode_chain`'s result, carrying `bytes`, the separate
+  `inner_ok` / `outer_ok` / `crc_ok` verdicts, `inner_out_bits`, and the
+  `crc_present` / `outer_present` flags. Those last two are recorded because
+  `CrcKind::None` reports `crc_ok = true` since nothing was checked, not because
+  something passed, so the verdicts alone cannot express which checks exist.
+  `all_ok()` folds them the way the old `bool` did.
+- `encode_chain_stages` and `EncodedStages` — one re-encode yielding both
+  references the error-rate measurement needs: the transmitted coded bits and
+  the inner decoder's expected output. `encode_chain` is unchanged and now
+  delegates to it.
+
+### Changed
+
+- `decode_chain` returns `Result<ChainOutcome, RxError>` rather than
+  `Result<(Vec<u8>, bool), RxError>`, which folded the CRC, inner-FEC and
+  outer-FEC verdicts into one bool before returning. **Breaking** for direct
+  callers of the chain primitive; the frame and stream receivers are unaffected.
+- `evm_db` now reaches `RxFrame` diagnostics on the COFDM frame path, which
+  hardcoded `None` while the computation it needed already existed. `soft_demap`
+  gained an optional symbol sink, so the payload's equalized symbols survive
+  long enough to be compared against the ideal points their own hard decisions
+  map back to, measured before the FEC stages consume the LLRs. The
+  scattered-pilot path does not collect symbols: those frames are decoded by
+  `waveform::dvb_t_frame`, which carries its own diagnostics.
+- `channel_mse` stays `None`. A scalar needs a reference to measure against, and
+  a single-shot training estimate has none — deriving one means separating
+  channel from noise, which is an estimator rather than an exposure, and the
+  per-bin estimate carries strictly more information.
+- `generate_ofdm_preamble`'s doc comment now states that `rf_hz` is still not
+  applied to the preamble — doing so correctly needs phase continuity with the
+  symbols that follow, which the per-block modulator construction does not
+  provide — and points callers at modulating baseband and upconverting the whole
+  burst instead.
+- `stream_multipath_needs_channel_estimate` asserted that a multipath frame must
+  fail to decode without a training symbol, as proof the equalization was
+  load-bearing. It was testing the gate, not the equalizer — the frame decodes
+  correctly either way. It now measures what that comment meant: equalization
+  cuts the channel error rate from ~14.7% to ~3.3%.
+
+### Fixed
+
+- `generate_ofdm_preamble` applies `cfg.gain` to the Schmidl & Cox repeats and
+  the training symbol, so a non-unit-gain transmitter emits a frame its own
+  receiver can acquire and equalize.
+- `is_valid` no longer rejects a frame whose payload the CRC vouches for. A CRC
+  decides alone, since it covers the recovered payload whatever the stages
+  beneath did. Without one — DVB-T's shape — the outer code decides,
+  Reed–Solomon reporting failure when it cannot correct. With neither, `inner_ok`
+  is all there is, and dropping it would accept anything the demapper produced.
+
 ## [0.0.56] - 2026-08-08
 
 Corrects the guidance for the DVB-T receive window back-off, fixes a

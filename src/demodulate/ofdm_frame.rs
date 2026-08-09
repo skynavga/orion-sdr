@@ -29,7 +29,7 @@ use crate::modulate::ofdm::{ConstellationOrder, OfdmConfig};
 use crate::modulate::ofdm_frame::{
     BCH_INFO_BITS, BlockPlan, CodecCache, HEADER_CONSTELLATION, HEADER_FIELD_BYTES, HEADER_LDPC,
     McsTable, bits_to_bytes, block_plan, build_scrambler, bytes_to_bits, check_and_strip_crc,
-    scramble_bytes, symbol_config, symbols_for_coded_bits,
+    encode_chain_stages, scramble_bytes, symbol_config, symbols_for_coded_bits,
 };
 use crate::multicarrier::{CarrierGrid, GridExtract, SymbolFft};
 use crate::sync::{OfdmPreamble, ofdm_sync};
@@ -46,12 +46,17 @@ use std::sync::Arc;
 /// symbol), it runs the full `CyclicPrefixRemove → FftBlock → OfdmEqualizer →
 /// GridExtract → OfdmSoftDemod` chain, correcting a frequency-selective
 /// channel — the streaming receiver's path.
+/// `symbol_sink`, when supplied, receives every equalized data-carrier symbol
+/// in demap order. EVM is measured by comparing these against the ideal points
+/// their own hard decisions map back to, so it needs the constellation-domain
+/// symbols the LLRs are derived from — which are otherwise consumed in place.
 fn soft_demap(
     base: &OfdmConfig,
     constellation: ConstellationOrder,
     iq: &[C32],
     n_symbols: usize,
     equalizer: Option<&mut OfdmEqualizer>,
+    mut symbol_sink: Option<&mut Vec<C32>>,
 ) -> Option<Vec<f32>> {
     let cfg = symbol_config(base, constellation);
     let sps = cfg.samples_per_ofdm_symbol();
@@ -73,6 +78,9 @@ fn soft_demap(
                 let dw = demod.process(&iq[in_off..], &mut symbols);
                 if dw.out_written != n_data {
                     return None;
+                }
+                if let Some(sink) = symbol_sink.as_deref_mut() {
+                    sink.extend_from_slice(&symbols);
                 }
                 let sw = soft.process(&symbols, &mut llrs[out_off..out_off + bps]);
                 if sw.out_written != bps {
@@ -99,6 +107,9 @@ fn soft_demap(
                 }
                 if grid_extract.process(&equalized, &mut symbols).out_written != n_data {
                     return None;
+                }
+                if let Some(sink) = symbol_sink.as_deref_mut() {
+                    sink.extend_from_slice(&symbols);
                 }
                 let sw = soft.process(&symbols, &mut llrs[out_off..out_off + bps]);
                 if sw.out_written != bps {
@@ -353,13 +364,85 @@ fn outer_decode(outer: OuterFec, coded_bits: &[u8], cache: &CodecCache) -> (Vec<
     }
 }
 
-/// Decodes one logical block's coded LLRs back to its info bytes, checking the
-/// CRC. Returns `Ok((bytes, crc_ok))` or an error if the structure is invalid.
+/// The outcome of decoding one logical block: the recovered bytes plus each
+/// stage's success, reported **separately**.
+///
+/// The concatenated scheme has two independent decoders, and folding them into
+/// one flag destroys the only signal that distinguishes a marginal link from a
+/// failing one. Errors the inner code corrects never reach the outer code, so
+/// `inner_ok == false` with `outer_ok == true` is a link running hot but still
+/// delivering — precisely the state a pre-FEC error rate is meant to surface,
+/// and indistinguishable from success once folded.
+///
+/// Use [`is_valid`](Self::is_valid) to decide whether to accept the block;
+/// the individual flags are diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainOutcome {
+    /// The recovered info bytes, CRC stripped.
+    pub bytes: Vec<u8>,
+    /// Every inner-FEC block converged. Always `true` for
+    /// [`InnerFec::None`], and for the convolutional arm, whose soft Viterbi
+    /// has no per-block convergence flag — the outer code and CRC decide.
+    pub inner_ok: bool,
+    /// Every outer-FEC block decoded. Always `true` for [`OuterFec::None`].
+    pub outer_ok: bool,
+    /// The block's CRC checked.
+    pub crc_ok: bool,
+    /// Whether the configuration provides a CRC at all. Without this,
+    /// `crc_ok` is ambiguous: [`CrcKind::None`] reports `true` because there
+    /// was nothing to fail, not because anything was verified.
+    pub crc_present: bool,
+    /// Whether the configuration provides an outer code at all, on the same
+    /// reasoning as [`crc_present`](Self::crc_present).
+    pub outer_present: bool,
+    /// What the inner decoder produced, before outer deinterleaving — the bits
+    /// that actually arrived at the outer decoder's input.
+    ///
+    /// Kept rather than dropped so a caller can compare it against a re-encode
+    /// of the recovered message and obtain a post-inner-FEC bit error *rate*
+    /// instead of a pass/fail flag. Costs nothing: the vector is already
+    /// allocated, and is moved out rather than copied.
+    pub inner_out_bits: Vec<u8>,
+}
+
+impl ChainOutcome {
+    /// Whether the recovered bytes can be trusted, judged by the **strongest
+    /// end-to-end check the configuration actually provides**.
+    ///
+    /// `inner_ok` is deliberately not part of this. It reports whether the
+    /// inner decoder's parity checks converged — how hard it worked, not
+    /// whether the result is right. Requiring it discards frames whose payload
+    /// is verifiably correct: measured across a noise sweep, a CRC-carrying
+    /// link delivers byte-exact payloads with `inner_ok == false` over a wide
+    /// band, and rejecting those costs real sensitivity for nothing.
+    ///
+    /// The precedence:
+    ///
+    /// - **A CRC decides on its own.** It is computed over the recovered
+    ///   payload end to end, so passing it means the bytes are right whatever
+    ///   the stages beneath did — including an outer decoder that reported a
+    ///   block it could not correct.
+    /// - **Otherwise the outer code decides.** DVB-T carries no CRC
+    ///   ([`CrcKind::None`]), so its Reed–Solomon stage is the integrity
+    ///   check; RS reports failure when it cannot correct a codeword.
+    /// - **Otherwise `inner_ok` is all there is.** A link with neither a CRC
+    ///   nor an outer code has only the inner decoder's convergence to go on,
+    ///   and dropping it there would accept anything.
+    pub fn is_valid(&self) -> bool {
+        if self.crc_present {
+            self.crc_ok
+        } else if self.outer_present {
+            self.outer_ok
+        } else {
+            self.inner_ok
+        }
+    }
+}
+
 /// Decodes one logical block's coded LLRs back to its info bytes, checking the
 /// CRC — the exact inverse of `modulate::ofdm_frame::encode_chain`. Public so
 /// per-standard frame assemblers (e.g. `waveform::dvb_t_frame`) reuse the shared
-/// FEC decode rather than duplicating it. Returns `(bytes, all_ok)` where
-/// `all_ok` folds in the CRC and every FEC block's convergence.
+/// FEC decode rather than duplicating it.
 #[allow(clippy::too_many_arguments)]
 pub fn decode_chain(
     coded_llrs: &[f32],
@@ -374,7 +457,7 @@ pub fn decode_chain(
     per_frame_seed: u32,
     cache: &CodecCache,
     ldpc_rule: DecodeRule,
-) -> Result<(Vec<u8>, bool), RxError> {
+) -> Result<ChainOutcome, RxError> {
     // 1. Trim to the exact coded-bit count, then invert the after-inner
     //    scramble (bit domain) if configured.
     let mut llrs = coded_llrs.to_vec();
@@ -417,7 +500,16 @@ pub fn decode_chain(
 
     // 5. Strip and check the CRC.
     let (bytes, crc_ok) = check_and_strip_crc(crc, &framed).ok_or(RxError::MalformedHeader)?;
-    Ok((bytes, crc_ok && inner_ok && outer_ok))
+    Ok(ChainOutcome {
+        bytes,
+        inner_ok,
+        outer_ok,
+        crc_ok,
+        crc_present: crc != CrcKind::None,
+        outer_present: outer != OuterFec::None,
+        // `deinterleave_bits` only borrowed this, so it moves out here.
+        inner_out_bits: outer_il_bits,
+    })
 }
 
 /// Applies a PN sequence to LLRs by negating each LLR whose PN bit is 1.
@@ -445,21 +537,56 @@ enum BodyError {
     Failed(RxError),
 }
 
+/// Fraction of positions where two bit-streams differ, over their common
+/// length. `None` if either is empty.
+fn bit_error_rate(a: &[u8], b: &[u8]) -> Option<f32> {
+    let n = a.len().min(b.len());
+    if n == 0 {
+        return None;
+    }
+    let errs = a[..n]
+        .iter()
+        .zip(b[..n].iter())
+        .filter(|(x, y)| x != y)
+        .count();
+    Some(errs as f32 / n as f32)
+}
+
+/// What one frame body yielded: the packet, how many samples it consumed, and
+/// the per-stage measurements taken along the way.
+struct DecodedBody {
+    packet: FramePacket,
+    /// IQ samples the header+payload occupied, so a streaming caller can
+    /// advance its buffer.
+    consumed: usize,
+    /// Payload EVM, measured against its own hard decisions before the FEC
+    /// stages consume the LLRs.
+    evm_db: Option<f32>,
+    /// The payload's inner- and outer-FEC convergence, kept apart — see
+    /// [`ChainOutcome`].
+    inner_ok: bool,
+    outer_ok: bool,
+    /// Bit error rate at the channel's output, i.e. the inner decoder's input.
+    channel_ber: Option<f32>,
+    /// Bit error rate at the inner decoder's output, before the outer decoder.
+    inner_ber: Option<f32>,
+}
+
 /// Decodes a frame body (header + payload) from `iq[0]` — the first sample
 /// AFTER the preamble+training, already CFO-corrected. When
 /// `channel_estimate` is `Some(n_fft freq bins)` the soft-demap equalizes each
 /// symbol against it (multipath); `None` is the flat-channel path.
 ///
-/// Returns the recovered [`FramePacket`] and the number of IQ samples the
-/// header+payload occupied (so a streaming caller can advance its buffer), or a
-/// [`BodyError`] distinguishing "incomplete" from a genuine failure.
+/// Returns a [`DecodedBody`], or a [`BodyError`] distinguishing "incomplete"
+/// from a genuine failure.
 fn decode_frame_body(
     cfg: &OfdmConfig,
     mcs_table: &McsTable,
     iq: &[C32],
     channel_estimate: Option<&[C32]>,
     cache: &CodecCache,
-) -> Result<(FramePacket, usize), BodyError> {
+    measure_ber: bool,
+) -> Result<DecodedBody, BodyError> {
     let mut cursor = 0usize;
 
     // Builds a fresh equalizer for `constellation` carrying the shared channel
@@ -491,11 +618,14 @@ fn decode_frame_body(
                      iq: &[C32],
                      off: usize,
                      n_sym: usize,
-                     eq: Option<&mut OfdmEqualizer>|
+                     eq: Option<&mut OfdmEqualizer>,
+                     sink: Option<&mut Vec<C32>>|
      -> Option<Vec<f32>> {
         match scattered.as_mut() {
+            // The scattered path does not collect symbols: DVB-T frames are
+            // decoded by `waveform::dvb_t_frame`, which has its own diagnostics.
             Some(x) => soft_demap_scattered(cfg, constellation, &iq[off..], n_sym, x),
-            None => soft_demap(cfg, constellation, &iq[off..], n_sym, eq),
+            None => soft_demap(cfg, constellation, &iq[off..], n_sym, eq, sink),
         }
     };
 
@@ -513,9 +643,9 @@ fn decode_frame_body(
         let n_sym = symbols_for_coded_bits(cfg, HEADER_CONSTELLATION, hplan.coded_bits);
         let mut eq = make_eq(HEADER_CONSTELLATION);
         // Too few samples for the header ⇒ incomplete, not malformed.
-        let llrs = demap(HEADER_CONSTELLATION, iq, cursor, n_sym, eq.as_mut())
+        let llrs = demap(HEADER_CONSTELLATION, iq, cursor, n_sym, eq.as_mut(), None)
             .ok_or(BodyError::Incomplete)?;
-        let (fields, ok) = decode_chain(
+        let header = decode_chain(
             &llrs,
             &hplan,
             cfg.header_crc,
@@ -533,9 +663,10 @@ fn decode_frame_body(
             DecodeRule::SumProduct,
         )
         .map_err(BodyError::Failed)?;
-        if !ok {
+        if !header.is_valid() {
             return Err(BodyError::Failed(RxError::HeaderCrcMismatch));
         }
+        let fields = header.bytes;
         if fields.len() < HEADER_FIELD_BYTES {
             return Err(BodyError::Failed(RxError::MalformedHeader));
         }
@@ -580,9 +711,29 @@ fn decode_frame_body(
     let n_sym = symbols_for_coded_bits(cfg, mcs.constellation, pplan.coded_bits);
     let mut eq = make_eq(mcs.constellation);
     // Too few samples for the (now-known-length) payload ⇒ incomplete.
-    let llrs =
-        demap(mcs.constellation, iq, cursor, n_sym, eq.as_mut()).ok_or(BodyError::Incomplete)?;
-    let (bytes, ok) = decode_chain(
+    let mut payload_symbols: Vec<C32> = Vec::new();
+    let llrs = demap(
+        mcs.constellation,
+        iq,
+        cursor,
+        n_sym,
+        eq.as_mut(),
+        Some(&mut payload_symbols),
+    )
+    .ok_or(BodyError::Incomplete)?;
+    // EVM against the payload's own hard decisions, measured before the FEC
+    // stages consume the LLRs. `symbol_config` re-resolves the constellation so
+    // the ideal-point mapper matches the one that produced these symbols.
+    let evm_db = crate::demodulate::ofdm::evm_db(
+        &symbol_config(cfg, mcs.constellation),
+        &payload_symbols,
+        &llrs
+            .iter()
+            .map(|&l| u8::from(l <= 0.0))
+            .collect::<Vec<u8>>(),
+        n_sym,
+    );
+    let payload_outcome = decode_chain(
         &llrs,
         &pplan,
         cfg.payload_crc,
@@ -598,9 +749,52 @@ fn decode_frame_body(
         cfg.ldpc_decode_rule,
     )
     .map_err(BodyError::Failed)?;
-    if !ok {
+    if !payload_outcome.is_valid() {
         return Err(BodyError::Failed(RxError::CrcMismatch));
     }
+    // Take the flags before consuming the bytes, so the payload is moved rather
+    // than cloned out of the outcome.
+    let (inner_ok, outer_ok) = (payload_outcome.inner_ok, payload_outcome.outer_ok);
+
+    // True bit error rates, from a re-encode of what we just recovered.
+    //
+    // A frame that passed its CRC *is* the ground truth: re-running the encode
+    // chain on it reconstructs exactly what the transmitter sent, so comparing
+    // that against what arrived at each stage gives a rate rather than a
+    // pass/fail flag. Crucially this needs no prior knowledge of the payload —
+    // which is what makes it work over the air, where nothing about the
+    // transmitted bits is known in advance.
+    //
+    // Off unless asked for: it costs one encode per frame.
+    let (channel_ber, inner_ber) = if measure_ber {
+        let stages = encode_chain_stages(
+            &payload_outcome.bytes,
+            cfg.payload_crc,
+            mcs.outer_fec,
+            mcs.inner_fec,
+            cfg.outer_interleaver,
+            cfg.inner_interleaver,
+            cfg.scrambler,
+            cfg.scrambler_pos,
+            per_frame_seed,
+            cache,
+        );
+        // The channel's output is the demapped LLRs hard-decided, compared
+        // before any descrambling — `stages.coded` carries the scramble too.
+        let received: Vec<u8> = llrs
+            .iter()
+            .take(pplan.coded_bits)
+            .map(|&l| u8::from(l <= 0.0))
+            .collect();
+        (
+            bit_error_rate(&received, &stages.coded),
+            bit_error_rate(&payload_outcome.inner_out_bits, &stages.outer_il_bits),
+        )
+    } else {
+        (None, None)
+    };
+
+    let bytes = payload_outcome.bytes;
     let payload_sps = symbol_config(cfg, mcs.constellation).samples_per_ofdm_symbol();
     cursor += n_sym * payload_sps;
     // Trim to the declared payload length (coding blocks are zero-padded).
@@ -609,7 +803,15 @@ fn decode_frame_body(
         .map(|s| s.to_vec())
         .unwrap_or(bytes);
 
-    Ok((FramePacket { metadata, payload }, cursor))
+    Ok(DecodedBody {
+        packet: FramePacket { metadata, payload },
+        consumed: cursor,
+        evm_db,
+        inner_ok,
+        outer_ok,
+        channel_ber,
+        inner_ber,
+    })
 }
 
 /// The batch OFDM frame demodulator — decodes a frame at a KNOWN start (`iq[0]`
@@ -658,8 +860,8 @@ impl OfdmFrameDemod {
     /// [`CodecCache`] is reused across calls, so decoding many frames on one
     /// `OfdmFrameDemod` builds each FEC code only once.
     pub fn decode(&self, iq: &[C32]) -> Result<FramePacket, RxError> {
-        decode_frame_body(&self.cfg, &self.mcs_table, iq, None, &self.cache)
-            .map(|(frame, _)| frame)
+        decode_frame_body(&self.cfg, &self.mcs_table, iq, None, &self.cache, false)
+            .map(|body| body.packet)
             .map_err(|e| match e {
                 // A batch caller has no "wait for more" option; a truncated buffer
                 // is a malformed input here.
@@ -700,6 +902,13 @@ pub struct OfdmFrameStreamDemod {
     buf: Vec<C32>,
     /// Minimum sync score to accept a candidate.
     score_threshold: f32,
+    /// Whether to carry the per-bin channel estimate on each frame's
+    /// diagnostics. Off by default: it costs an `n_fft`-sized allocation per
+    /// frame and only diagnostic consumers want it.
+    want_channel_estimate: bool,
+    /// Whether to measure true bit error rates by re-encoding each decoded
+    /// frame. Off by default: it costs one encode per frame.
+    want_error_rates: bool,
     /// FEC code cache, warmed across the frames this receiver decodes (see
     /// [`CodecCache`]). Held behind `Arc` so it can be shared with a paired
     /// modulator.
@@ -730,6 +939,8 @@ impl OfdmFrameStreamDemod {
             fs,
             buf: Vec::new(),
             score_threshold: 0.5,
+            want_channel_estimate: false,
+            want_error_rates: false,
             cache,
         }
     }
@@ -737,6 +948,39 @@ impl OfdmFrameStreamDemod {
     /// Overrides the sync-score acceptance threshold (default 0.5).
     pub fn with_score_threshold(mut self, t: f32) -> Self {
         self.score_threshold = t;
+        self
+    }
+
+    /// Carries the per-bin channel estimate on each frame's
+    /// [`diagnostics`](RxFrame::diagnostics). Off by default — it costs an
+    /// `n_fft`-sized allocation per frame, which only a caller measuring
+    /// channel response wants to pay.
+    ///
+    /// Requires the preamble to carry a training symbol; without one there is
+    /// nothing to estimate from and the field stays `None`.
+    pub fn with_channel_estimate(mut self, on: bool) -> Self {
+        self.want_channel_estimate = on;
+        self
+    }
+
+    /// Measures true bit error rates at the inner decoder's input and output,
+    /// reported as [`channel_ber`](OfdmRxFrame::channel_ber) and
+    /// [`inner_ber`](OfdmRxFrame::inner_ber). Off by default.
+    ///
+    /// Works by re-encoding each successfully decoded frame: a frame that
+    /// passed its CRC is ground truth, so the re-encode reconstructs what the
+    /// transmitter sent and the difference from what arrived is a real error
+    /// rate. **No prior knowledge of the payload is required**, which is what
+    /// makes this usable over the air rather than only against a known test
+    /// vector.
+    ///
+    /// Only frames that decode are measured — an undecodable frame has no
+    /// ground truth, so a rising error rate that suddenly stops reporting is
+    /// itself the signal that the link has given up.
+    ///
+    /// Costs one encode per decoded frame.
+    pub fn with_error_rates(mut self, on: bool) -> Self {
+        self.want_error_rates = on;
         self
     }
 
@@ -825,24 +1069,39 @@ impl OfdmFrameStreamDemod {
             body,
             channel_estimate.as_deref(),
             &self.cache,
+            self.want_error_rates,
         ) {
-            Ok((packet, body_samples)) => {
+            Ok(body) => {
                 let diagnostics = OfdmRxFrame {
                     bits: Vec::new(),
                     num_symbols: 0,
-                    evm_db: None,
+                    evm_db: body.evm_db,
                     cfo_hz: Some(total_cfo),
                     timing_offset_samples: Some(best.start_sample as i32),
+                    // A scalar channel MSE needs a reference to measure
+                    // against, and a single-shot training estimate has none —
+                    // deriving one means separating channel from noise, which
+                    // is an estimator rather than an exposure. The per-bin
+                    // estimate below carries strictly more information.
                     channel_mse: None,
+                    sync_score: Some(best.score),
+                    channel_estimate: self
+                        .want_channel_estimate
+                        .then(|| channel_estimate.as_deref().map(channel_from_training))
+                        .flatten(),
+                    inner_fec_ok: Some(body.inner_ok),
+                    outer_fec_ok: Some(body.outer_ok),
+                    channel_ber: body.channel_ber,
+                    inner_ber: body.inner_ber,
                 };
-                let consume_to = best.start_sample + pre_len + body_samples;
+                let consume_to = best.start_sample + pre_len + body.consumed;
                 if consume_to > self.buf.len() {
                     // Shouldn't happen (decode succeeded), but guard the drain.
                     return FrameStep::NeedMore;
                 }
                 FrameStep::Decoded(
                     Ok(RxFrame {
-                        packet,
+                        packet: body.packet,
                         diagnostics,
                     }),
                     consume_to,
@@ -881,6 +1140,19 @@ impl OfdmFrameStreamDemod {
         let freq = symbol_fft.demod_symbol(&corrected[training_start..end])?;
         Some(freq.to_vec())
     }
+}
+
+/// Converts a received training symbol's frequency bins to the channel
+/// `H[k] = received[k] / known[k]`, matching what `OfdmEqualizer` does
+/// internally. Exposed on the diagnostics because the known pattern is
+/// crate-internal, so a caller cannot perform this division itself.
+fn channel_from_training(received_freq: &[C32]) -> Vec<C32> {
+    let known = crate::sync::ofdm_sync::training_symbol_freq_pattern(received_freq.len());
+    received_freq
+        .iter()
+        .zip(known.iter())
+        .map(|(&rx, &k)| rx / k)
+        .collect()
 }
 
 /// One step of the streaming drain loop.
