@@ -1033,3 +1033,81 @@ fn the_channel_estimate_tracks_a_gain_change() {
         "|H| should scale with the transmitted gain, got {ratio:.3}x"
     );
 }
+
+// ── Per-stage FEC outcome and EVM ──────────────────────────────────────────
+//
+// `decode_chain` folded CRC, inner-FEC and outer-FEC convergence into one
+// bool, and the frame path hardcoded `evm_db: None` even though the machinery
+// to compute it already existed. Both are what separate "the link is marginal"
+// from "the link failed".
+
+#[test]
+fn a_clean_frame_reports_both_fec_stages_converged() {
+    let (cfg, pre, table, _, buf) = framed_at_gain(1.0);
+    let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre);
+    let f = rx
+        .feed(&buf)
+        .into_iter()
+        .filter_map(|r| r.ok())
+        .next()
+        .unwrap();
+    assert_eq!(f.diagnostics.inner_fec_ok, Some(true), "inner FEC");
+    assert_eq!(f.diagnostics.outer_fec_ok, Some(true), "outer FEC");
+}
+
+#[test]
+fn the_frame_path_measures_evm() {
+    let (cfg, pre, table, _, buf) = framed_at_gain(1.0);
+    let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre);
+    let f = rx
+        .feed(&buf)
+        .into_iter()
+        .filter_map(|r| r.ok())
+        .next()
+        .unwrap();
+    let evm = f.diagnostics.evm_db.expect("frame path measures EVM");
+    // A noiseless frame's constellation sits essentially on its ideal points.
+    assert!(
+        evm < -25.0,
+        "clean frame should have very low EVM, got {evm:.1} dB"
+    );
+}
+
+#[test]
+fn evm_degrades_with_noise_while_the_frame_still_decodes() {
+    // EVM has to track channel quality, not just report a constant — this is
+    // the property the MER readout is built on. Both frames must still decode,
+    // so the comparison is like-for-like.
+    let clean = {
+        let (cfg, pre, table, _, buf) = framed_at_gain(1.0);
+        let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre);
+        rx.feed(&buf)
+            .into_iter()
+            .filter_map(|r| r.ok())
+            .next()
+            .unwrap()
+            .diagnostics
+            .evm_db
+            .unwrap()
+    };
+    let noisy = {
+        let (cfg, pre, table, _, mut buf) = framed_at_gain(1.0);
+        // Noise *power* relative to the frame's own, matching the convention
+        // the neighbouring AWGN tests use.
+        let sig_power: f32 = buf.iter().map(|c| c.norm_sqr()).sum::<f32>() / buf.len() as f32;
+        add_awgn(&mut buf, sig_power * 0.05, 0xC0FD_2026);
+        let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre);
+        rx.feed(&buf)
+            .into_iter()
+            .filter_map(|r| r.ok())
+            .next()
+            .expect("20 dB SNR still decodes")
+            .diagnostics
+            .evm_db
+            .unwrap()
+    };
+    assert!(
+        noisy > clean + 5.0,
+        "EVM should worsen with noise: clean {clean:.1} dB, noisy {noisy:.1} dB"
+    );
+}

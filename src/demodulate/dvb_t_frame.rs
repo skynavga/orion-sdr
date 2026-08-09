@@ -294,7 +294,7 @@ impl DvbTFrameDemod {
             InterleaverKind::None,
             &cache,
         );
-        let (mut ts, ok) = decode_chain(
+        let outcome = decode_chain(
             &llrs,
             &plan,
             CrcKind::None,
@@ -309,9 +309,10 @@ impl DvbTFrameDemod {
             DecodeRule::SumProduct,
         )
         .map_err(|_| DvbTRxError::PayloadDecode)?;
-        if !ok {
+        if !outcome.all_ok() {
             return Err(DvbTRxError::PayloadDecode);
         }
+        let mut ts = outcome.bytes;
 
         // 4. Undo energy dispersal and depacketize.
         if ts.len() < ts_bytes_len {

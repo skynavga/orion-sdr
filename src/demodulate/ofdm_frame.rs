@@ -46,12 +46,17 @@ use std::sync::Arc;
 /// symbol), it runs the full `CyclicPrefixRemove → FftBlock → OfdmEqualizer →
 /// GridExtract → OfdmSoftDemod` chain, correcting a frequency-selective
 /// channel — the streaming receiver's path.
+/// `symbol_sink`, when supplied, receives every equalized data-carrier symbol
+/// in demap order. EVM is measured by comparing these against the ideal points
+/// their own hard decisions map back to, so it needs the constellation-domain
+/// symbols the LLRs are derived from — which are otherwise consumed in place.
 fn soft_demap(
     base: &OfdmConfig,
     constellation: ConstellationOrder,
     iq: &[C32],
     n_symbols: usize,
     equalizer: Option<&mut OfdmEqualizer>,
+    mut symbol_sink: Option<&mut Vec<C32>>,
 ) -> Option<Vec<f32>> {
     let cfg = symbol_config(base, constellation);
     let sps = cfg.samples_per_ofdm_symbol();
@@ -73,6 +78,9 @@ fn soft_demap(
                 let dw = demod.process(&iq[in_off..], &mut symbols);
                 if dw.out_written != n_data {
                     return None;
+                }
+                if let Some(sink) = symbol_sink.as_deref_mut() {
+                    sink.extend_from_slice(&symbols);
                 }
                 let sw = soft.process(&symbols, &mut llrs[out_off..out_off + bps]);
                 if sw.out_written != bps {
@@ -99,6 +107,9 @@ fn soft_demap(
                 }
                 if grid_extract.process(&equalized, &mut symbols).out_written != n_data {
                     return None;
+                }
+                if let Some(sink) = symbol_sink.as_deref_mut() {
+                    sink.extend_from_slice(&symbols);
                 }
                 let sw = soft.process(&symbols, &mut llrs[out_off..out_off + bps]);
                 if sw.out_written != bps {
@@ -353,13 +364,41 @@ fn outer_decode(outer: OuterFec, coded_bits: &[u8], cache: &CodecCache) -> (Vec<
     }
 }
 
-/// Decodes one logical block's coded LLRs back to its info bytes, checking the
-/// CRC. Returns `Ok((bytes, crc_ok))` or an error if the structure is invalid.
+/// The outcome of decoding one logical block: the recovered bytes plus each
+/// stage's success, reported **separately**.
+///
+/// The concatenated scheme has two independent decoders, and folding them into
+/// one flag destroys the only signal that distinguishes a marginal link from a
+/// failing one. Errors the inner code corrects never reach the outer code, so
+/// `inner_ok == false` with `outer_ok == true` is a link running hot but still
+/// delivering — precisely the state a pre-FEC error rate is meant to surface,
+/// and indistinguishable from success once folded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainOutcome {
+    /// The recovered info bytes, CRC stripped.
+    pub bytes: Vec<u8>,
+    /// Every inner-FEC block converged. Always `true` for
+    /// [`InnerFec::None`], and for the convolutional arm, whose soft Viterbi
+    /// has no per-block convergence flag — the outer code and CRC decide.
+    pub inner_ok: bool,
+    /// Every outer-FEC block decoded. Always `true` for [`OuterFec::None`].
+    pub outer_ok: bool,
+    /// The block's CRC checked.
+    pub crc_ok: bool,
+}
+
+impl ChainOutcome {
+    /// The folded verdict every caller used before the stages were separated:
+    /// the block is good only if all three agree.
+    pub fn all_ok(&self) -> bool {
+        self.crc_ok && self.inner_ok && self.outer_ok
+    }
+}
+
 /// Decodes one logical block's coded LLRs back to its info bytes, checking the
 /// CRC — the exact inverse of `modulate::ofdm_frame::encode_chain`. Public so
 /// per-standard frame assemblers (e.g. `waveform::dvb_t_frame`) reuse the shared
-/// FEC decode rather than duplicating it. Returns `(bytes, all_ok)` where
-/// `all_ok` folds in the CRC and every FEC block's convergence.
+/// FEC decode rather than duplicating it.
 #[allow(clippy::too_many_arguments)]
 pub fn decode_chain(
     coded_llrs: &[f32],
@@ -374,7 +413,7 @@ pub fn decode_chain(
     per_frame_seed: u32,
     cache: &CodecCache,
     ldpc_rule: DecodeRule,
-) -> Result<(Vec<u8>, bool), RxError> {
+) -> Result<ChainOutcome, RxError> {
     // 1. Trim to the exact coded-bit count, then invert the after-inner
     //    scramble (bit domain) if configured.
     let mut llrs = coded_llrs.to_vec();
@@ -417,7 +456,12 @@ pub fn decode_chain(
 
     // 5. Strip and check the CRC.
     let (bytes, crc_ok) = check_and_strip_crc(crc, &framed).ok_or(RxError::MalformedHeader)?;
-    Ok((bytes, crc_ok && inner_ok && outer_ok))
+    Ok(ChainOutcome {
+        bytes,
+        inner_ok,
+        outer_ok,
+        crc_ok,
+    })
 }
 
 /// Applies a PN sequence to LLRs by negating each LLR whose PN bit is 1.
@@ -445,21 +489,36 @@ enum BodyError {
     Failed(RxError),
 }
 
+/// What one frame body yielded: the packet, how many samples it consumed, and
+/// the per-stage measurements taken along the way.
+struct DecodedBody {
+    packet: FramePacket,
+    /// IQ samples the header+payload occupied, so a streaming caller can
+    /// advance its buffer.
+    consumed: usize,
+    /// Payload EVM, measured against its own hard decisions before the FEC
+    /// stages consume the LLRs.
+    evm_db: Option<f32>,
+    /// The payload's inner- and outer-FEC convergence, kept apart — see
+    /// [`ChainOutcome`].
+    inner_ok: bool,
+    outer_ok: bool,
+}
+
 /// Decodes a frame body (header + payload) from `iq[0]` — the first sample
 /// AFTER the preamble+training, already CFO-corrected. When
 /// `channel_estimate` is `Some(n_fft freq bins)` the soft-demap equalizes each
 /// symbol against it (multipath); `None` is the flat-channel path.
 ///
-/// Returns the recovered [`FramePacket`] and the number of IQ samples the
-/// header+payload occupied (so a streaming caller can advance its buffer), or a
-/// [`BodyError`] distinguishing "incomplete" from a genuine failure.
+/// Returns a [`DecodedBody`], or a [`BodyError`] distinguishing "incomplete"
+/// from a genuine failure.
 fn decode_frame_body(
     cfg: &OfdmConfig,
     mcs_table: &McsTable,
     iq: &[C32],
     channel_estimate: Option<&[C32]>,
     cache: &CodecCache,
-) -> Result<(FramePacket, usize), BodyError> {
+) -> Result<DecodedBody, BodyError> {
     let mut cursor = 0usize;
 
     // Builds a fresh equalizer for `constellation` carrying the shared channel
@@ -491,11 +550,14 @@ fn decode_frame_body(
                      iq: &[C32],
                      off: usize,
                      n_sym: usize,
-                     eq: Option<&mut OfdmEqualizer>|
+                     eq: Option<&mut OfdmEqualizer>,
+                     sink: Option<&mut Vec<C32>>|
      -> Option<Vec<f32>> {
         match scattered.as_mut() {
+            // The scattered path does not collect symbols: DVB-T frames are
+            // decoded by `waveform::dvb_t_frame`, which has its own diagnostics.
             Some(x) => soft_demap_scattered(cfg, constellation, &iq[off..], n_sym, x),
-            None => soft_demap(cfg, constellation, &iq[off..], n_sym, eq),
+            None => soft_demap(cfg, constellation, &iq[off..], n_sym, eq, sink),
         }
     };
 
@@ -513,9 +575,9 @@ fn decode_frame_body(
         let n_sym = symbols_for_coded_bits(cfg, HEADER_CONSTELLATION, hplan.coded_bits);
         let mut eq = make_eq(HEADER_CONSTELLATION);
         // Too few samples for the header ⇒ incomplete, not malformed.
-        let llrs = demap(HEADER_CONSTELLATION, iq, cursor, n_sym, eq.as_mut())
+        let llrs = demap(HEADER_CONSTELLATION, iq, cursor, n_sym, eq.as_mut(), None)
             .ok_or(BodyError::Incomplete)?;
-        let (fields, ok) = decode_chain(
+        let header = decode_chain(
             &llrs,
             &hplan,
             cfg.header_crc,
@@ -533,9 +595,10 @@ fn decode_frame_body(
             DecodeRule::SumProduct,
         )
         .map_err(BodyError::Failed)?;
-        if !ok {
+        if !header.all_ok() {
             return Err(BodyError::Failed(RxError::HeaderCrcMismatch));
         }
+        let fields = header.bytes;
         if fields.len() < HEADER_FIELD_BYTES {
             return Err(BodyError::Failed(RxError::MalformedHeader));
         }
@@ -580,9 +643,29 @@ fn decode_frame_body(
     let n_sym = symbols_for_coded_bits(cfg, mcs.constellation, pplan.coded_bits);
     let mut eq = make_eq(mcs.constellation);
     // Too few samples for the (now-known-length) payload ⇒ incomplete.
-    let llrs =
-        demap(mcs.constellation, iq, cursor, n_sym, eq.as_mut()).ok_or(BodyError::Incomplete)?;
-    let (bytes, ok) = decode_chain(
+    let mut payload_symbols: Vec<C32> = Vec::new();
+    let llrs = demap(
+        mcs.constellation,
+        iq,
+        cursor,
+        n_sym,
+        eq.as_mut(),
+        Some(&mut payload_symbols),
+    )
+    .ok_or(BodyError::Incomplete)?;
+    // EVM against the payload's own hard decisions, measured before the FEC
+    // stages consume the LLRs. `symbol_config` re-resolves the constellation so
+    // the ideal-point mapper matches the one that produced these symbols.
+    let evm_db = crate::demodulate::ofdm::evm_db(
+        &symbol_config(cfg, mcs.constellation),
+        &payload_symbols,
+        &llrs
+            .iter()
+            .map(|&l| u8::from(l <= 0.0))
+            .collect::<Vec<u8>>(),
+        n_sym,
+    );
+    let payload_outcome = decode_chain(
         &llrs,
         &pplan,
         cfg.payload_crc,
@@ -598,9 +681,13 @@ fn decode_frame_body(
         cfg.ldpc_decode_rule,
     )
     .map_err(BodyError::Failed)?;
-    if !ok {
+    if !payload_outcome.all_ok() {
         return Err(BodyError::Failed(RxError::CrcMismatch));
     }
+    // Take the flags before consuming the bytes, so the payload is moved rather
+    // than cloned out of the outcome.
+    let (inner_ok, outer_ok) = (payload_outcome.inner_ok, payload_outcome.outer_ok);
+    let bytes = payload_outcome.bytes;
     let payload_sps = symbol_config(cfg, mcs.constellation).samples_per_ofdm_symbol();
     cursor += n_sym * payload_sps;
     // Trim to the declared payload length (coding blocks are zero-padded).
@@ -609,7 +696,13 @@ fn decode_frame_body(
         .map(|s| s.to_vec())
         .unwrap_or(bytes);
 
-    Ok((FramePacket { metadata, payload }, cursor))
+    Ok(DecodedBody {
+        packet: FramePacket { metadata, payload },
+        consumed: cursor,
+        evm_db,
+        inner_ok,
+        outer_ok,
+    })
 }
 
 /// The batch OFDM frame demodulator — decodes a frame at a KNOWN start (`iq[0]`
@@ -659,7 +752,7 @@ impl OfdmFrameDemod {
     /// `OfdmFrameDemod` builds each FEC code only once.
     pub fn decode(&self, iq: &[C32]) -> Result<FramePacket, RxError> {
         decode_frame_body(&self.cfg, &self.mcs_table, iq, None, &self.cache)
-            .map(|(frame, _)| frame)
+            .map(|body| body.packet)
             .map_err(|e| match e {
                 // A batch caller has no "wait for more" option; a truncated buffer
                 // is a malformed input here.
@@ -843,11 +936,11 @@ impl OfdmFrameStreamDemod {
             channel_estimate.as_deref(),
             &self.cache,
         ) {
-            Ok((packet, body_samples)) => {
+            Ok(body) => {
                 let diagnostics = OfdmRxFrame {
                     bits: Vec::new(),
                     num_symbols: 0,
-                    evm_db: None,
+                    evm_db: body.evm_db,
                     cfo_hz: Some(total_cfo),
                     timing_offset_samples: Some(best.start_sample as i32),
                     // A scalar channel MSE needs a reference to measure
@@ -861,15 +954,17 @@ impl OfdmFrameStreamDemod {
                         .want_channel_estimate
                         .then(|| channel_estimate.as_deref().map(channel_from_training))
                         .flatten(),
+                    inner_fec_ok: Some(body.inner_ok),
+                    outer_fec_ok: Some(body.outer_ok),
                 };
-                let consume_to = best.start_sample + pre_len + body_samples;
+                let consume_to = best.start_sample + pre_len + body.consumed;
                 if consume_to > self.buf.len() {
                     // Shouldn't happen (decode succeeded), but guard the drain.
                     return FrameStep::NeedMore;
                 }
                 FrameStep::Decoded(
                     Ok(RxFrame {
-                        packet,
+                        packet: body.packet,
                         diagnostics,
                     }),
                     consume_to,

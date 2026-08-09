@@ -198,6 +198,16 @@ pub struct OfdmRxFrame {
     /// delay profile — and from it delay spread and whether echoes fall inside
     /// the guard — is the inverse FFT of this.
     pub channel_estimate: Option<Vec<C32>>,
+    /// Whether every **inner**-FEC block of the payload converged, reported
+    /// separately from the outer stage.
+    ///
+    /// `false` here with a frame that still decoded is a link running hot but
+    /// delivering — errors the inner code corrected never reached the outer
+    /// one. That distinction is the whole point of separating the stages; a
+    /// folded flag cannot express it.
+    pub inner_fec_ok: Option<bool>,
+    /// Whether every **outer**-FEC block of the payload decoded.
+    pub outer_fec_ok: Option<bool>,
 }
 
 /// Builds an [`OfdmRxFrame`] from demodulated soft symbols and their
@@ -228,10 +238,17 @@ pub fn build_ofdm_rx_frame(cfg: &OfdmConfig, soft_symbols: &[C32], bits: Vec<u8>
         channel_mse: None,
         sync_score: None,
         channel_estimate: None,
+        inner_fec_ok: None,
+        outer_fec_ok: None,
     }
 }
 
-fn evm_db(cfg: &OfdmConfig, soft_symbols: &[C32], bits: &[u8], num_symbols: usize) -> Option<f32> {
+pub(crate) fn evm_db(
+    cfg: &OfdmConfig,
+    soft_symbols: &[C32],
+    bits: &[u8],
+    num_symbols: usize,
+) -> Option<f32> {
     if num_symbols == 0 || soft_symbols.is_empty() {
         return None;
     }
