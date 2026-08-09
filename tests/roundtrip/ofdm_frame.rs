@@ -1111,3 +1111,109 @@ fn evm_degrades_with_noise_while_the_frame_still_decodes() {
         "EVM should worsen with noise: clean {clean:.1} dB, noisy {noisy:.1} dB"
     );
 }
+
+// ── True bit error rates from a re-encode ──────────────────────────────────
+//
+// A frame that passed its CRC is ground truth: re-running the encode chain on
+// it reconstructs exactly what was transmitted, so the difference from what
+// arrived at each stage is a real error rate rather than a pass/fail flag.
+// Nothing about the payload need be known in advance — which is what makes
+// this work over the air rather than only against a known test vector.
+
+/// A wideband-style link: 256-point plan, QPSK, and a 4x64 preamble long
+/// enough for Schmidl & Cox to acquire under noise. `plan_config`'s 4x16
+/// preamble cannot — the neighbouring AWGN tests sidestep that by adding noise
+/// to the body only and decoding with the batch path, which never syncs.
+fn noisy_link_frame(noise_frac: f32) -> (OfdmConfig, OfdmPreamble, McsTable, Vec<C32>) {
+    let plan = orion_sdr::multicarrier::CarrierPlan::new(256, 32).with_contiguous_data(111, false);
+    let cfg = OfdmConfig::new(plan, 1_920_000.0, 0.0, 1.0, ConstellationOrder::Qpsk)
+        .with_payload_crc(CrcKind::Crc32)
+        .with_header_crc(CrcKind::Crc16)
+        .with_rx_window_backoff(16);
+    let pre = OfdmPreamble::new(4, 64).with_training_symbol(256, 32);
+    let table = McsTable::default_ladder();
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+    let frame = FramePacket::new(FrameMetadata::new(1, 1), sample_payload(184));
+    let mut buf = vec![C32::default(); 64];
+    buf.extend_from_slice(&modu.modulate_frame(&frame, 0));
+    buf.extend(vec![C32::default(); 512]);
+    if noise_frac > 0.0 {
+        let p: f32 = buf.iter().map(|c| c.norm_sqr()).sum::<f32>() / buf.len() as f32;
+        add_awgn(&mut buf, p * noise_frac, 0xBE12_2026);
+    }
+    (cfg, pre, table, buf)
+}
+
+/// One frame at `noise_frac` of its own power, decoded with rates measured.
+fn decode_with_rates(noise_frac: f32) -> Option<(f32, f32)> {
+    let (cfg, pre, table, buf) = noisy_link_frame(noise_frac);
+    let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre).with_error_rates(true);
+    rx.feed(&buf)
+        .into_iter()
+        .filter_map(|r| r.ok())
+        .next()
+        .map(|f| {
+            (
+                f.diagnostics.channel_ber.expect("opted in"),
+                f.diagnostics.inner_ber.expect("opted in"),
+            )
+        })
+}
+
+#[test]
+fn error_rates_are_opt_in() {
+    let (cfg, pre, table, _, buf) = framed_at_gain(1.0);
+    let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre);
+    let f = rx
+        .feed(&buf)
+        .into_iter()
+        .filter_map(|r| r.ok())
+        .next()
+        .unwrap();
+    assert!(f.diagnostics.channel_ber.is_none());
+    assert!(f.diagnostics.inner_ber.is_none());
+}
+
+#[test]
+fn a_noiseless_frame_measures_zero_channel_errors() {
+    let (cber, iber) = decode_with_rates(0.0).expect("clean frame decodes");
+    assert_eq!(cber, 0.0, "no channel errors without a channel");
+    assert_eq!(iber, 0.0);
+}
+
+#[test]
+fn the_channel_error_rate_rises_with_noise() {
+    // The property that makes this a *rate*: it has to move continuously with
+    // channel quality, not step between 0 and 1 the way a flag does.
+    let mut prev = -1.0_f32;
+    let mut measured = 0;
+    for nf in [0.0_f32, 0.02, 0.05, 0.10] {
+        let Some((cber, _)) = decode_with_rates(nf) else {
+            continue;
+        };
+        assert!(
+            cber > prev,
+            "CBER should rise with noise: {cber:.3e} after {prev:.3e} at noise {nf}"
+        );
+        prev = cber;
+        measured += 1;
+    }
+    assert!(measured >= 3, "too few decoded points to judge a trend");
+}
+
+#[test]
+fn a_heavily_errored_channel_still_delivers_a_clean_frame() {
+    // The state a folded pass/fail flag cannot express, and the whole reason
+    // for measuring here: the channel is hammering the signal while the inner
+    // code absorbs it and the frame arrives intact. Reported as a high channel
+    // BER against a clean inner BER.
+    let (cber, iber) = decode_with_rates(0.10).expect("still decodes at this noise");
+    assert!(
+        cber > 1.0e-3,
+        "expected a visibly errored channel, got {cber:.3e}"
+    );
+    assert!(
+        iber <= cber,
+        "the inner code must not make things worse: {iber:.3e} vs {cber:.3e}"
+    );
+}

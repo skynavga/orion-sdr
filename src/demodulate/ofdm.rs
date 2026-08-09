@@ -208,6 +208,21 @@ pub struct OfdmRxFrame {
     pub inner_fec_ok: Option<bool>,
     /// Whether every **outer**-FEC block of the payload decoded.
     pub outer_fec_ok: Option<bool>,
+    /// Bit error rate at the **channel's output** — the inner decoder's input.
+    /// The classic "pre-FEC BER" / `CBER`.
+    ///
+    /// Measured against a re-encode of the recovered frame, so it needs no
+    /// prior knowledge of the payload and works over the air. `None` unless
+    /// the receiver was built with
+    /// [`OfdmFrameStreamDemod::with_error_rates`], and only ever present on
+    /// frames that decoded — there is no ground truth for one that did not.
+    pub channel_ber: Option<f32>,
+    /// Bit error rate at the **inner decoder's output**, before the outer
+    /// decoder — `IBER`, the rung the inner code's coding gain shows up in.
+    ///
+    /// Same provenance and same conditions as
+    /// [`channel_ber`](Self::channel_ber).
+    pub inner_ber: Option<f32>,
 }
 
 /// Builds an [`OfdmRxFrame`] from demodulated soft symbols and their
@@ -240,6 +255,8 @@ pub fn build_ofdm_rx_frame(cfg: &OfdmConfig, soft_symbols: &[C32], bits: Vec<u8>
         channel_estimate: None,
         inner_fec_ok: None,
         outer_fec_ok: None,
+        channel_ber: None,
+        inner_ber: None,
     }
 }
 

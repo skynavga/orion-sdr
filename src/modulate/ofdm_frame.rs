@@ -551,11 +551,25 @@ pub fn shortened_bch_for(t: usize, msg_bits: usize) -> Bch {
     Bch::shortened(msg_bits + parity, t).expect("valid shortened BCH")
 }
 
-/// Runs the full encode chain for one logical block (header or payload):
-/// `bytes → CRC → [scramble if before] → outer → outer-interleave → inner →
-/// inner-interleave → [scramble if after]`, returning coded bits ready to map.
+/// The intermediate bit-streams the encode chain passes through, kept so a
+/// receiver can measure error rates against them.
+///
+/// Re-encoding a successfully decoded frame reconstructs exactly what the
+/// transmitter sent; comparing that against what actually arrived at each
+/// stage is what turns a pass/fail flag into a bit error *rate*.
+pub struct EncodedStages {
+    /// The outer decoder's expected output — what should have arrived at the
+    /// inner decoder's *output*, before outer deinterleaving.
+    pub outer_il_bits: Vec<u8>,
+    /// The fully coded bits as transmitted — what should have arrived at the
+    /// inner decoder's *input*.
+    pub coded: Vec<u8>,
+}
+
+/// [`encode_chain`], keeping the per-stage intermediates instead of only the
+/// final coded bits — see [`EncodedStages`].
 #[allow(clippy::too_many_arguments)]
-pub fn encode_chain(
+pub fn encode_chain_stages(
     bytes: &[u8],
     crc: CrcKind,
     outer: OuterFec,
@@ -566,7 +580,7 @@ pub fn encode_chain(
     scrambler_pos: ScramblerPos,
     per_frame_seed: u32,
     cache: &CodecCache,
-) -> Vec<u8> {
+) -> EncodedStages {
     // 1. CRC over the raw bytes.
     let mut framed = append_crc(crc, bytes);
 
@@ -594,7 +608,41 @@ pub fn encode_chain(
         scramble_bits(s, &mut coded);
     }
 
-    coded
+    EncodedStages {
+        outer_il_bits,
+        coded,
+    }
+}
+
+/// Runs the full encode chain for one logical block (header or payload):
+/// `bytes → CRC → [scramble if before] → outer → outer-interleave → inner →
+/// inner-interleave → [scramble if after]`, returning coded bits ready to map.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_chain(
+    bytes: &[u8],
+    crc: CrcKind,
+    outer: OuterFec,
+    inner: InnerFec,
+    outer_il: InterleaverKind,
+    inner_il: InterleaverKind,
+    scrambler: ScramblerKind,
+    scrambler_pos: ScramblerPos,
+    per_frame_seed: u32,
+    cache: &CodecCache,
+) -> Vec<u8> {
+    encode_chain_stages(
+        bytes,
+        crc,
+        outer,
+        inner,
+        outer_il,
+        inner_il,
+        scrambler,
+        scrambler_pos,
+        per_frame_seed,
+        cache,
+    )
+    .coded
 }
 
 /// Scrambles a bit vector by packing to bytes (zero-padded), XORing the PN

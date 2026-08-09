@@ -29,7 +29,7 @@ use crate::modulate::ofdm::{ConstellationOrder, OfdmConfig};
 use crate::modulate::ofdm_frame::{
     BCH_INFO_BITS, BlockPlan, CodecCache, HEADER_CONSTELLATION, HEADER_FIELD_BYTES, HEADER_LDPC,
     McsTable, bits_to_bytes, block_plan, build_scrambler, bytes_to_bits, check_and_strip_crc,
-    scramble_bytes, symbol_config, symbols_for_coded_bits,
+    encode_chain_stages, scramble_bytes, symbol_config, symbols_for_coded_bits,
 };
 use crate::multicarrier::{CarrierGrid, GridExtract, SymbolFft};
 use crate::sync::{OfdmPreamble, ofdm_sync};
@@ -385,6 +385,14 @@ pub struct ChainOutcome {
     pub outer_ok: bool,
     /// The block's CRC checked.
     pub crc_ok: bool,
+    /// What the inner decoder produced, before outer deinterleaving — the bits
+    /// that actually arrived at the outer decoder's input.
+    ///
+    /// Kept rather than dropped so a caller can compare it against a re-encode
+    /// of the recovered message and obtain a post-inner-FEC bit error *rate*
+    /// instead of a pass/fail flag. Costs nothing: the vector is already
+    /// allocated, and is moved out rather than copied.
+    pub inner_out_bits: Vec<u8>,
 }
 
 impl ChainOutcome {
@@ -461,6 +469,8 @@ pub fn decode_chain(
         inner_ok,
         outer_ok,
         crc_ok,
+        // `deinterleave_bits` only borrowed this, so it moves out here.
+        inner_out_bits: outer_il_bits,
     })
 }
 
@@ -489,6 +499,21 @@ enum BodyError {
     Failed(RxError),
 }
 
+/// Fraction of positions where two bit-streams differ, over their common
+/// length. `None` if either is empty.
+fn bit_error_rate(a: &[u8], b: &[u8]) -> Option<f32> {
+    let n = a.len().min(b.len());
+    if n == 0 {
+        return None;
+    }
+    let errs = a[..n]
+        .iter()
+        .zip(b[..n].iter())
+        .filter(|(x, y)| x != y)
+        .count();
+    Some(errs as f32 / n as f32)
+}
+
 /// What one frame body yielded: the packet, how many samples it consumed, and
 /// the per-stage measurements taken along the way.
 struct DecodedBody {
@@ -503,6 +528,10 @@ struct DecodedBody {
     /// [`ChainOutcome`].
     inner_ok: bool,
     outer_ok: bool,
+    /// Bit error rate at the channel's output, i.e. the inner decoder's input.
+    channel_ber: Option<f32>,
+    /// Bit error rate at the inner decoder's output, before the outer decoder.
+    inner_ber: Option<f32>,
 }
 
 /// Decodes a frame body (header + payload) from `iq[0]` — the first sample
@@ -518,6 +547,7 @@ fn decode_frame_body(
     iq: &[C32],
     channel_estimate: Option<&[C32]>,
     cache: &CodecCache,
+    measure_ber: bool,
 ) -> Result<DecodedBody, BodyError> {
     let mut cursor = 0usize;
 
@@ -687,6 +717,45 @@ fn decode_frame_body(
     // Take the flags before consuming the bytes, so the payload is moved rather
     // than cloned out of the outcome.
     let (inner_ok, outer_ok) = (payload_outcome.inner_ok, payload_outcome.outer_ok);
+
+    // True bit error rates, from a re-encode of what we just recovered.
+    //
+    // A frame that passed its CRC *is* the ground truth: re-running the encode
+    // chain on it reconstructs exactly what the transmitter sent, so comparing
+    // that against what arrived at each stage gives a rate rather than a
+    // pass/fail flag. Crucially this needs no prior knowledge of the payload —
+    // which is what makes it work over the air, where nothing about the
+    // transmitted bits is known in advance.
+    //
+    // Off unless asked for: it costs one encode per frame.
+    let (channel_ber, inner_ber) = if measure_ber {
+        let stages = encode_chain_stages(
+            &payload_outcome.bytes,
+            cfg.payload_crc,
+            mcs.outer_fec,
+            mcs.inner_fec,
+            cfg.outer_interleaver,
+            cfg.inner_interleaver,
+            cfg.scrambler,
+            cfg.scrambler_pos,
+            per_frame_seed,
+            cache,
+        );
+        // The channel's output is the demapped LLRs hard-decided, compared
+        // before any descrambling — `stages.coded` carries the scramble too.
+        let received: Vec<u8> = llrs
+            .iter()
+            .take(pplan.coded_bits)
+            .map(|&l| u8::from(l <= 0.0))
+            .collect();
+        (
+            bit_error_rate(&received, &stages.coded),
+            bit_error_rate(&payload_outcome.inner_out_bits, &stages.outer_il_bits),
+        )
+    } else {
+        (None, None)
+    };
+
     let bytes = payload_outcome.bytes;
     let payload_sps = symbol_config(cfg, mcs.constellation).samples_per_ofdm_symbol();
     cursor += n_sym * payload_sps;
@@ -702,6 +771,8 @@ fn decode_frame_body(
         evm_db,
         inner_ok,
         outer_ok,
+        channel_ber,
+        inner_ber,
     })
 }
 
@@ -751,7 +822,7 @@ impl OfdmFrameDemod {
     /// [`CodecCache`] is reused across calls, so decoding many frames on one
     /// `OfdmFrameDemod` builds each FEC code only once.
     pub fn decode(&self, iq: &[C32]) -> Result<FramePacket, RxError> {
-        decode_frame_body(&self.cfg, &self.mcs_table, iq, None, &self.cache)
+        decode_frame_body(&self.cfg, &self.mcs_table, iq, None, &self.cache, false)
             .map(|body| body.packet)
             .map_err(|e| match e {
                 // A batch caller has no "wait for more" option; a truncated buffer
@@ -797,6 +868,9 @@ pub struct OfdmFrameStreamDemod {
     /// diagnostics. Off by default: it costs an `n_fft`-sized allocation per
     /// frame and only diagnostic consumers want it.
     want_channel_estimate: bool,
+    /// Whether to measure true bit error rates by re-encoding each decoded
+    /// frame. Off by default: it costs one encode per frame.
+    want_error_rates: bool,
     /// FEC code cache, warmed across the frames this receiver decodes (see
     /// [`CodecCache`]). Held behind `Arc` so it can be shared with a paired
     /// modulator.
@@ -828,6 +902,7 @@ impl OfdmFrameStreamDemod {
             buf: Vec::new(),
             score_threshold: 0.5,
             want_channel_estimate: false,
+            want_error_rates: false,
             cache,
         }
     }
@@ -847,6 +922,27 @@ impl OfdmFrameStreamDemod {
     /// nothing to estimate from and the field stays `None`.
     pub fn with_channel_estimate(mut self, on: bool) -> Self {
         self.want_channel_estimate = on;
+        self
+    }
+
+    /// Measures true bit error rates at the inner decoder's input and output,
+    /// reported as [`channel_ber`](OfdmRxFrame::channel_ber) and
+    /// [`inner_ber`](OfdmRxFrame::inner_ber). Off by default.
+    ///
+    /// Works by re-encoding each successfully decoded frame: a frame that
+    /// passed its CRC is ground truth, so the re-encode reconstructs what the
+    /// transmitter sent and the difference from what arrived is a real error
+    /// rate. **No prior knowledge of the payload is required**, which is what
+    /// makes this usable over the air rather than only against a known test
+    /// vector.
+    ///
+    /// Only frames that decode are measured — an undecodable frame has no
+    /// ground truth, so a rising error rate that suddenly stops reporting is
+    /// itself the signal that the link has given up.
+    ///
+    /// Costs one encode per decoded frame.
+    pub fn with_error_rates(mut self, on: bool) -> Self {
+        self.want_error_rates = on;
         self
     }
 
@@ -935,6 +1031,7 @@ impl OfdmFrameStreamDemod {
             body,
             channel_estimate.as_deref(),
             &self.cache,
+            self.want_error_rates,
         ) {
             Ok(body) => {
                 let diagnostics = OfdmRxFrame {
@@ -956,6 +1053,8 @@ impl OfdmFrameStreamDemod {
                         .flatten(),
                     inner_fec_ok: Some(body.inner_ok),
                     outer_fec_ok: Some(body.outer_ok),
+                    channel_ber: body.channel_ber,
+                    inner_ber: body.inner_ber,
                 };
                 let consume_to = best.start_sample + pre_len + body.consumed;
                 if consume_to > self.buf.len() {
