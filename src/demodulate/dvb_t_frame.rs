@@ -309,7 +309,7 @@ impl DvbTFrameDemod {
             DecodeRule::SumProduct,
         )
         .map_err(|_| DvbTRxError::PayloadDecode)?;
-        if !outcome.all_ok() {
+        if !outcome.is_valid() {
             return Err(DvbTRxError::PayloadDecode);
         }
         let mut ts = outcome.bytes;

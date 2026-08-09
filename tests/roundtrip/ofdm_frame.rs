@@ -3,13 +3,14 @@
 
 use crate::common::add_awgn;
 use num_complex::Complex32 as C32;
+use orion_sdr::demodulate::ofdm_frame::ChainOutcome;
 use orion_sdr::demodulate::{OfdmFrameDemod, OfdmFrameStreamDemod};
 use orion_sdr::dsp::Rotator;
 use orion_sdr::fec::{
     CrcKind, DecodeRule, FrameMetadata, FramePacket, HeaderFormat, InnerFec, InterleaverKind,
     OuterFec, ScramblerKind, ScramblerPos, SeedMode,
 };
-use orion_sdr::modulate::{ConstellationOrder, McsTable, OfdmConfig, OfdmFrameMod};
+use orion_sdr::modulate::{CodecCache, ConstellationOrder, McsTable, OfdmConfig, OfdmFrameMod};
 use orion_sdr::sync::OfdmPreamble;
 
 fn plan_config() -> OfdmConfig {
@@ -646,31 +647,53 @@ fn multipath_taps() -> [C32; 3] {
 }
 
 #[test]
-fn stream_multipath_needs_channel_estimate() {
-    // Same channel as `stream_frame_multipath_channel`, but a preamble with NO
-    // training symbol, so the receiver has no channel estimate. The frame must
-    // FAIL to decode — proving the training-symbol equalization is load-bearing.
-    let cfg = plan_config();
-    let pre_no_training = OfdmPreamble::new(4, 16); // no training symbol
-    let table = McsTable::default_ladder();
-    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre_no_training);
-
+fn multipath_without_a_channel_estimate_costs_link_margin() {
+    // Was `stream_multipath_needs_channel_estimate`, which asserted the frame
+    // must FAIL to decode without a training symbol. That premise turned out to
+    // be false, and only held because acceptance was gated on `inner_ok`: the
+    // frame decodes to a *byte-exact* payload, CRC-32 verified, with both FEC
+    // stages reporting non-convergence and 14.7% of channel bits wrong. The
+    // concatenated code recovers it; the old gate simply discarded it.
+    //
+    // What equalization actually buys is margin, and that is now measurable —
+    // so assert the thing the original comment meant.
     let payload = sample_payload(30);
-    let frame = FramePacket::new(FrameMetadata::new(3, 1), payload.clone());
-    let mut buf = vec![C32::default(); 24];
-    buf.extend_from_slice(&modu.modulate_frame(&frame, 0));
-    buf.extend(vec![C32::default(); 64]);
-    let channeled = apply_fir_channel(&buf, &multipath_taps());
+    let cber_for = |pre: OfdmPreamble| -> f32 {
+        let cfg = plan_config();
+        let table = McsTable::default_ladder();
+        let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+        let frame = FramePacket::new(FrameMetadata::new(3, 1), payload.clone());
+        let mut buf = vec![C32::default(); 24];
+        buf.extend_from_slice(&modu.modulate_frame(&frame, 0));
+        buf.extend(vec![C32::default(); 64]);
+        let channeled = apply_fir_channel(&buf, &multipath_taps());
 
-    let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre_no_training);
-    let ok = rx
-        .feed(&channeled)
-        .into_iter()
-        .filter(|r| r.is_ok())
-        .count();
-    assert_eq!(
-        ok, 0,
-        "without a channel estimate the multipath frame must not decode"
+        let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre).with_error_rates(true);
+        let f = rx
+            .feed(&channeled)
+            .into_iter()
+            .filter_map(|r| r.ok())
+            .next()
+            .expect("the concatenated code recovers this channel either way");
+        assert_eq!(f.packet.payload, payload, "payload must be exact");
+        f.diagnostics.channel_ber.expect("opted in")
+    };
+
+    let equalized = cber_for(preamble(&plan_config()));
+    let blind = cber_for(OfdmPreamble::new(4, 16)); // no training symbol
+
+    // Measured on this channel: ~3.3% equalized against ~14.7% blind, a 4.5x
+    // reduction. Bounds are set around that rather than at round numbers, so a
+    // regression in either direction shows up.
+    assert!(
+        equalized < 0.05,
+        "equalization should pull the channel well inside what the FEC absorbs, \
+         got {equalized:.3}"
+    );
+    assert!(
+        blind > 3.0 * equalized,
+        "equalization should materially cut the channel error rate: \
+         blind {blind:.3} vs equalized {equalized:.3}"
     );
 }
 
@@ -1215,5 +1238,106 @@ fn a_heavily_errored_channel_still_delivers_a_clean_frame() {
     assert!(
         iber <= cber,
         "the inner code must not make things worse: {iber:.3e} vs {cber:.3e}"
+    );
+}
+
+// ── Acceptance is decided by the strongest end-to-end check ────────────────
+//
+// Acceptance used to require `crc_ok && inner_ok && outer_ok`. `inner_ok`
+// reports whether the inner decoder's parity checks converged — how hard it
+// worked, not whether the answer is right — so requiring it discarded frames
+// whose payload was verifiably correct.
+
+#[test]
+fn a_frame_the_crc_vouches_for_is_accepted_however_the_fec_stages_fared() {
+    // The multipath case, measured: both FEC stages report non-convergence and
+    // 14.7% of channel bits are wrong, yet the payload is byte-exact and CRC-32
+    // agrees. Under the old gate this frame was thrown away.
+    let cfg = plan_config();
+    let pre = OfdmPreamble::new(4, 16); // no training symbol ⇒ unequalized
+    let table = McsTable::default_ladder();
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+    let payload = sample_payload(30);
+    let mut buf = vec![C32::default(); 24];
+    buf.extend_from_slice(&modu.modulate_frame(
+        &FramePacket::new(FrameMetadata::new(3, 1), payload.clone()),
+        0,
+    ));
+    buf.extend(vec![C32::default(); 64]);
+    let channeled = apply_fir_channel(&buf, &multipath_taps());
+
+    let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre).with_error_rates(true);
+    let f = rx
+        .feed(&channeled)
+        .into_iter()
+        .filter_map(|r| r.ok())
+        .next()
+        .expect("a CRC-verified frame must be accepted");
+    assert_eq!(f.packet.payload, payload, "and its payload must be exact");
+    assert_eq!(
+        f.diagnostics.inner_fec_ok,
+        Some(false),
+        "precisely the case the old gate rejected"
+    );
+    assert!(
+        f.diagnostics.channel_ber.unwrap() > 0.05,
+        "a badly errored channel"
+    );
+}
+
+#[test]
+fn acceptance_falls_back_when_there_is_no_crc_to_ask() {
+    // `CrcKind::None` reports `crc_ok = true` because nothing was checked, not
+    // because anything passed. A rule of "the CRC decides" must therefore know
+    // whether a CRC exists at all, or a link with neither CRC nor outer code
+    // would accept anything the demapper produced.
+    let cache = CodecCache::new();
+    let mk = |crc: CrcKind, outer: OuterFec, inner_ok: bool, outer_ok: bool, crc_ok: bool| {
+        let _ = &cache;
+        ChainOutcome {
+            bytes: Vec::new(),
+            inner_ok,
+            outer_ok,
+            crc_ok,
+            crc_present: crc != CrcKind::None,
+            outer_present: outer != OuterFec::None,
+            inner_out_bits: Vec::new(),
+        }
+    };
+    // With a CRC, the CRC alone decides.
+    assert!(mk(CrcKind::Crc32, OuterFec::Bch { t: 8 }, false, false, true).is_valid());
+    assert!(!mk(CrcKind::Crc32, OuterFec::Bch { t: 8 }, true, true, false).is_valid());
+    // Without one — DVB-T's shape — the outer code is the integrity check.
+    assert!(
+        mk(
+            CrcKind::None,
+            OuterFec::ReedSolomon {
+                n: 204,
+                n_parity: 16
+            },
+            false,
+            true,
+            true
+        )
+        .is_valid()
+    );
+    assert!(
+        !mk(
+            CrcKind::None,
+            OuterFec::ReedSolomon {
+                n: 204,
+                n_parity: 16
+            },
+            true,
+            false,
+            true
+        )
+        .is_valid()
+    );
+    // With neither, the inner decoder's convergence is all there is.
+    assert!(mk(CrcKind::None, OuterFec::None, true, true, true).is_valid());
+    assert!(
+        !mk(CrcKind::None, OuterFec::None, false, true, true).is_valid(),
+        "a bare inner-only link must not accept a non-converged block"
     );
 }

@@ -373,6 +373,9 @@ fn outer_decode(outer: OuterFec, coded_bits: &[u8], cache: &CodecCache) -> (Vec<
 /// `inner_ok == false` with `outer_ok == true` is a link running hot but still
 /// delivering — precisely the state a pre-FEC error rate is meant to surface,
 /// and indistinguishable from success once folded.
+///
+/// Use [`is_valid`](Self::is_valid) to decide whether to accept the block;
+/// the individual flags are diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChainOutcome {
     /// The recovered info bytes, CRC stripped.
@@ -385,6 +388,13 @@ pub struct ChainOutcome {
     pub outer_ok: bool,
     /// The block's CRC checked.
     pub crc_ok: bool,
+    /// Whether the configuration provides a CRC at all. Without this,
+    /// `crc_ok` is ambiguous: [`CrcKind::None`] reports `true` because there
+    /// was nothing to fail, not because anything was verified.
+    pub crc_present: bool,
+    /// Whether the configuration provides an outer code at all, on the same
+    /// reasoning as [`crc_present`](Self::crc_present).
+    pub outer_present: bool,
     /// What the inner decoder produced, before outer deinterleaving — the bits
     /// that actually arrived at the outer decoder's input.
     ///
@@ -396,10 +406,36 @@ pub struct ChainOutcome {
 }
 
 impl ChainOutcome {
-    /// The folded verdict every caller used before the stages were separated:
-    /// the block is good only if all three agree.
-    pub fn all_ok(&self) -> bool {
-        self.crc_ok && self.inner_ok && self.outer_ok
+    /// Whether the recovered bytes can be trusted, judged by the **strongest
+    /// end-to-end check the configuration actually provides**.
+    ///
+    /// `inner_ok` is deliberately not part of this. It reports whether the
+    /// inner decoder's parity checks converged — how hard it worked, not
+    /// whether the result is right. Requiring it discards frames whose payload
+    /// is verifiably correct: measured across a noise sweep, a CRC-carrying
+    /// link delivers byte-exact payloads with `inner_ok == false` over a wide
+    /// band, and rejecting those costs real sensitivity for nothing.
+    ///
+    /// The precedence:
+    ///
+    /// - **A CRC decides on its own.** It is computed over the recovered
+    ///   payload end to end, so passing it means the bytes are right whatever
+    ///   the stages beneath did — including an outer decoder that reported a
+    ///   block it could not correct.
+    /// - **Otherwise the outer code decides.** DVB-T carries no CRC
+    ///   ([`CrcKind::None`]), so its Reed–Solomon stage is the integrity
+    ///   check; RS reports failure when it cannot correct a codeword.
+    /// - **Otherwise `inner_ok` is all there is.** A link with neither a CRC
+    ///   nor an outer code has only the inner decoder's convergence to go on,
+    ///   and dropping it there would accept anything.
+    pub fn is_valid(&self) -> bool {
+        if self.crc_present {
+            self.crc_ok
+        } else if self.outer_present {
+            self.outer_ok
+        } else {
+            self.inner_ok
+        }
     }
 }
 
@@ -469,6 +505,8 @@ pub fn decode_chain(
         inner_ok,
         outer_ok,
         crc_ok,
+        crc_present: crc != CrcKind::None,
+        outer_present: outer != OuterFec::None,
         // `deinterleave_bits` only borrowed this, so it moves out here.
         inner_out_bits: outer_il_bits,
     })
@@ -625,7 +663,7 @@ fn decode_frame_body(
             DecodeRule::SumProduct,
         )
         .map_err(BodyError::Failed)?;
-        if !header.all_ok() {
+        if !header.is_valid() {
             return Err(BodyError::Failed(RxError::HeaderCrcMismatch));
         }
         let fields = header.bytes;
@@ -711,7 +749,7 @@ fn decode_frame_body(
         cfg.ldpc_decode_rule,
     )
     .map_err(BodyError::Failed)?;
-    if !payload_outcome.all_ok() {
+    if !payload_outcome.is_valid() {
         return Err(BodyError::Failed(RxError::CrcMismatch));
     }
     // Take the flags before consuming the bytes, so the payload is moved rather
