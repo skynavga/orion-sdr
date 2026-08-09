@@ -945,3 +945,91 @@ fn a_high_gain_frame_is_acquirable_by_its_own_receiver() {
         assert_eq!(frames[0].packet.payload, payload, "gain {gain}: payload");
     }
 }
+
+// ── Acquisition and channel diagnostics ────────────────────────────────────
+//
+// The streaming receiver measured a sync score and a per-bin channel estimate,
+// used each once, and dropped both. Carrying them on the frame's diagnostics
+// is what lets a caller show lock confidence and derive a power delay profile
+// without re-running acquisition.
+
+#[test]
+fn a_decoded_frame_reports_the_score_it_was_acquired_at() {
+    let (cfg, pre, table, _, buf) = framed_at_gain(1.0);
+    let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre);
+    let frames: Vec<_> = rx.feed(&buf).into_iter().filter_map(|r| r.ok()).collect();
+    assert_eq!(frames.len(), 1);
+    let score = frames[0]
+        .diagnostics
+        .sync_score
+        .expect("streaming path measures a score");
+    // It cleared the acceptance threshold by definition, and the metric is
+    // normalized, so it must land in [threshold, 1].
+    assert!(
+        (0.5..=1.0).contains(&score),
+        "score {score} outside the normalized range"
+    );
+}
+
+#[test]
+fn the_channel_estimate_is_opt_in_and_is_the_channel_not_the_raw_bins() {
+    let (cfg, pre, table, _, buf) = framed_at_gain(1.0);
+
+    // Off by default — most callers should not pay for the allocation.
+    let mut plain = OfdmFrameStreamDemod::new(cfg.clone(), table.clone(), pre);
+    let f = plain
+        .feed(&buf)
+        .into_iter()
+        .filter_map(|r| r.ok())
+        .next()
+        .unwrap();
+    assert!(f.diagnostics.channel_estimate.is_none(), "should be opt-in");
+
+    let mut rx = OfdmFrameStreamDemod::new(cfg.clone(), table, pre).with_channel_estimate(true);
+    let f = rx
+        .feed(&buf)
+        .into_iter()
+        .filter_map(|r| r.ok())
+        .next()
+        .unwrap();
+    let est = f.diagnostics.channel_estimate.expect("opted in");
+    assert_eq!(est.len(), cfg.carrier_plan.n_fft(), "one bin per FFT bin");
+
+    // A clean, noiseless, flat channel must estimate to ~unity. Raw received
+    // training bins would not: they carry the pseudo-random known pattern,
+    // which is what distinguishes "the channel" from "what arrived".
+    let mean: f32 = est.iter().map(|h| h.norm()).sum::<f32>() / est.len() as f32;
+    assert!(
+        (mean - 1.0).abs() < 0.05,
+        "flat channel should estimate near unity, got mean |H| = {mean:.3}"
+    );
+    assert!(
+        est.iter().all(|h| h.norm().is_finite()),
+        "no non-finite bins"
+    );
+}
+
+#[test]
+fn the_channel_estimate_tracks_a_gain_change() {
+    // A pure gain is a flat channel of that magnitude, so |H| must follow it.
+    // This is the property a delay-spread readout is later built on: the
+    // estimate has to describe the channel, not be normalized away.
+    let mut mags = Vec::new();
+    for gain in [1.0_f32, 4.0] {
+        let (cfg, pre, table, _, buf) = framed_at_gain(gain);
+        let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre).with_channel_estimate(true);
+        let f = rx
+            .feed(&buf)
+            .into_iter()
+            .filter_map(|r| r.ok())
+            .next()
+            .unwrap();
+        let est = f.diagnostics.channel_estimate.unwrap();
+        mags.push(est.iter().map(|h| h.norm()).sum::<f32>() / est.len() as f32);
+    }
+    let ratio = mags[1] / mags[0];
+    assert!(
+        (ratio - 4.0).abs() < 0.1,
+        "|H| should scale with the transmitted gain, got {ratio:.3}x"
+    );
+}

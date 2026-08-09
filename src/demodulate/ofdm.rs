@@ -168,9 +168,8 @@ impl Block for OfdmDecider {
 /// Per-pipeline-stage diagnostics for one demodulated OFDM packet.
 ///
 /// `Option<f32>`/`Option<i32>` (not sentinel values) make "not yet measured
-/// at this pipeline stage" explicit: fields are populated incrementally as
-/// later releases add acquisition (`cfo_hz`, `timing_offset_samples`) and
-/// channel estimation (`channel_mse`).
+/// at this pipeline stage" explicit: a field is `None` where the stage that
+/// would produce it did not run, not where the measurement was zero.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OfdmRxFrame {
     pub bits: Vec<u8>,
@@ -179,6 +178,26 @@ pub struct OfdmRxFrame {
     pub cfo_hz: Option<f32>,
     pub timing_offset_samples: Option<i32>,
     pub channel_mse: Option<f32>,
+    /// Normalized Schmidl & Cox timing-metric score in `[0, 1]` for the
+    /// candidate this frame was acquired from — the streaming receiver's
+    /// confidence that it found a real preamble rather than noise.
+    ///
+    /// `None` on the batch path, which is handed a frame body that has already
+    /// been located and so never runs acquisition.
+    pub sync_score: Option<f32>,
+    /// Per-bin channel estimate `H[k] = received[k] / known[k]`, in natural
+    /// FFT bin order, measured from the training symbol at the same window
+    /// back-off the data symbols use.
+    ///
+    /// Populated only when the receiver was built with
+    /// [`OfdmFrameStreamDemod::with_channel_estimate`], since it costs an
+    /// `n_fft`-sized allocation per frame and most callers do not want it.
+    ///
+    /// This is the *channel*, not the raw received training bins: the known
+    /// pattern is crate-internal, so a caller could not divide it out. A power
+    /// delay profile — and from it delay spread and whether echoes fall inside
+    /// the guard — is the inverse FFT of this.
+    pub channel_estimate: Option<Vec<C32>>,
 }
 
 /// Builds an [`OfdmRxFrame`] from demodulated soft symbols and their
@@ -207,6 +226,8 @@ pub fn build_ofdm_rx_frame(cfg: &OfdmConfig, soft_symbols: &[C32], bits: Vec<u8>
         cfo_hz: None,
         timing_offset_samples: None,
         channel_mse: None,
+        sync_score: None,
+        channel_estimate: None,
     }
 }
 

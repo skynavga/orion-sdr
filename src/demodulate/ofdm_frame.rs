@@ -700,6 +700,10 @@ pub struct OfdmFrameStreamDemod {
     buf: Vec<C32>,
     /// Minimum sync score to accept a candidate.
     score_threshold: f32,
+    /// Whether to carry the per-bin channel estimate on each frame's
+    /// diagnostics. Off by default: it costs an `n_fft`-sized allocation per
+    /// frame and only diagnostic consumers want it.
+    want_channel_estimate: bool,
     /// FEC code cache, warmed across the frames this receiver decodes (see
     /// [`CodecCache`]). Held behind `Arc` so it can be shared with a paired
     /// modulator.
@@ -730,6 +734,7 @@ impl OfdmFrameStreamDemod {
             fs,
             buf: Vec::new(),
             score_threshold: 0.5,
+            want_channel_estimate: false,
             cache,
         }
     }
@@ -737,6 +742,18 @@ impl OfdmFrameStreamDemod {
     /// Overrides the sync-score acceptance threshold (default 0.5).
     pub fn with_score_threshold(mut self, t: f32) -> Self {
         self.score_threshold = t;
+        self
+    }
+
+    /// Carries the per-bin channel estimate on each frame's
+    /// [`diagnostics`](RxFrame::diagnostics). Off by default — it costs an
+    /// `n_fft`-sized allocation per frame, which only a caller measuring
+    /// channel response wants to pay.
+    ///
+    /// Requires the preamble to carry a training symbol; without one there is
+    /// nothing to estimate from and the field stays `None`.
+    pub fn with_channel_estimate(mut self, on: bool) -> Self {
+        self.want_channel_estimate = on;
         self
     }
 
@@ -833,7 +850,17 @@ impl OfdmFrameStreamDemod {
                     evm_db: None,
                     cfo_hz: Some(total_cfo),
                     timing_offset_samples: Some(best.start_sample as i32),
+                    // A scalar channel MSE needs a reference to measure
+                    // against, and a single-shot training estimate has none —
+                    // deriving one means separating channel from noise, which
+                    // is an estimator rather than an exposure. The per-bin
+                    // estimate below carries strictly more information.
                     channel_mse: None,
+                    sync_score: Some(best.score),
+                    channel_estimate: self
+                        .want_channel_estimate
+                        .then(|| channel_estimate.as_deref().map(channel_from_training))
+                        .flatten(),
                 };
                 let consume_to = best.start_sample + pre_len + body_samples;
                 if consume_to > self.buf.len() {
@@ -881,6 +908,19 @@ impl OfdmFrameStreamDemod {
         let freq = symbol_fft.demod_symbol(&corrected[training_start..end])?;
         Some(freq.to_vec())
     }
+}
+
+/// Converts a received training symbol's frequency bins to the channel
+/// `H[k] = received[k] / known[k]`, matching what `OfdmEqualizer` does
+/// internally. Exposed on the diagnostics because the known pattern is
+/// crate-internal, so a caller cannot perform this division itself.
+fn channel_from_training(received_freq: &[C32]) -> Vec<C32> {
+    let known = crate::sync::ofdm_sync::training_symbol_freq_pattern(received_freq.len());
+    received_freq
+        .iter()
+        .zip(known.iter())
+        .map(|(&rx, &k)| rx / k)
+        .collect()
 }
 
 /// One step of the streaming drain loop.
