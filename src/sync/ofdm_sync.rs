@@ -114,11 +114,32 @@ pub struct OfdmSyncResult {
 /// The repeat base sequence and the training symbol's frequency-domain
 /// pattern are both generated from fixed seeds (not derived from `cfg`), so
 /// the same `OfdmPreamble` always produces the same preamble on both the TX
-/// and RX side without requiring shared external state. `cfg` is accepted
-/// for signature symmetry with the rest of the OFDM API and to allow a
-/// future release to derive the sequences from the carrier plan; it is
-/// currently unused.
-pub fn generate_ofdm_preamble(preamble: &OfdmPreamble, _cfg: &OfdmConfig) -> Vec<C32> {
+/// and RX side without requiring shared external state.
+///
+/// **`cfg.gain` is applied to the result**, exactly as [`OfdmMod`] applies it
+/// to every data symbol. This is not cosmetic: the preamble and the payload
+/// must share one amplitude scale or the frame is undecodable.
+///
+/// - The Schmidl & Cox timing metric normalizes against received energy, so a
+///   preamble that is quiet relative to the payload collapses the score. At
+///   `gain = 121` with an unscaled preamble the best score falls from 1.00 to
+///   0.095 — below the streaming receiver's 0.5 acceptance threshold, so no
+///   candidate is ever accepted and nothing decodes.
+/// - `EqualizerMethod::TrainingSymbolHold` estimates the channel from the
+///   training symbol. If the training symbol is unscaled while the payload is
+///   not, the estimate omits the gain, the equalizer never divides it out, and
+///   the demapper's LLRs are miscalibrated by that factor.
+///
+/// `cfg`'s other fields remain unused here. In particular **`rf_hz` is still
+/// not applied** — a caller using a nonzero `rf_hz` gets a baseband preamble
+/// ahead of an upconverted body. Applying it correctly requires phase
+/// continuity with the symbols that follow, which the per-block modulator
+/// construction does not currently provide; modulate at `rf_hz = 0.0` and
+/// upconvert the whole burst with one continuous
+/// [`Rotator`](crate::dsp::Rotator) instead.
+///
+/// [`OfdmMod`]: crate::modulate::OfdmMod
+pub fn generate_ofdm_preamble(preamble: &OfdmPreamble, cfg: &OfdmConfig) -> Vec<C32> {
     let base = pseudo_random_unit_sequence(preamble.repeat_len, 0x4F46_444D_5052_4531);
     let mut out = Vec::with_capacity(preamble.total_len());
     for _ in 0..preamble.num_repeats {
@@ -126,6 +147,13 @@ pub fn generate_ofdm_preamble(preamble: &OfdmPreamble, _cfg: &OfdmConfig) -> Vec
     }
     if let Some(training) = preamble.training_symbol {
         out.extend_from_slice(&generate_training_symbol_time_domain(training));
+    }
+    let g = cfg.gain;
+    if g != 1.0 {
+        for s in &mut out {
+            s.re *= g;
+            s.im *= g;
+        }
     }
     out
 }

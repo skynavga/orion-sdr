@@ -879,3 +879,69 @@ fn stream_frame_qam16_rs_conv_multipath() {
     assert_eq!(frames.len(), 1, "QAM-16 RS+conv multipath frame decodes");
     assert_eq!(frames[0].packet.payload, payload);
 }
+
+// ── Modulator gain reaches the preamble ────────────────────────────────────
+//
+// `generate_ofdm_preamble` used to ignore its config, emitting the S&C repeats
+// and the training symbol at unit amplitude while `OfdmMod` scaled every data
+// symbol by `cfg.gain`. A caller using a large gain — as a synthetic wideband
+// source must, since bare OFDM at unit gain sits below typical detection
+// thresholds — then transmitted a frame its own receiver could not acquire.
+
+/// A frame at the given gain, with a little lead-in and trailing silence.
+fn framed_at_gain(gain: f32) -> (OfdmConfig, OfdmPreamble, McsTable, Vec<u8>, Vec<C32>) {
+    let cfg = OfdmConfig::new(
+        plan_config().carrier_plan.clone(),
+        48_000.0,
+        0.0,
+        gain,
+        ConstellationOrder::Bpsk,
+    );
+    let pre = preamble(&cfg);
+    let table = McsTable::default_ladder();
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+    let payload = sample_payload(30);
+    let frame = FramePacket::new(FrameMetadata::new(0x2468, 1), payload.clone());
+    let mut buf = vec![C32::default(); 24];
+    buf.extend_from_slice(&modu.modulate_frame(&frame, 0));
+    buf.extend(vec![C32::default(); 256]);
+    (cfg, pre, table, payload, buf)
+}
+
+#[test]
+fn preamble_and_payload_share_one_amplitude_scale() {
+    // Every segment must scale together. A preamble left at unit amplitude
+    // beside a scaled payload breaks acquisition *and* channel estimation.
+    let rms = |s: &[C32]| (s.iter().map(|c| c.norm_sqr()).sum::<f32>() / s.len() as f32).sqrt();
+    let (_, pre, _, _, unit) = framed_at_gain(1.0);
+    let (_, _, _, _, loud) = framed_at_gain(64.0);
+
+    let reps = pre.num_repeats * pre.repeat_len;
+    let lead = 24; // silence prepended by the fixture
+    for (name, range) in [
+        ("S&C repeats", lead..lead + reps),
+        ("training symbol", lead + reps..lead + pre.total_len()),
+    ] {
+        let (u, l) = (rms(&unit[range.clone()]), rms(&loud[range]));
+        assert!(
+            (l / u - 64.0).abs() < 0.01,
+            "{name}: gain reached the body but not here — scaled {:.3}x, want 64x",
+            l / u
+        );
+    }
+}
+
+#[test]
+fn a_high_gain_frame_is_acquirable_by_its_own_receiver() {
+    // The end-to-end consequence, and the regression that matters: at a gain
+    // typical of a wideband synthetic source, the streaming receiver must still
+    // sync, equalize and decode. Before the fix this returned nothing at all —
+    // not even an error — because no sync candidate cleared the threshold.
+    for gain in [1.0_f32, 8.0, 64.0, 121.0] {
+        let (cfg, pre, table, payload, buf) = framed_at_gain(gain);
+        let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre);
+        let frames: Vec<_> = rx.feed(&buf).into_iter().filter_map(|r| r.ok()).collect();
+        assert_eq!(frames.len(), 1, "gain {gain}: expected exactly one frame");
+        assert_eq!(frames[0].packet.payload, payload, "gain {gain}: payload");
+    }
+}
