@@ -140,13 +140,25 @@ pub struct OfdmSyncResult {
 ///
 /// [`OfdmMod`]: crate::modulate::OfdmMod
 pub fn generate_ofdm_preamble(preamble: &OfdmPreamble, cfg: &OfdmConfig) -> Vec<C32> {
-    let base = pseudo_random_unit_sequence(preamble.repeat_len, 0x4F46_444D_5052_4531);
+    let n_fft = cfg.carrier_plan.n_fft();
+    let occupied_half = cfg.carrier_plan.occupied_half_carriers();
+    let n_data = cfg.carrier_plan.data_carriers().len();
+
+    let base = band_limited_repeat_base(preamble.repeat_len, n_fft, occupied_half, n_data)
+        .unwrap_or_else(|| {
+            // No usable band-limited construction (see the helper). Fall back to
+            // the wideband sequence rather than emitting nothing.
+            pseudo_random_unit_sequence(preamble.repeat_len, 0x4F46_444D_5052_4531)
+        });
     let mut out = Vec::with_capacity(preamble.total_len());
     for _ in 0..preamble.num_repeats {
         out.extend_from_slice(&base);
     }
     if let Some(training) = preamble.training_symbol {
-        out.extend_from_slice(&generate_training_symbol_time_domain(training));
+        out.extend_from_slice(&generate_training_symbol_time_domain(
+            training,
+            occupied_half,
+        ));
     }
     let g = cfg.gain;
     if g != 1.0 {
@@ -156,6 +168,91 @@ pub fn generate_ofdm_preamble(preamble: &OfdmPreamble, cfg: &OfdmConfig) -> Vec<
         }
     }
     out
+}
+
+/// Amplitude of the S&C repeats relative to a data symbol.
+///
+/// `ofdm_sync` ranks candidates by `score * (r / r_peak)` — the correlated
+/// window's energy against the loudest window anywhere in the search range —
+/// so a preamble at exactly data power is no longer the energy peak and its
+/// score is scaled down by whatever the payload happens to reach. Measured on
+/// a clean frame, parity with the data drops the score from 1.00 to 0.54,
+/// grazing the receiver's 0.5 acceptance threshold.
+///
+/// A boost restores it: 1.5x already returns a perfect 1.00, and 2x is taken
+/// for margin. Transmitting the preamble hot is ordinary practice — 802.11
+/// boosts its short training field for the same reason — and 6 dB costs
+/// almost nothing against the ~70 dB of out-of-band excess band-limiting
+/// removes.
+const SC_PREAMBLE_BOOST: f32 = 2.0;
+
+/// One period of a band-limited Schmidl & Cox base segment, or `None` when the
+/// geometry does not admit one.
+///
+/// Built in the **frequency domain**: loading only bins that are multiples of
+/// `k = n_fft / repeat_len` makes the inverse transform repeat with period
+/// `repeat_len` by construction, so the repetition S&C correlates on is exact
+/// rather than approximate. Restricting those bins to the plan's occupied span
+/// is what band-limits it.
+///
+/// Returns `None` unless `repeat_len` divides `n_fft` and at least one occupied
+/// bin falls on a multiple of `k` — a sparse or tiny plan can leave nothing to
+/// load.
+///
+/// Amplitude is matched to a data symbol's: an OFDM symbol loading `m` bins at
+/// unit magnitude lands at RMS `sqrt(m) / n_fft`, so the segment is scaled to
+/// the value `n_data` loaded bins would give. Equal preamble and payload power
+/// is the usual arrangement, and it keeps the S&C metric well conditioned.
+fn band_limited_repeat_base(
+    repeat_len: usize,
+    n_fft: usize,
+    occupied_half: usize,
+    n_data: usize,
+) -> Option<Vec<C32>> {
+    if repeat_len == 0 || n_fft == 0 || !n_fft.is_multiple_of(repeat_len) || occupied_half == 0 {
+        return None;
+    }
+    let k = n_fft / repeat_len;
+
+    // Signed carrier indices inside the occupied span that land on a multiple
+    // of `k`. DC is skipped, as the carrier plans do.
+    let loaded: Vec<usize> = (1..=occupied_half as i32)
+        .flat_map(|i| [i, -i])
+        .filter(|i| (i.unsigned_abs() as usize).is_multiple_of(k))
+        .map(|i| {
+            if i >= 0 {
+                i as usize
+            } else {
+                n_fft - i.unsigned_abs() as usize
+            }
+        })
+        .collect();
+    if loaded.is_empty() {
+        return None;
+    }
+
+    let values = pseudo_random_unit_sequence(loaded.len(), 0x4F46_444D_5052_4531);
+    let mut freq = vec![C32::default(); n_fft];
+    for (&bin, &v) in loaded.iter().zip(values.iter()) {
+        freq[bin] = v;
+    }
+
+    let mut ifft = crate::multicarrier::IfftBlock::new(n_fft);
+    let mut time = vec![C32::default(); n_fft];
+    ifft.process(&freq, &mut time);
+    time.truncate(repeat_len);
+
+    // Scale to a data symbol's RMS.
+    let rms = (time.iter().map(|c| c.norm_sqr()).sum::<f32>() / time.len() as f32).sqrt();
+    if rms > 0.0 {
+        let target = SC_PREAMBLE_BOOST * (n_data as f32).sqrt() / n_fft as f32;
+        let scale = target / rms;
+        for c in &mut time {
+            c.re *= scale;
+            c.im *= scale;
+        }
+    }
+    Some(time)
 }
 
 /// The training symbol's known frequency-domain pattern: one unit-magnitude
@@ -173,10 +270,37 @@ pub(crate) fn training_symbol_freq_pattern(n_fft: usize) -> Vec<C32> {
 /// time-domain symbol and prepends its cyclic prefix, matching
 /// `OfdmMod`'s TX chain (`IfftBlock` then `CyclicPrefixInsert`) so the
 /// training symbol round-trips through the same channel as data symbols.
-fn generate_training_symbol_time_domain(training: TrainingSymbol) -> Vec<C32> {
+fn generate_training_symbol_time_domain(
+    training: TrainingSymbol,
+    occupied_half: usize,
+) -> Vec<C32> {
     use crate::multicarrier::{CyclicPrefixInsert, IfftBlock};
 
-    let freq = training_symbol_freq_pattern(training.n_fft);
+    // Transmit the known pattern only inside the occupied span. The pattern
+    // itself is unchanged — the receiver still divides by the full-band
+    // reference — so the estimate on an occupied bin is exactly `H`, with no
+    // scale to divide back out.
+    //
+    // Band-limiting also amplitude-matches it for free: the symbol's RMS is
+    // `sqrt(loaded bins) / n_fft`, so loading the occupied span instead of
+    // every bin brings it to the same level as a data symbol. Its old
+    // full-band excess was that difference, not a gain.
+    //
+    // Bins outside the span are never extracted as data, so the estimate there
+    // going to zero is harmless — `EQUALIZER_FLOOR` guards the division.
+    let mut freq = training_symbol_freq_pattern(training.n_fft);
+    if occupied_half > 0 {
+        for (bin, v) in freq.iter_mut().enumerate() {
+            let idx = if bin <= training.n_fft / 2 {
+                bin
+            } else {
+                training.n_fft - bin
+            };
+            if idx == 0 || idx > occupied_half {
+                *v = C32::default();
+            }
+        }
+    }
     let mut ifft = IfftBlock::new(training.n_fft);
     let mut time = vec![C32::default(); training.n_fft];
     ifft.process(&freq, &mut time);
@@ -281,19 +405,27 @@ pub fn ofdm_sync(
         return Vec::new();
     }
 
-    let mut results: Vec<OfdmSyncResult> = all
+    // Rank by `score * (r / r_peak)`, but **report the raw score**.
+    //
+    // The energy ratio is a tie-break: it picks the offset that is maximally
+    // in-window among a plateau of equally phase-coherent ones. It is not a
+    // measure of whether a preamble is present, and folding it into the score
+    // made acceptance depend on whatever else is loud in the search range —
+    // a preamble at ordinary signal level scores 0.54 rather than 1.00 merely
+    // because the payload matches it for energy, and any louder transient
+    // (a corrupted burst, an adjacent signal) suppresses a perfectly good
+    // candidate below the threshold entirely.
+    //
+    // Ordering by the product keeps the tie-break; thresholding on the raw
+    // score keeps acceptance a question about phase coherence, which is what
+    // Schmidl & Cox actually measures.
+    let mut ranked: Vec<(f32, OfdmSyncResult)> = all
         .into_iter()
-        .map(|(r, mut result)| {
-            result.score *= r / r_peak;
-            result
-        })
+        .map(|(r, result)| (result.score * (r / r_peak), result))
         .collect();
 
-    results.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut results: Vec<OfdmSyncResult> = ranked.into_iter().map(|(_, r)| r).collect();
 
     // Integer-CFO search runs only on a small number of the top timing
     // candidates (bounding cost) using the dedicated training symbol

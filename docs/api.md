@@ -91,7 +91,7 @@ Pass `llr` to `Ft8Codec.decode_soft` / `Ft4Codec.decode_soft` to recover the pay
 | `OfdmConfig(n_fft, cp_len, data_carriers, pilot_idx, pilot_val, fs, rf_hz, gain, mode)` | Carrier plan + RF/constellation config |
 | `OfdmMod(cfg)` | `modulate(bits) → complex64[]`; fused mapper+grid+IFFT+CP+upconversion |
 | `OfdmDemod(cfg, equalizer="training_symbol")` | Fused CP-remove+FFT+equalize+grid-extract+decide |
-| `OfdmRxFrame` | Getters: `bits`, `num_symbols`, `evm_db`, `cfo_hz`, `timing_offset_samples`, `channel_mse` |
+| `OfdmRxFrame` | Getters: `bits`, `num_symbols`, `evm_db`, `cfo_hz`, `timing_offset_samples`, `channel_mse` (always `None` — see [demodulate.md](demodulate.md)) |
 | `build_ofdm_rx_frame(cfg, soft_symbols, bits)` | Builds an `OfdmRxFrame`; `evm_db` always populated |
 | `ofdm_sync(iq, fs, num_repeats, repeat_len, search_start, search_end, ...)` | Schmidl & Cox preamble search → `list[dict]` |
 | `generate_ofdm_preamble(cfg, num_repeats, repeat_len, ...)` | Generates the matching preamble IQ |
@@ -398,7 +398,9 @@ whole-symbol-per-call `Block`: a partial trailing chunk is a no-op
 | `EqualizerMethod` | `TrainingSymbolHold` (default) \| `PerSymbolPilotInterp` (opt-in) |
 | `OfdmSoftDemod` | `Block<C32, f32>`: soft (max-log LLR) demapper, dispatches by `ConstellationOrder` |
 | `bpsk_soft_llr`/`qpsk_soft_llr`/`qam_soft_llr::<BITS>` | Per-order soft-LLR extraction; positive LLR ⇒ bit more likely 0 |
-| `OfdmRxFrame` | Per-packet RX diagnostics: `bits`, `num_symbols`, `evm_db`, `cfo_hz`, `timing_offset_samples`, `channel_mse` |
+| `OfdmRxFrame` | Per-packet RX diagnostics — acquisition, EVM, per-stage FEC, error rates; see [demodulate.md](demodulate.md) |
+| `ChainOutcome` | Per-stage decode result; `is_valid()` applies the acceptance precedence (CRC, else outer, else inner) |
+| `encode_chain_stages(..)` | `encode_chain` keeping per-stage intermediates, so a receiver can measure error rates |
 | `build_ofdm_rx_frame(cfg, soft_symbols, bits)` | Builds an `OfdmRxFrame`; `evm_db` always populated |
 
 `OfdmMod`'s mapper reuses `BpskMapper`/`QpskMapper`/`QamMapper<BITS>`
@@ -460,7 +462,8 @@ and the DVB-T chain. See [ofdm.md](ofdm.md) for how they compose.
 | Type | Description |
 | --- | --- |
 | `OfdmFrameMod` | `modulate_frame(&FramePacket, seed) -> Vec<C32>`: CRC → concatenated FEC → interleave → map → preamble/header |
-| `OfdmFrameStreamDemod` | `feed(&[C32])`/`flush()` streaming RX: acquisition, CFO correction, equalization, decode |
+| `OfdmFrameStreamDemod` | `feed`/`flush` streaming RX: acquisition, CFO correction, equalization, decode. Baseband only |
+| `OfdmFrameStreamDemod::with_*` | `with_score_threshold`, `with_channel_estimate`, `with_error_rates` (last two opt-in) |
 | `OfdmFrameDemod` | Batch RX for a known start (IQ begins after preamble + training) |
 | `RxFrame` | A recovered frame: `packet`, plus the per-frame RX diagnostics |
 | `Mcs` / `McsTable` | Per-frame adaptive coding: constellation + inner/outer code, selected by header index |

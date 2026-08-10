@@ -638,6 +638,18 @@ fn stream_frame_multipath_channel() {
 
 /// The 2-tap channel used by the multipath tests — strong enough that the
 /// per-carrier channel estimate is required for a correct decode.
+/// A harsher echo than [`multipath_taps`], strong enough to put visible errors
+/// on the demapper without equalization. The milder set no longer does: with a
+/// band-limited preamble the link is clean enough that BPSK rides out its ~18
+/// degrees of channel-induced phase deviation with zero bit errors.
+fn harsh_multipath_taps() -> [C32; 3] {
+    [
+        C32::new(0.85, 0.0),
+        C32::new(0.0, 0.0),
+        C32::new(0.5, -0.25),
+    ]
+}
+
 fn multipath_taps() -> [C32; 3] {
     [
         C32::new(0.85, 0.0),
@@ -666,7 +678,7 @@ fn multipath_without_a_channel_estimate_costs_link_margin() {
         let mut buf = vec![C32::default(); 24];
         buf.extend_from_slice(&modu.modulate_frame(&frame, 0));
         buf.extend(vec![C32::default(); 64]);
-        let channeled = apply_fir_channel(&buf, &multipath_taps());
+        let channeled = apply_fir_channel(&buf, &harsh_multipath_taps());
 
         let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre).with_error_rates(true);
         let f = rx
@@ -682,16 +694,16 @@ fn multipath_without_a_channel_estimate_costs_link_margin() {
     let equalized = cber_for(preamble(&plan_config()));
     let blind = cber_for(OfdmPreamble::new(4, 16)); // no training symbol
 
-    // Measured on this channel: ~3.3% equalized against ~14.7% blind, a 4.5x
-    // reduction. Bounds are set around that rather than at round numbers, so a
-    // regression in either direction shows up.
+    // Measured on the harsher channel: 0% equalized against ~4.4% blind — the
+    // training-symbol estimate removes the echo entirely, where without it the
+    // demapper carries real errors. Bounds sit around those figures.
     assert!(
-        equalized < 0.05,
+        equalized < 0.005,
         "equalization should pull the channel well inside what the FEC absorbs, \
          got {equalized:.3}"
     );
     assert!(
-        blind > 3.0 * equalized,
+        blind > 0.01 && blind > 3.0 * equalized.max(0.001),
         "equalization should materially cut the channel error rate: \
          blind {blind:.3} vs equalized {equalized:.3}"
     );
@@ -1157,11 +1169,19 @@ fn noisy_link_frame(noise_frac: f32) -> (OfdmConfig, OfdmPreamble, McsTable, Vec
     let table = McsTable::default_ladder();
     let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
     let frame = FramePacket::new(FrameMetadata::new(1, 1), sample_payload(184));
+    let frame_iq = modu.modulate_frame(&frame, 0);
     let mut buf = vec![C32::default(); 64];
-    buf.extend_from_slice(&modu.modulate_frame(&frame, 0));
+    buf.extend_from_slice(&frame_iq);
     buf.extend(vec![C32::default(); 512]);
     if noise_frac > 0.0 {
-        let p: f32 = buf.iter().map(|c| c.norm_sqr()).sum::<f32>() / buf.len() as f32;
+        // Scale noise by the **payload's** power, not the buffer's mean.
+        // The buffer includes the preamble and the silence around it, so its
+        // mean tracks whatever the preamble happens to be doing: when the
+        // preamble was full-band and 30 dB hot, the same `noise_frac` injected
+        // ~13 dB more noise than it does now. Referencing the payload keeps
+        // the figure meaning one thing across preamble changes.
+        let body = &frame_iq[pre.total_len()..];
+        let p: f32 = body.iter().map(|c| c.norm_sqr()).sum::<f32>() / body.len() as f32;
         add_awgn(&mut buf, p * noise_frac, 0xBE12_2026);
     }
     (cfg, pre, table, buf)
@@ -1210,7 +1230,7 @@ fn the_channel_error_rate_rises_with_noise() {
     // channel quality, not step between 0 and 1 the way a flag does.
     let mut prev = -1.0_f32;
     let mut measured = 0;
-    for nf in [0.0_f32, 0.02, 0.05, 0.10] {
+    for nf in [0.0_f32, 0.4, 0.5] {
         let Some((cber, _)) = decode_with_rates(nf) else {
             continue;
         };
@@ -1230,7 +1250,7 @@ fn a_heavily_errored_channel_still_delivers_a_clean_frame() {
     // for measuring here: the channel is hammering the signal while the inner
     // code absorbs it and the frame arrives intact. Reported as a high channel
     // BER against a clean inner BER.
-    let (cber, iber) = decode_with_rates(0.10).expect("still decodes at this noise");
+    let (cber, iber) = decode_with_rates(0.5).expect("still decodes at this noise");
     assert!(
         cber > 1.0e-3,
         "expected a visibly errored channel, got {cber:.3e}"
@@ -1250,9 +1270,17 @@ fn a_heavily_errored_channel_still_delivers_a_clean_frame() {
 
 #[test]
 fn a_frame_the_crc_vouches_for_is_accepted_however_the_fec_stages_fared() {
-    // The multipath case, measured: both FEC stages report non-convergence and
-    // 14.7% of channel bits are wrong, yet the payload is byte-exact and CRC-32
-    // agrees. Under the old gate this frame was thrown away.
+    // A badly errored channel — 4%+ of demapper decisions wrong — still yields
+    // a byte-exact payload that CRC-32 vouches for.
+    //
+    // The sharper case, where the *inner* stage reports non-convergence and the
+    // frame is still good, is asserted at the chain level in
+    // `acceptance_falls_back_when_there_is_no_crc_to_ask` and was measured
+    // directly on `decode_chain`. It is not reproducible through the full OFDM
+    // path on this fixture: the LDPC converges even at 13.9% channel BER, and
+    // past that the frame stops decoding at all, so there is no band between
+    // the two to test end to end. Asserting it here would only be pinning a
+    // coincidence.
     let cfg = plan_config();
     let pre = OfdmPreamble::new(4, 16); // no training symbol ⇒ unequalized
     let table = McsTable::default_ladder();
@@ -1264,7 +1292,7 @@ fn a_frame_the_crc_vouches_for_is_accepted_however_the_fec_stages_fared() {
         0,
     ));
     buf.extend(vec![C32::default(); 64]);
-    let channeled = apply_fir_channel(&buf, &multipath_taps());
+    let channeled = apply_fir_channel(&buf, &harsh_multipath_taps());
 
     let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre).with_error_rates(true);
     let f = rx
@@ -1274,13 +1302,8 @@ fn a_frame_the_crc_vouches_for_is_accepted_however_the_fec_stages_fared() {
         .next()
         .expect("a CRC-verified frame must be accepted");
     assert_eq!(f.packet.payload, payload, "and its payload must be exact");
-    assert_eq!(
-        f.diagnostics.inner_fec_ok,
-        Some(false),
-        "precisely the case the old gate rejected"
-    );
     assert!(
-        f.diagnostics.channel_ber.unwrap() > 0.05,
+        f.diagnostics.channel_ber.unwrap() > 0.02,
         "a badly errored channel"
     );
 }
@@ -1339,5 +1362,79 @@ fn acceptance_falls_back_when_there_is_no_crc_to_ask() {
     assert!(
         !mk(CrcKind::None, OuterFec::None, false, true, true).is_valid(),
         "a bare inner-only link must not accept a non-converged block"
+    );
+}
+
+// ── Frame assembly is baseband-only ────────────────────────────────────────
+//
+// `rf_hz` is honoured by the per-symbol `OfdmMod`, but the frame layer cannot:
+// the spectral mask is centred on DC, the preamble generator does not apply it,
+// and a fresh rotator per block steps the phase at every seam. The receiver
+// never applies it either. It used to fail silently in all of those ways.
+
+fn config_at_rf(rf_hz: f32) -> OfdmConfig {
+    OfdmConfig::new(
+        plan_config().carrier_plan.clone(),
+        48_000.0,
+        rf_hz,
+        1.0,
+        ConstellationOrder::Bpsk,
+    )
+}
+
+#[test]
+fn a_baseband_config_is_accepted_everywhere() {
+    let cfg = config_at_rf(0.0);
+    let table = McsTable::default_ladder();
+    let pre = preamble(&cfg);
+    let _ = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+    let _ = OfdmFrameDemod::new(cfg.clone(), table.clone());
+    let _ = OfdmFrameStreamDemod::new(cfg, table, pre);
+}
+
+#[test]
+#[should_panic(expected = "baseband-only")]
+fn the_modulator_rejects_an_if_config() {
+    let cfg = config_at_rf(12_000.0);
+    let pre = preamble(&cfg);
+    let _ = OfdmFrameMod::new(cfg, McsTable::default_ladder(), pre);
+}
+
+#[test]
+#[should_panic(expected = "baseband-only")]
+fn the_batch_demodulator_rejects_an_if_config() {
+    let _ = OfdmFrameDemod::new(config_at_rf(12_000.0), McsTable::default_ladder());
+}
+
+#[test]
+#[should_panic(expected = "baseband-only")]
+fn the_streaming_demodulator_rejects_an_if_config() {
+    let cfg = config_at_rf(12_000.0);
+    let pre = preamble(&cfg);
+    let _ = OfdmFrameStreamDemod::new(cfg, McsTable::default_ladder(), pre);
+}
+
+#[test]
+fn the_per_symbol_modulator_still_upconverts() {
+    // The guard must not reach `OfdmMod`, which honours `rf_hz` correctly —
+    // one rotator, one continuous stream, no shaping stage to disturb.
+    use orion_sdr::modulate::OfdmMod;
+    let cfg = config_at_rf(12_000.0);
+    let bits: Vec<u8> = (0..256).map(|i| (i % 2) as u8).collect();
+    let baseband = OfdmMod::new(&config_at_rf(0.0)).modulate(&bits);
+    let upconverted = OfdmMod::new(&cfg).modulate(&bits);
+    assert_eq!(baseband.len(), upconverted.len());
+    // Same energy, different placement: the rotation is a pure frequency shift.
+    let energy = |s: &[C32]| s.iter().map(|c| c.norm_sqr()).sum::<f32>();
+    assert!(
+        (energy(&baseband) / energy(&upconverted) - 1.0).abs() < 1e-3,
+        "upconversion must preserve energy"
+    );
+    assert!(
+        baseband
+            .iter()
+            .zip(upconverted.iter())
+            .any(|(a, b)| (a - b).norm() > 1e-3),
+        "and must actually move the signal"
     );
 }

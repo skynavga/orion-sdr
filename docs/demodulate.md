@@ -502,10 +502,9 @@ soft_demod.process(&soft, &mut llrs);
 ### RX diagnostics (`OfdmRxFrame`)
 
 `build_ofdm_rx_frame` assembles per-packet diagnostics from demodulated soft
-symbols and hard-decided bits. `Option` fields make "not yet measured at
-this pipeline stage" explicit — `evm_db` only needs the soft/hard pair, so
-it's always populated; `cfo_hz`/`timing_offset_samples` require having run
-`ofdm_sync` first, and `channel_mse` isn't computed by the current equalizer.
+symbols and hard-decided bits. `Option` fields make "not measured at this
+pipeline stage" explicit: a field is `None` where the stage that would produce
+it did not run, never where the measurement was zero.
 
 ```rust
 use orion_sdr::demodulate::build_ofdm_rx_frame;
@@ -513,6 +512,29 @@ use orion_sdr::demodulate::build_ofdm_rx_frame;
 let frame = build_ofdm_rx_frame(&cfg, &soft, bits_out);
 println!("EVM: {:?} dB", frame.evm_db);
 ```
+
+Via this entry point only `evm_db` is populated — it needs just the soft/hard
+pair. The rest come from the frame layer, which has run acquisition and the FEC
+chain:
+
+| Field | Source |
+| --- | --- |
+| `cfo_hz`, `timing_offset_samples` | `ofdm_sync`, on the streaming path |
+| `sync_score` | the S&C score the frame was acquired at (`None` on the batch path, which never acquires) |
+| `evm_db` | measured on the payload's own hard decisions |
+| `inner_fec_ok`, `outer_fec_ok` | the two FEC stages, reported **separately** |
+| `channel_estimate` | opt-in, `with_channel_estimate` |
+| `channel_ber`, `inner_ber` | opt-in, `with_error_rates` |
+| `channel_mse` | not computed — see below |
+
+`channel_mse` stays `None` deliberately. A scalar mean-square error needs a
+reference to measure against, and a single-shot training estimate has none;
+deriving one means separating channel from noise, which is an estimator rather
+than an exposure. `channel_estimate` carries strictly more — the per-bin channel
+`H[k] = received[k] / known[k]`, whose inverse FFT is a power delay profile, and
+from that delay spread and whether echoes fall inside the guard. It is the
+*channel*, not the raw received training bins: the known pattern is
+crate-internal, so a caller could not divide it out.
 
 ### OFDM packet sync + CFO acquisition
 
@@ -593,15 +615,24 @@ across `feed` calls is held until a later call completes it. It mirrors
 ```rust
 use orion_sdr::demodulate::OfdmFrameStreamDemod;
 
-let mut rx = OfdmFrameStreamDemod::new(cfg, table, preamble);
+// Both diagnostics below are off by default — each costs per decoded frame.
+let mut rx = OfdmFrameStreamDemod::new(cfg, table, preamble)
+    .with_error_rates(true)      // true CBER/IBER, one re-encode per frame
+    .with_channel_estimate(true); // per-bin H, an n_fft-sized allocation
 
 // `feed` returns the frames that completed on this call (failed decodes are
 // omitted; `feed_with_errors` surfaces the reasons).
 for result in rx.feed(&received_iq) {
     match result {
         Ok(rx_frame) => {
-            // rx_frame.packet — the FramePacket; rx_frame.diagnostics carries
-            // the per-frame CFO and timing offset.
+            let d = &rx_frame.diagnostics;
+            // Acquisition confidence, and the two FEC stages kept apart: an
+            // inner failure beside an outer success is a link running hot but
+            // still delivering, which a folded flag cannot express.
+            println!(
+                "score {:?}  CBER {:?}  IBER {:?}  inner {:?} outer {:?}",
+                d.sync_score, d.channel_ber, d.inner_ber, d.inner_fec_ok, d.outer_fec_ok
+            );
             let payload = &rx_frame.packet.payload;
             let _ = payload;
         }

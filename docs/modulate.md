@@ -343,6 +343,12 @@ let preamble = OfdmPreamble::new(4, 16)
     .with_training_symbol(cfg.carrier_plan.n_fft(), cfg.carrier_plan.cp_len());
 
 let table = McsTable::default_ladder();
+// Frame assembly is baseband-only: `OfdmFrameMod::new` asserts `rf_hz == 0.0`.
+// The per-symbol `OfdmMod` honours `rf_hz`, but the frame layer cannot — a
+// DC-centred spectral mask, an unrotated preamble, and a fresh rotator per
+// block all break on it, and the receiver never applies it. Modulate at
+// baseband, shape, then upconvert the whole burst with one continuous
+// `Rotator`.
 let modu = OfdmFrameMod::new(cfg, table, preamble);
 
 // Modulate a frame. `mcs_index` selects the payload's constellation + FEC

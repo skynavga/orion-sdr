@@ -223,6 +223,37 @@ strided receiver is untouched.
   — inside the mask's own transition the taper is the better lever; past it the
   mask wins by tens of dB — which is why both ship.
 
+**Preamble construction.** The S&C repeats are built in the **frequency
+domain**: loading only bins that are multiples of `k = n_fft / repeat_len`
+makes the inverse transform repeat with period `repeat_len` by construction, so
+the repetition the receiver correlates on is exact rather than approximate.
+Restricting those bins to the carrier plan's occupied span is what keeps the
+preamble inside the same band as the payload. The training symbol is
+band-limited the same way.
+
+This matters spectrally, not just tidily. A time-domain pseudo-random sequence
+is white across the full Nyquist band, and a training symbol loading every bin
+is a full-band pedestal — either one sits *outside* the occupied band at full
+amplitude and swamps whatever the shaping levers achieve there. Measured on a
+256-point COFDM link, an unshaped preamble accounted for **70 dB** of
+out-of-band excess, reduced to 24.6 dB by band-limiting.
+
+Band-limiting also amplitude-matches the training symbol for free: an OFDM
+symbol's time-domain RMS is `sqrt(loaded bins) / n_fft`, so loading the
+occupied span rather than every bin brings it to a data symbol's level. Its
+former excess was that difference, not a gain. The S&C repeats are boosted 2x
+above data level (`SC_PREAMBLE_BOOST`) so they remain the energy peak the
+timing tie-break above assumes; transmitting a preamble hot is ordinary
+practice, and 802.11 boosts its short training field for the same reason.
+
+**`cfg.gain` reaches the preamble.** It is applied to the generated preamble
+exactly as `OfdmMod` applies it to every data symbol. The preamble and payload
+must share one amplitude scale or the frame is undecodable twice over: the S&C
+metric normalises against received energy, so a quiet preamble collapses the
+score; and `TrainingSymbolHold` estimates the channel from the training symbol,
+so a scale mismatch there leaves the demapper's LLRs miscalibrated by that
+factor.
+
 **CFO acquisition capture range.** `ofdm_sync`'s Schmidl & Cox fractional
 estimator is unambiguous only within `±fs / (2 · repeat_len)` — note this is
 **not** always `±½` the subcarrier spacing; it equals that only when
@@ -233,6 +264,15 @@ purely periodic S&C preamble correlates against itself at any offset fully
 inside its repeated structure — not only the true start — `ofdm_sync` breaks
 timing ties using the correlated window's own energy, which peaks only where
 every correlated sample is real preamble signal.
+
+That energy ratio **ranks** candidates; it is deliberately not folded into the
+reported `score`, which stays the raw phase-coherence metric the acceptance
+threshold is compared against. Multiplying it in made acquisition depend on
+whatever else was loud in the search range: a preamble at ordinary signal level
+scored 0.54 rather than 1.00 merely because the payload matched it for energy,
+and any louder transient elsewhere — a corrupted burst, an adjacent signal —
+suppressed a valid candidate below threshold entirely, returning nothing at all
+rather than an error.
 
 **Channel estimation default.** For OFDM's predominantly line-of-sight,
 terrestrial-microwave/satellite target bands, a channel estimate taken once
@@ -351,6 +391,47 @@ whose payload has not fully arrived is *held* (an internal
 incomplete-vs-failed distinction) rather than mis-reported, so a frame split
 across `feed` calls completes on a later call. Successful decodes carry CFO and
 timing diagnostics.
+
+**Baseband only.** `OfdmFrameMod`, `OfdmFrameDemod` and `OfdmFrameStreamDemod`
+assert `rf_hz == 0.0` at construction. `OfdmMod` honours `rf_hz` correctly — one
+rotator, one continuous stream — but the frame layer cannot: `TxLowpass` is
+centred on DC and deletes an already-upconverted signal, the preamble generator
+does not apply it, and a fresh `OfdmMod` per block restarts the rotator at phase
+0 (a step at every seam). The receiver never applies it either — `rf_hz` appears
+nowhere in `demodulate` — so an IF-modulated frame could not be decoded even if
+the transmit side were right. Modulate at baseband, shape, then upconvert the
+whole burst once with a continuous `Rotator`.
+
+**Acceptance: the strongest end-to-end check wins.** `ChainOutcome::is_valid`
+decides whether a decoded block can be trusted, and `inner_ok` is deliberately
+not part of it: that flag reports whether the inner decoder's parity checks
+converged — how hard it worked — not whether the answer is right. A CRC decides
+on its own, since it covers the recovered payload end to end. Without one
+(DVB-T's shape) the outer code decides. With neither, `inner_ok` is all there
+is. `crc_present`/`outer_present` are recorded because `CrcKind::None` reports
+`crc_ok = true` for "nothing checked", which a naive rule would read as a pass.
+
+Requiring `inner_ok` discarded frames whose payload was verifiably correct —
+measured, a byte-exact CRC-32-verified payload with **both** FEC stages
+reporting non-convergence and 14.7% of channel bits wrong.
+
+**Per-frame diagnostics.** `RxFrame::diagnostics` (`OfdmRxFrame`) carries
+`cfo_hz` and `timing_offset_samples`, the `sync_score` the frame was acquired
+at, `evm_db` measured on the payload's own hard decisions, and the payload's
+`inner_fec_ok`/`outer_fec_ok` reported separately. Two are opt-in because they
+cost per frame:
+
+- `with_channel_estimate` — the per-bin channel `H[k] = received[k] / known[k]`,
+  an `n_fft`-sized allocation. A power delay profile, and from it delay spread
+  and echo-within-guard, is its inverse FFT. (`channel_mse` stays `None`: a
+  scalar needs a reference a single-shot estimate does not have.)
+- `with_error_rates` — true `channel_ber` and `inner_ber`, obtained by
+  re-encoding the decoded frame. A frame that passed its CRC is ground truth,
+  so the difference from what arrived at each stage is a real rate. **No prior
+  knowledge of the payload is needed**, which is what makes it usable over the
+  air rather than only against a known test vector; only frames that decode are
+  measured, so a rising rate that stops reporting is itself the signal the link
+  has given up. Measured cost: +0.4% of a frame decode.
 
 **Block-size bookkeeping.** Because FEC and interleaving change bit counts and
 fragment into fixed codeword blocks (LDPC N, BCH/RS codewords), the

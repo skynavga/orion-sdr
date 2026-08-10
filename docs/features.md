@@ -58,6 +58,15 @@
   - Frame TX (`OfdmFrameMod`) and streaming RX (`OfdmFrameStreamDemod`,
     feed/flush) with in-band header, acquisition, CFO correction, equalization,
     concatenated decode, and CRC check; batch `OfdmFrameDemod` for a known start
+  - Band-limited preamble: the S&C repeats are built in the frequency domain so
+    the repetition is exact by construction and the preamble stays inside the
+    payload's band, cutting ~45 dB of out-of-band excess
+  - Per-frame receiver diagnostics on `OfdmRxFrame` — acquisition score, CFO and
+    timing offset, EVM, and inner/outer FEC convergence reported separately —
+    plus two opt-ins: the per-bin channel estimate (`with_channel_estimate`,
+    the basis for a power delay profile) and true pre/post-inner-FEC bit error
+    rates (`with_error_rates`), measured by re-encoding a decoded frame so no
+    prior knowledge of the payload is required
 - Out-of-band spectral shaping — three independent, off-by-default levers that
   compose, with a shared cyclic-prefix budget (see [ofdm.md](ofdm.md) for the
   geometry, [modulate.md](modulate.md#choosing-the-numbers) for sizing):
