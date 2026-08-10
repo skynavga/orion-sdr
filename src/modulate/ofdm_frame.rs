@@ -790,6 +790,37 @@ pub struct OfdmFrameMod {
     cache: Arc<CodecCache>,
 }
 
+/// Panics if `cfg` carries a nonzero `rf_hz`.
+///
+/// `rf_hz` is honoured by [`OfdmMod`](crate::modulate::OfdmMod), which rotates
+/// each symbol as it is produced. The **frame** layer cannot honour it, in
+/// three independent ways:
+///
+/// - [`TxLowpass`](crate::multicarrier::TxLowpass) is a low-pass centred on DC.
+///   Run over an already-upconverted stream it deletes the signal, so a
+///   spectral mask and a nonzero `rf_hz` cannot coexist.
+/// - `generate_ofdm_preamble` does not apply it, leaving the preamble at
+///   baseband while header and payload sit at the IF.
+/// - `map_bits_to_iq` builds a fresh `OfdmMod` per block, so each starts its
+///   rotator at phase 0 — a phase step at every header/payload and frame seam.
+///
+/// The receiver never applies it either: `rf_hz` appears nowhere in
+/// `demodulate`, so a frame modulated at an IF could not be decoded even if
+/// the transmit side were correct.
+///
+/// Modulate at `rf_hz = 0.0` and upconvert the whole burst yourself with one
+/// continuous [`Rotator`](crate::dsp::Rotator). That is the right ordering
+/// whenever a baseband shaping stage exists — shape first, upconvert once —
+/// and it keeps the rotator continuous across every seam.
+pub(crate) fn assert_baseband(cfg: &OfdmConfig) {
+    assert!(
+        cfg.rf_hz == 0.0,
+        "OFDM frame assembly is baseband-only: got rf_hz = {} Hz. Modulate at \
+         rf_hz = 0.0 and upconvert the whole burst with one continuous Rotator.",
+        cfg.rf_hz
+    );
+}
+
 impl OfdmFrameMod {
     /// Creates a frame modulator over `cfg`, an `mcs_table`, and the
     /// acquisition `preamble` (which should carry a training symbol sized to
@@ -809,6 +840,7 @@ impl OfdmFrameMod {
         preamble: OfdmPreamble,
         cache: Arc<CodecCache>,
     ) -> Self {
+        assert_baseband(&cfg);
         Self {
             cfg,
             mcs_table,

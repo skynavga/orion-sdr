@@ -18,6 +18,7 @@ the OFDM/COFDM conventions.
 | BCH | Bose–Chaudhuri–Hocquenghem | Binary block code (`fec/bch.rs`); COFDM outer FEC option |
 | BER | Bit Error Rate | Fraction of bits decoded wrongly; the CI thresholds and SNR sweeps in [performance.md](performance.md) |
 | BFO | Beat Frequency Oscillator | `bfo_hz` parameter in `SsbProductDemod` |
+| CBER | Channel Bit Error Rate | Pre-FEC BER, at the inner decoder's *input*; `OfdmRxFrame::channel_ber` |
 | BM | Berlekamp–Massey | Error-locator algorithm in the BCH/RS decoders |
 | BP | Belief Propagation | Iterative sum-product algorithm used in LDPC decoders |
 | BPSK | Binary Phase-Shift Keying | 1 bit/symbol; the COFDM header's fixed modulation |
@@ -62,6 +63,7 @@ the OFDM/COFDM conventions.
 | LDPC | Low-Density Parity-Check | LDPC(174,91) in FT8/FT4 (`codec/ldpc.rs`); parameterized family (`fec/ldpc_codes.rs`) for COFDM |
 | LEO | Low Earth Orbit | High-Doppler satellite case motivating OFDM's opt-in `PerSymbolPilotInterp` equalizer |
 | LFSR | Linear-Feedback Shift Register | Basis of the `PnScrambler` whitener (`fec/scrambler.rs`) |
+| IBER | Inner-decoder Bit Error Rate | BER at the inner decoder's *output*, before the outer code; `OfdmRxFrame::inner_ber` |
 | LLR | Log-Likelihood Ratio | `log(P(bit=0)/P(bit=1))`; positive ↔ bit more likely 0 |
 | LO | Local Oscillator | Receiver frequency reference; source of frequency offset |
 | LP | Low-Pass | `FirLowpass`, `LpCascade` filter types |

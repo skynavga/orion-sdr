@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "orion-sdr"
-version = "0.0.57"
+version = "0.0.58"
 description = "Composable SDR/DSP block library targeting HF-to-EHF: analog and single-carrier digital modes, FT8/FT4, PSK31, OFDM/COFDM, and DVB-T/NB-DVB-T, with Python bindings"
 license = { text = "MIT OR Apache-2.0" }
 requires-python = ">=3.12"

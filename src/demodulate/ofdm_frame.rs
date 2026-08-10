@@ -844,6 +844,7 @@ impl OfdmFrameDemod {
     /// one `Arc<CodecCache>` across a modulator/demodulator pair (or several
     /// links on the same MCS) so each FEC code is constructed only once.
     pub fn with_cache(cfg: OfdmConfig, mcs_table: McsTable, cache: Arc<CodecCache>) -> Self {
+        crate::modulate::ofdm_frame::assert_baseband(&cfg);
         Self {
             cfg,
             mcs_table,
@@ -931,6 +932,7 @@ impl OfdmFrameStreamDemod {
         preamble: OfdmPreamble,
         cache: Arc<CodecCache>,
     ) -> Self {
+        crate::modulate::ofdm_frame::assert_baseband(&cfg);
         let fs = cfg.fs;
         Self {
             cfg,
