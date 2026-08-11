@@ -9,6 +9,63 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.59] - 2026-08-11
+
+Two fixes to the streaming receiver, neither visible to the batch
+demodulator: `OfdmFrameStreamDemod` could silently drop leading frames when
+a later preamble outranked an earlier one, and nothing tracked the carrier
+phase drift that accumulates across a frame once the training symbol's
+one-time channel estimate stops matching reality.
+
+**A receiver draining front-to-back needs the earliest candidate, not the
+best one.** `OfdmFrameStreamDemod` took the first candidate in `ofdm_sync`'s
+quality-ranked output, then drained the buffer past it — locking onto a
+later frame threw away every frame before it, with no `RxError` and no
+failed decode to show for it. Measured on eight back-to-back frames at an
+excellent link (EVM ~−42 dB, BER 0), sequence numbers `[6, 7]` came back out
+of `0..=7`. The timing metric forms a plateau, so one preamble yields a run
+of accepted offsets; taking the earliest offset outright would systematically
+pick the plateau's leading edge and give away timing accuracy for nothing.
+`sync::earliest_accepted` instead takes the best-ranked offset within the
+earliest cluster.
+
+**`TrainingSymbolHold` measures the channel once from the training symbol
+and holds it for the whole frame, but the Schmidl & Cox carrier estimate has
+variance.** A residual offset integrated into constellation rotation that
+nothing corrected — a few Hz is already tens of degrees by the last symbol
+of a 50 ms frame, against QPSK's 45-degree decision boundary, and frames
+failed well above the concatenated FEC's own limit in a way indistinguishable
+from an FEC cliff. `remove_common_phase_error` now runs a decision-directed
+tracking pass — each symbol de-rotated by the phase predicted from those
+before it, since a decision-directed estimate is only valid while the
+decisions are — followed by a least-squares fit of accumulated phase against
+symbol index, pooling every symbol's estimate and dropping the loop's
+start-up transient. Measured by the new `snr::cofdm_stream_fer`, error-free
+reception on the streaming path moves from 25 dB in-band SNR to 20 dB, with
+every point below it several times better.
+
+### Added
+
+- `sync::earliest_accepted`, selecting the best-ranked offset within the
+  earliest accepted cluster of `ofdm_sync`'s timing-metric plateau, rather
+  than the best-ranked offset crate-wide.
+- `snr::cofdm_stream_fer`, measuring the streaming receiver's frame-error
+  rate — acquisition, equalization, and carrier tracking included — rather
+  than the batch demodulator handed a known frame start.
+
+### Changed
+
+- The duplicated COFDM frame-chain throughput table in `docs/performance.md`
+  is now published once; the two copies had drifted apart.
+
+### Fixed
+
+- `OfdmFrameStreamDemod` no longer silently discards leading frames when a
+  later preamble outranks an earlier one in `ofdm_sync`'s ranking; it now
+  drains frames in arrival order.
+- COFDM streaming reception no longer degrades from uncorrected residual
+  carrier phase drift well above the concatenated FEC's own noise limit.
+
 ## [0.0.58] - 2026-08-10
 
 The preamble was never confined to the occupied band, so it undid much of the

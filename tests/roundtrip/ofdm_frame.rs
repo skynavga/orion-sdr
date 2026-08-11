@@ -1250,7 +1250,12 @@ fn a_heavily_errored_channel_still_delivers_a_clean_frame() {
     // for measuring here: the channel is hammering the signal while the inner
     // code absorbs it and the frame arrives intact. Reported as a high channel
     // BER against a clean inner BER.
-    let (cber, iber) = decode_with_rates(0.5).expect("still decodes at this noise");
+    // 0.7, not 0.5. Residual-carrier tracking (`remove_common_phase_error`)
+    // removes rotation that used to turn into wrong demapper decisions, so the
+    // same noise now yields a *lower* channel BER — 0.5 fell to 9.8e-4, just
+    // under this threshold. The fixture needs more noise to reach the same
+    // channel state, which is the improvement showing up rather than hiding.
+    let (cber, iber) = decode_with_rates(0.7).expect("still decodes at this noise");
     assert!(
         cber > 1.0e-3,
         "expected a visibly errored channel, got {cber:.3e}"
@@ -1438,3 +1443,196 @@ fn the_per_symbol_modulator_still_upconverts() {
         "and must actually move the signal"
     );
 }
+
+// ── Streaming frame continuity ──────────────────────────────────────────────
+
+/// Every transmitted frame must come back from a continuous stream.
+///
+/// **This is a regression test for silent data loss, and it only works with
+/// noise present.** `ofdm_sync` ranks candidates by quality; a streaming
+/// receiver draining its buffer front-to-back needs the *earliest* one. Taking
+/// the best-ranked candidate makes the receiver lock onto a frame further down
+/// the buffer and drain every frame before it, reporting nothing at all — no
+/// `RxError`, no failed decode. Before `earliest_accepted`, eight back-to-back
+/// frames at an excellent link returned sequence numbers `[6, 7]` with zero
+/// errors.
+///
+/// **The noise level is load-bearing in both directions.** At zero noise every
+/// preamble scores exactly 1.000, the ranking sort is stable, rank order equals
+/// position order, and all eight frames arrive regardless — a clean-signal test
+/// cannot see the bug at all. It needs only enough noise to break the tie:
+/// measured, the old selection picks offset 5168 (the *third* frame) even at a
+/// noise scale of 0.0001.
+///
+/// Too much noise reintroduces losses for an unrelated reason. The S&C carrier
+/// estimate has variance, this receiver holds its channel estimate across the
+/// frame (`TrainingSymbolHold`, no residual-CFO tracking), and the frame is
+/// 2584 samples — 53.8 ms at 48 kHz. At a noise scale of 0.01 a 3.09 Hz
+/// estimation error was measured on one frame, which integrates to ~60 degrees
+/// of constellation rotation by the end of the payload and fails its CRC. That
+/// is a property of the estimator and the frame length, not of candidate
+/// selection: the same body decodes byte-exact through the batch demodulator at
+/// the same known start. 0.001 sits below that and above the tie.
+#[test]
+fn stream_returns_every_frame_in_order() {
+    const FRAMES: u32 = 8;
+    let cfg = plan_config();
+    let pre = preamble(&cfg);
+    let cache = std::sync::Arc::new(CodecCache::new());
+    let table = McsTable::default_ladder();
+    let modu = OfdmFrameMod::with_cache(cfg.clone(), table.clone(), pre, cache.clone());
+    let payload = sample_payload(96);
+
+    let pre_len = pre.total_len();
+    let mut iq: Vec<C32> = Vec::new();
+    let mut frame_len = 0;
+    for seq in 0..FRAMES {
+        let frame = FramePacket::new(FrameMetadata::new(seq, 1), payload.clone());
+        let one = modu.modulate_frame(&frame, 0);
+        frame_len = one.len();
+        iq.extend_from_slice(&one);
+    }
+    // Referenced to the PAYLOAD, not the buffer mean: the preamble is
+    // deliberately hotter, so a buffer-mean reference injects more noise than
+    // the nominal figure claims.
+    let body = &iq[pre_len..frame_len];
+    let body_power: f32 = body.iter().map(|c| c.norm_sqr()).sum::<f32>() / body.len() as f32;
+    add_awgn(&mut iq, body_power * 0.001, 0x5EED_0001);
+
+    // Fed in chunks, as a streaming caller does, so the search window grows and
+    // shrinks the way it does in service.
+    let mut demod =
+        OfdmFrameStreamDemod::with_cache(cfg, table, pre, cache).with_score_threshold(0.5);
+    let mut seqs = Vec::new();
+    let mut errors = 0usize;
+    for chunk in iq.chunks(512) {
+        for result in demod.feed(chunk) {
+            match result {
+                Ok(frame) => {
+                    assert_eq!(frame.packet.payload, payload, "payload corrupted");
+                    seqs.push(frame.packet.metadata.sequence_num);
+                }
+                Err(_) => errors += 1,
+            }
+        }
+    }
+
+    let expected: Vec<u32> = (0..FRAMES).collect();
+    assert_eq!(
+        seqs, expected,
+        "frames went missing with {errors} errors reported — a gap here is \
+         invisible to any metric derived from `feed`'s return value"
+    );
+}
+
+/// `earliest_accepted` must resolve the plateau to its *best* offset, not its
+/// leading edge.
+///
+/// One preamble occurrence yields a run of accepted offsets (the timing metric
+/// forms a plateau, not a spike). Taking the earliest offset outright would
+/// systematically pick the leading edge and give away timing accuracy; the
+/// clustering exists to take the earliest *occurrence* while keeping the
+/// best-aligned offset within it.
+#[test]
+fn earliest_accepted_picks_the_best_offset_within_the_first_cluster() {
+    use orion_sdr::sync::{OfdmSyncResult, earliest_accepted};
+
+    // Two occurrences, each a plateau; the globally best-ranked entry belongs
+    // to the *later* one, exactly as noise makes happen in service.
+    let ranked = vec![
+        OfdmSyncResult {
+            start_sample: 1002,
+            cfo_hz: 0.0,
+            integer_cfo_bins: 0,
+            score: 1.00,
+        },
+        OfdmSyncResult {
+            start_sample: 12,
+            cfo_hz: 0.0,
+            integer_cfo_bins: 0,
+            score: 0.99,
+        },
+        OfdmSyncResult {
+            start_sample: 10,
+            cfo_hz: 0.0,
+            integer_cfo_bins: 0,
+            score: 0.98,
+        },
+        OfdmSyncResult {
+            start_sample: 1000,
+            cfo_hz: 0.0,
+            integer_cfo_bins: 0,
+            score: 0.97,
+        },
+        OfdmSyncResult {
+            start_sample: 11,
+            cfo_hz: 0.0,
+            integer_cfo_bins: 0,
+            score: 0.40,
+        },
+    ];
+
+    let picked = earliest_accepted(ranked.clone(), 0.5, 64).expect("a candidate clears 0.5");
+    assert_eq!(
+        picked.start_sample, 12,
+        "must take the best-ranked offset in the earliest cluster, not the \
+         earliest offset (10) and not the best overall (1002)"
+    );
+
+    // Nothing above threshold means nothing to decode yet.
+    assert!(earliest_accepted(ranked, 1.01, 64).is_none());
+}
+
+// ── Residual carrier tracking ───────────────────────────────────────────────
+
+/// A residual carrier offset the acquisition never saw must not destroy the
+/// payload.
+///
+/// The offset is applied **only after the preamble**, so `ofdm_sync` measures a
+/// clean preamble, estimates ~0 Hz, and the body carries a pure linear phase
+/// ramp — precisely the state a real S&C estimation error leaves behind, and
+/// the state `TrainingSymbolHold` cannot see, since it measures the channel
+/// once from the training symbol and holds it.
+///
+/// Deterministic by construction: no noise, no RNG, so the assertion is about
+/// the mechanism rather than a statistical threshold. 6 Hz over this fixture's
+/// 53.8 ms frame is about 116 degrees of rotation by the last symbol — beyond
+/// QPSK's 45-degree decision boundary, so without
+/// `remove_common_phase_error` the payload decodes to garbage.
+#[test]
+fn a_residual_carrier_offset_after_the_preamble_is_tracked_out() {
+    let cfg = plan_config();
+    let pre = preamble(&cfg);
+    let table = McsTable::default_ladder();
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+    let payload = sample_payload(96);
+    let frame = FramePacket::new(FrameMetadata::new(0, 1), payload.clone());
+    let mut iq = modu.modulate_frame(&frame, 0);
+
+    let pre_len = pre.total_len();
+    let fs = cfg.fs;
+    let body_secs = (iq.len() - pre_len) as f32 / fs;
+    for (n, c) in iq[pre_len..].iter_mut().enumerate() {
+        let phase = std::f32::consts::TAU * RESIDUAL_HZ * n as f32 / fs;
+        let (sin, cos) = phase.sin_cos();
+        *c *= C32::new(cos, sin);
+    }
+    let end_rotation_deg = 360.0 * RESIDUAL_HZ * body_secs;
+    assert!(
+        end_rotation_deg > 90.0,
+        "fixture must rotate past the decision boundary to be a real test, got \
+         {end_rotation_deg:.0} deg"
+    );
+
+    iq.extend(std::iter::repeat_n(C32::default(), 256));
+    let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre);
+    let decoded: Vec<_> = rx.feed(&iq).into_iter().filter_map(|r| r.ok()).collect();
+    assert_eq!(decoded.len(), 1, "the frame must still be recovered");
+    assert_eq!(
+        decoded[0].packet.payload, payload,
+        "payload corrupted by {end_rotation_deg:.0} deg of untracked rotation"
+    );
+}
+
+/// Residual offset injected after the preamble, in Hz. See the test above.
+const RESIDUAL_HZ: f32 = 6.0;

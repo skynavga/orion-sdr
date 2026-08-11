@@ -402,6 +402,29 @@ nowhere in `demodulate` — so an IF-modulated frame could not be decoded even i
 the transmit side were right. Modulate at baseband, shape, then upconvert the
 whole burst once with a continuous `Rotator`.
 
+**Residual carrier tracking.** The Schmidl & Cox estimate has variance, and the
+default `TrainingSymbolHold` measures the channel once from the training symbol
+and holds it for the whole frame — so a residual offset `e` integrates to
+`2*pi*e*T` of constellation rotation by the end of a frame of duration `T`, with
+nothing to notice it. A few Hz is already tens of degrees by the last symbol of a
+50 ms frame, against QPSK's 45-degree decision boundary, and the failures look
+exactly like an FEC cliff.
+
+`remove_common_phase_error` removes it on the equalized path, in two passes over
+the payload's data symbols: a decision-directed tracking loop (each symbol
+de-rotated by the phase predicted from those before it, so the residual *at the
+point of decision* stays under a degree and the decisions stay valid), then a
+least-squares fit of accumulated phase against symbol index — a carrier offset is
+a straight line, so fitting one pools every symbol's estimate and drops the
+loop's start-up transient. Correcting per symbol rather than per frame moves the
+budget from the frame duration to one symbol.
+
+Measured in [performance.md](performance.md) (`snr::cofdm_stream_fer`):
+error-free reception moves from 25 dB in-band SNR to 20 dB, with every point
+below it several times better. Note that a *better initial estimate* is not an
+alternative — S&C variance is set by the preamble's total correlated energy, so
+correlating at lag `3L` instead of `L` measured a gain of 1.0x.
+
 **Acceptance: the strongest end-to-end check wins.** `ChainOutcome::is_valid`
 decides whether a decoded block can be trusted, and `inner_ok` is deliberately
 not part of it: that flag reports whether the inner decoder's parity checks

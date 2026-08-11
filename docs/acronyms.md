@@ -26,6 +26,7 @@ the OFDM/COFDM conventions.
 | CLT | Central Limit Theorem | Used in AWGN generation (sum-of-uniforms approximation) |
 | COFDM | Coded OFDM | The concatenated-FEC, framed OFDM link; see [ofdm.md](ofdm.md) |
 | CP | Cyclic Prefix | `CyclicPrefixInsert`/`CyclicPrefixRemove`; absorbs multipath delay spread up to `cp_len` |
+| CPE | Common Phase Error | Per-symbol carrier-phase rotation left by a residual CFO; tracked out by `remove_common_phase_error` |
 | CPFSK | Continuous-Phase Frequency-Shift Keying | Phase continuity across symbol boundaries; used by FT8/FT4 |
 | CRC | Cyclic Redundancy Check | CRC-14 (0x2757) for FT8/FT4; generic CRC-16/CRC-32 (`fec`) for COFDM frames |
 | CSR | Compressed Sparse Row | Flat contiguous edge-message storage (buffer + offset table) in the LDPC decoder (`fec/ldpc_codes.rs`) |

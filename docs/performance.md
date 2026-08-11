@@ -9,7 +9,7 @@ Measurements taken on Apple M2 Pro, release build (`opt-level=3`, `lto=fat`,
 `codegen-units=1`), no SIMD.  Results are ordered by throughput (descending)
 within each table.
 
-## v0.0.58 Results
+## v0.0.59 Results
 
 ### Analog modes (65536 samples × 30 passes)
 
@@ -156,8 +156,8 @@ much higher throughput. FFT round-trip throughput falls off gradually with
 
 | Stage | QPSK Msps | QAM-64 Msps |
 | --- | ---: | ---: |
-| mod only | 321 | 258 |
-| full roundtrip (mod → demod → decide) | 164 | 102 |
+| mod only | 320 | 261 |
+| full roundtrip (mod → demod → decide) | 159 | 98 |
 
 `OfdmMod`'s TX-only throughput sits close to the multicarrier FFT primitive's
 own ceiling, since the mapper/grid/CP stages are comparatively cheap. The full
@@ -195,24 +195,31 @@ concatenated FEC (below) improves on them substantially at moderate SNR.
 
 | noise_scale | equiv. SNR (dB) | QPSK BER | QAM-16 BER |
 | ---: | ---: | ---: | ---: |
-| 0.001 | 30.0 | 0.00000 | 0.00077 |
-| 0.005 | 23.0 | 0.00067 | 0.03425 |
-| 0.01 | 20.0 | 0.00805 | 0.08134 |
-| 0.02 | 17.0 | 0.03464 | 0.14809 |
-| 0.05 | 13.0 | 0.12148 | 0.24696 |
-| 0.1 | 10.0 | 0.21604 | 0.32077 |
-| 0.2 | 7.0 | 0.31528 | 0.38725 |
-| 0.5 | 3.0 | 0.40805 | 0.44331 |
-| 1.0 | 0.0 | 0.44635 | 0.46945 |
-| 2.0 | −3.0 | 0.47264 | 0.48340 |
+| 0.001 | 30.0 | 0.00000 | 0.00000 |
+| 0.005 | 23.0 | 0.00000 | 0.00077 |
+| 0.01 | 20.0 | 0.00000 | 0.00539 |
+| 0.02 | 17.0 | 0.00024 | 0.02287 |
+| 0.05 | 13.0 | 0.00853 | 0.07659 |
+| 0.1 | 10.0 | 0.03606 | 0.13788 |
+| 0.2 | 7.0 | 0.09481 | 0.21275 |
+| 0.5 | 3.0 | 0.21729 | 0.31129 |
+| 1.0 | 0.0 | 0.30799 | 0.37877 |
+| 2.0 | −3.0 | 0.38424 | 0.42654 |
 
 The `TrainingSymbolHold` equalizer (one channel estimate per packet, held
 constant — the default for this feature's line-of-sight VHF–EHF target
-bands) noticeably raises BER relative to the flat-channel table above at
-matched noise scales, since a 2-tap channel spreads each subcarrier's SNR
-unevenly across the band. This is expected: a per-bin equalizer corrects
-channel *gain/phase*, not the SNR penalty of nulls the channel introduces at
-some subcarriers.
+bands) still raises BER relative to the flat-channel table above at matched
+noise scales, since a 2-tap channel spreads each subcarrier's SNR unevenly
+across the band. A per-bin equalizer corrects channel *gain/phase*, not the SNR
+penalty of nulls the channel introduces at some subcarriers.
+
+**These curves improved sharply in v0.0.58** — QPSK at `noise_scale = 0.05`
+fell from 0.12148 to 0.00853, a 14x reduction, and QAM-16 from 0.24696 to
+0.07659. The band-limited preamble is the cause: acquisition timing is more
+accurate (see the sync table below, where wide-CFO lock at `noise_scale = 0.2`
+went 74% → 100%), and a timing error under multipath costs far more than under
+a flat channel because it adds inter-symbol interference on top of the
+frequency-selective fade.
 
 ### OFDM packet-sync acquisition probability (50 trials/point)
 
@@ -225,17 +232,25 @@ well beyond the fractional-only ±½-spacing capture range).
 | ---: | ---: | ---: |
 | 0.01 | 100.0% | 100.0% |
 | 0.05 | 100.0% | 100.0% |
-| 0.1 | 94.0% | 98.0% |
-| 0.2 | 88.0% | 74.0% |
-| 0.5 | 8.0% | 18.0% |
+| 0.1 | 92.0% | 100.0% |
+| 0.2 | 84.0% | 100.0% |
+| 0.5 | 12.0% | 46.0% |
 | 1.0 | 0.0% | 0.0% |
 | 2.0 | 0.0% | 0.0% |
 | 5.0 | 0.0% | 0.0% |
 
-Both curves degrade sharply past `noise_scale ≈ 0.2`, driven by the timing
-metric's tie-break (correlated-window energy) losing discrimination as AWGN
-dominates the preamble's own energy — timing lock is the limiting factor at
-low SNR, not the CFO estimators layered on top of it.
+The fractional-only curve degrades past `noise_scale ≈ 0.2` as AWGN comes to
+dominate the preamble's own energy — timing lock is the limiting factor at low
+SNR, not the CFO estimators layered on top of it.
+
+**The wide-CFO curve improved markedly in v0.0.58**, from 74% to 100% lock at
+`noise_scale = 0.2` and 18% to 46% at 0.5, and now holds 100% two points
+further than the fractional-only path. Two changes contribute: the training
+symbol it depends on is band-limited and amplitude-matched to the data, so the
+integer-CFO correlation is cleaner; and `ofdm_sync` no longer folds the
+correlated-window energy ratio into the reported score, so acceptance is a
+question about phase coherence rather than about whether the preamble happened
+to be the loudest thing in the buffer.
 
 ### COFDM frame throughput (n_fft=64, cp_len=8, QPSK payload, 96-byte payload, 200 passes)
 
@@ -252,14 +267,14 @@ per-frame FEC-code construction. Warm-run steady-state numbers.
 
 | Config | mod Msps | demod Msps | frame samples |
 | --- | ---: | ---: | ---: |
-| LDPC(n512r12) + BCH(t=8) | ~87 | ~58 | 2584 |
-| Convolutional r1/2 + RS(60,52) | ~97 | ~29 | 1936 |
+| LDPC(n512r12) + BCH(t=8) | ~82 | ~52 | 2584 |
+| Convolutional r1/2 + RS(60,52) | ~90 | ~19 | 1936 |
 
 Decode is the limiting side of both concatenations, but for different reasons.
-The LDPC+BCH demodulator (~58 Msps) runs the sum-product decoder, whose per-edge
+The LDPC+BCH demodulator (~52 Msps) runs the sum-product decoder, whose per-edge
 message storage is a flat contiguous buffer and whose check-node update caches
 `tanh(msg/2)` per edge — so its cost is the belief-propagation iteration itself,
-not memory or transcendental overhead. The Conv+RS demodulator (~29 Msps) is
+not memory or transcendental overhead. The Conv+RS demodulator (~19 Msps) is
 slower because the punctured convolutional inner code runs a full-block soft
 Viterbi over the whole payload every frame, which the LDPC path's per-codeword
 belief propagation and the shared code cache do not lighten. Both are far above
@@ -269,28 +284,51 @@ the fixed preamble/header overhead but not the per-codeword decode.
 
 ### COFDM frame-error-rate vs. noise scale (n_fft=64, cp_len=8, QPSK payload, 100 trials/point, flat channel)
 
-Frame-error-rate (whole-frame CRC pass/fail) for the two concatenations, same
-`noise_scale` convention as the uncoded OFDM tables above. Compare against the
-uncoded QPSK column of "OFDM BER vs. noise scale": the FEC drives *frame* errors
-to zero at noise scales where the uncoded *bit*-error rate is already nonzero.
+Frame-error-rate (whole-frame CRC pass/fail) for the two concatenations. Here
+`noise_scale` is AWGN power relative to the **payload's** power — see the note
+below the table, which is why these figures are not comparable point-for-point
+with pre-v0.0.58 ones. Compare against the uncoded QPSK column of "OFDM BER vs.
+noise scale": the FEC drives *frame* errors to zero at noise scales where the
+uncoded *bit*-error rate is already substantial.
 
 | noise_scale | equiv. SNR (dB) | LDPC+BCH FER | Conv+RS FER |
 | ---: | ---: | ---: | ---: |
-| 0.02 | 17.0 | 0.000 | 0.000 |
-| 0.05 | 13.0 | 0.000 | 0.000 |
-| 0.1 | 10.0 | 0.000 | 0.000 |
 | 0.2 | 7.0 | 0.000 | 0.000 |
-| 0.3 | 5.2 | 0.010 | 0.000 |
-| 0.5 | 3.0 | 0.300 | 0.010 |
+| 0.5 | 3.0 | 0.000 | 0.000 |
+| 0.6 | 2.2 | 0.050 | 0.050 |
+| 0.7 | 1.5 | 0.480 | 0.500 |
+| 0.8 | 1.0 | 0.960 | 0.930 |
+| 0.9 | 0.5 | 1.000 | 1.000 |
+| 1.0 | 0.0 | 1.000 | 1.000 |
 
-Both concatenations hold FER = 0 through `noise_scale = 0.2` (equiv. SNR 7 dB),
-where uncoded QPSK already shows BER ≈ 0.015 — the concatenated FEC's coding
-gain. The convolutional + Reed–Solomon pairing is the more robust of the two at
-the cliff edge (`noise_scale ≥ 0.3`): its soft Viterbi plus RS symbol-error
-correction degrades more gracefully than the LDPC + BCH pairing here. (Frame
-errors are all-or-nothing per the payload CRC, so FER rises steeply once the
-inner code can no longer clear the channel — characteristic of a coded packet
-link, unlike the smooth uncoded BER curves.)
+**The cliff moved out by roughly a factor of two in v0.0.58.** Both
+concatenations previously began failing at `noise_scale = 0.3`; they now hold
+FER = 0 through 0.5 and break between 0.6 and 0.8. Two causes, and the second
+matters when comparing against the older table:
+
+- Frame acceptance no longer requires inner-FEC convergence (v0.0.57). A frame
+  whose payload the CRC vouches for is accepted however the stages beneath
+  fared, which recovers frames that were previously discarded while correct.
+- The noise reference changed meaning. `noise_scale` here is relative to the
+  **payload's** power. Before the preamble was band-limited it was ~30 dB hotter
+  than the payload and full-band, so a buffer-mean reference injected
+  substantially more noise for the same nominal figure. Numbers either side of
+  v0.0.58 are not directly comparable at a given `noise_scale`.
+
+Both hold FER = 0 well past the point where uncoded QPSK shows BER ≈ 0.08
+(`noise_scale = 0.5`) — the concatenated FEC's coding gain. The two
+concatenations now track each other closely through the cliff rather than
+Conv+RS holding a clear edge.
+
+Measured with the batch `OfdmFrameDemod` at a known start, so this is a
+measurement of the FEC rather than of acquisition; the sync table above covers
+acquisition separately. Feeding the streaming receiver instead folds in sync
+failures and reports 0.35 rather than 0.000 at `noise_scale = 0.02` for the
+same link.
+
+Regenerate with `snr::cofdm_fer` (see the SNR sweep command at the top). This
+table previously had no committed test behind it and had drifted a full noise
+decade out of date as a result.
 
 ## COFDM FEC block throughput
 
@@ -300,6 +338,41 @@ measured on Apple M2 Pro, release build, `--test-threads=1`, 200 passes/point.
 Tx, after decoding on Rx) — comparable across code rates, and NOT the sample-domain
 figure used elsewhere in this doc. Numbers are warm-run steady-state; the first run
 of each fixture is a cold-cache outlier and is discarded.
+
+### COFDM streaming-receiver frame-error rate (60 trials/point)
+
+`OfdmFrameStreamDemod` over the same link as the frame-error-rate table above,
+but through the receiver a caller actually gets: acquisition, equalization and
+residual-carrier tracking included, rather than the batch demodulator handed a
+known frame start. Backed by `snr::cofdm_stream_fer`. "In-band SNR" references
+the noise to the **payload's** power, not the buffer mean — the preamble is
+deliberately hotter, so a buffer-mean reference injects more noise than the
+nominal figure claims.
+
+| In-band SNR (dB) | FER | mean CBER |
+| ---: | ---: | ---: |
+| 6 | 0.800 | 0.07354 |
+| 8 | 0.367 | 0.03358 |
+| 10 | 0.133 | 0.00885 |
+| 12 | 0.050 | 0.00120 |
+| 15 | 0.017 | 0.00002 |
+| 20 | 0.000 | 0.00000 |
+| 25 | 0.000 | 0.00000 |
+| 30 | 0.000 | 0.00000 |
+
+**These curves improved sharply in v0.0.59**, when the receiver began tracking
+residual carrier phase across a frame (`remove_common_phase_error`). Measured on
+this fixture with tracking disabled, FER was 0.083 at 20 dB, 0.350 at 15 dB,
+0.550 at 12 dB and 0.717 at 10 dB — error-free reception started at 25 dB rather
+than 20, and every point below it was several times worse.
+
+The cause is that the Schmidl & Cox carrier estimate has variance while
+`TrainingSymbolHold` measures the channel once and holds it for the whole frame,
+so a residual offset integrated into constellation rotation that nothing
+corrected — on this 53.8 ms frame, a few Hz is already tens of degrees by the
+last symbol. The failures looked exactly like an FEC cliff, which is why the gap
+against the batch-demodulator table above is the number worth watching: that one
+isolates the concatenated FEC, this one includes everything the receiver adds.
 
 ### Per-block, single direction
 
@@ -416,20 +489,14 @@ microbenchmarks measure construction in isolation.
 `Ldpc::new`'s ~2.7 ms is why per-frame reconstruction is untenable: the cache turns it
 into a one-time per-link cost. "Mc/s" = millions of constructions per second.
 
-### Full COFDM frame chain
+### Full COFDM frame chain — reading the table above
 
-The end-to-end per-link path: `OfdmFrameMod::modulate_frame` and batch
-`OfdmFrameDemod::decode` over many frames on one modulator/demodulator instance
-(n_fft=64, cp_len=8, QPSK payload, 96-byte payload), for both concatenations.
-"Msps" = frame IQ samples / wall time, directly comparable to the "COFDM frame
-throughput" table above. Both paths reuse a warm `CodecCache` across the measured
-frames — each object holds a persistent one — so both directions measure
-steady-state, codes-warm throughput, not per-frame code construction.
-
-| Config | mod Msps | demod Msps |
-| --- | ---: | ---: |
-| LDPC(n512r12) + BCH(t=8) | ~87 | ~58 |
-| Convolutional r1/2 + RS(60,52) | ~97 | ~29 |
+The COFDM frame-chain figures are published **once**, in the "COFDM frame
+throughput" table above. They used to
+appear twice, and the two copies drifted: one was refreshed in v0.0.58 and the
+other kept quoting pre-0.0.58 numbers (~87/~58 and ~97/~29 against the measured
+~82/~52 and ~90/~19). A number published in two places is a number that will
+disagree with itself, so this section keeps only the caveats that belong with it.
 
 The modulate figure uses a per-pass-varying seed and consumes the whole output, so it
 is not constant-folded. The demodulate figure runs on a noiseless roundtrip: each

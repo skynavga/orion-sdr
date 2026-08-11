@@ -442,6 +442,46 @@ pub fn ofdm_sync(
     results
 }
 
+/// Picks the **earliest** accepted candidate from [`ofdm_sync`]'s output — the
+/// one a receiver draining a buffer front-to-back should decode next.
+///
+/// [`ofdm_sync`] ranks by *quality*, best first, which is what a caller
+/// answering "is there a preamble here, and where is it best aligned?" wants.
+/// A streaming receiver asks a different question: "which frame comes next?"
+/// Taking the best-ranked candidate answers the wrong one, and the consequence
+/// is silent data loss rather than a visible error — the receiver locks onto a
+/// frame further down the buffer and drains every frame before it without
+/// reporting anything.
+///
+/// Measured before this existed, on eight back-to-back frames at an excellent
+/// link (EVM ~-42 dB, BER 0): sequence numbers `[6, 7]` came back out of
+/// `0..=7`, with **zero** errors reported. Every preamble scored 1.000, so the
+/// quality ranking was decided by noise among equals. At zero noise the sort is
+/// stable and all eight arrive, which is why a clean-signal test cannot see it.
+///
+/// Selection is by earliest **cluster**, not earliest offset. The timing metric
+/// forms a plateau (see [`ofdm_sync`]), so one preamble occurrence yields a run
+/// of accepted offsets; `cluster_len` — pass the preamble's `total_len()` —
+/// groups them, and the best-ranked offset *within the earliest cluster* wins.
+/// Taking the earliest offset outright would systematically pick the leading
+/// edge of the plateau and give away timing accuracy for nothing.
+pub fn earliest_accepted(
+    results: Vec<OfdmSyncResult>,
+    score_threshold: f32,
+    cluster_len: usize,
+) -> Option<OfdmSyncResult> {
+    let accepted: Vec<OfdmSyncResult> = results
+        .into_iter()
+        .filter(|r| r.score >= score_threshold)
+        .collect();
+    let earliest = accepted.iter().map(|r| r.start_sample).min()?;
+    // `accepted` preserves `ofdm_sync`'s quality ranking, so the first entry
+    // falling inside the earliest cluster is that occurrence's best offset.
+    accepted
+        .into_iter()
+        .find(|r| r.start_sample - earliest < cluster_len.max(1))
+}
+
 /// Estimates the integer CFO (whole subcarrier-spacing units) from the
 /// dedicated training symbol at `training_start`: corrects the already-known
 /// fractional CFO, strips the cyclic prefix, FFTs the result, and searches
