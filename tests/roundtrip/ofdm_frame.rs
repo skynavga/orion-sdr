@@ -1250,7 +1250,12 @@ fn a_heavily_errored_channel_still_delivers_a_clean_frame() {
     // for measuring here: the channel is hammering the signal while the inner
     // code absorbs it and the frame arrives intact. Reported as a high channel
     // BER against a clean inner BER.
-    let (cber, iber) = decode_with_rates(0.5).expect("still decodes at this noise");
+    // 0.7, not 0.5. Residual-carrier tracking (`remove_common_phase_error`)
+    // removes rotation that used to turn into wrong demapper decisions, so the
+    // same noise now yields a *lower* channel BER — 0.5 fell to 9.8e-4, just
+    // under this threshold. The fixture needs more noise to reach the same
+    // channel state, which is the improvement showing up rather than hiding.
+    let (cber, iber) = decode_with_rates(0.7).expect("still decodes at this noise");
     assert!(
         cber > 1.0e-3,
         "expected a visibly errored channel, got {cber:.3e}"
@@ -1577,3 +1582,57 @@ fn earliest_accepted_picks_the_best_offset_within_the_first_cluster() {
     // Nothing above threshold means nothing to decode yet.
     assert!(earliest_accepted(ranked, 1.01, 64).is_none());
 }
+
+// ── Residual carrier tracking ───────────────────────────────────────────────
+
+/// A residual carrier offset the acquisition never saw must not destroy the
+/// payload.
+///
+/// The offset is applied **only after the preamble**, so `ofdm_sync` measures a
+/// clean preamble, estimates ~0 Hz, and the body carries a pure linear phase
+/// ramp — precisely the state a real S&C estimation error leaves behind, and
+/// the state `TrainingSymbolHold` cannot see, since it measures the channel
+/// once from the training symbol and holds it.
+///
+/// Deterministic by construction: no noise, no RNG, so the assertion is about
+/// the mechanism rather than a statistical threshold. 6 Hz over this fixture's
+/// 53.8 ms frame is about 116 degrees of rotation by the last symbol — beyond
+/// QPSK's 45-degree decision boundary, so without
+/// `remove_common_phase_error` the payload decodes to garbage.
+#[test]
+fn a_residual_carrier_offset_after_the_preamble_is_tracked_out() {
+    let cfg = plan_config();
+    let pre = preamble(&cfg);
+    let table = McsTable::default_ladder();
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+    let payload = sample_payload(96);
+    let frame = FramePacket::new(FrameMetadata::new(0, 1), payload.clone());
+    let mut iq = modu.modulate_frame(&frame, 0);
+
+    let pre_len = pre.total_len();
+    let fs = cfg.fs;
+    let body_secs = (iq.len() - pre_len) as f32 / fs;
+    for (n, c) in iq[pre_len..].iter_mut().enumerate() {
+        let phase = std::f32::consts::TAU * RESIDUAL_HZ * n as f32 / fs;
+        let (sin, cos) = phase.sin_cos();
+        *c *= C32::new(cos, sin);
+    }
+    let end_rotation_deg = 360.0 * RESIDUAL_HZ * body_secs;
+    assert!(
+        end_rotation_deg > 90.0,
+        "fixture must rotate past the decision boundary to be a real test, got \
+         {end_rotation_deg:.0} deg"
+    );
+
+    iq.extend(std::iter::repeat_n(C32::default(), 256));
+    let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre);
+    let decoded: Vec<_> = rx.feed(&iq).into_iter().filter_map(|r| r.ok()).collect();
+    assert_eq!(decoded.len(), 1, "the frame must still be recovered");
+    assert_eq!(
+        decoded[0].packet.payload, payload,
+        "payload corrupted by {end_rotation_deg:.0} deg of untracked rotation"
+    );
+}
+
+/// Residual offset injected after the preamble, in Hz. See the test above.
+const RESIDUAL_HZ: f32 = 6.0;

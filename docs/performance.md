@@ -339,6 +339,41 @@ Tx, after decoding on Rx) — comparable across code rates, and NOT the sample-d
 figure used elsewhere in this doc. Numbers are warm-run steady-state; the first run
 of each fixture is a cold-cache outlier and is discarded.
 
+### COFDM streaming-receiver frame-error rate (60 trials/point)
+
+`OfdmFrameStreamDemod` over the same link as the frame-error-rate table above,
+but through the receiver a caller actually gets: acquisition, equalization and
+residual-carrier tracking included, rather than the batch demodulator handed a
+known frame start. Backed by `snr::cofdm_stream_fer`. "In-band SNR" references
+the noise to the **payload's** power, not the buffer mean — the preamble is
+deliberately hotter, so a buffer-mean reference injects more noise than the
+nominal figure claims.
+
+| In-band SNR (dB) | FER | mean CBER |
+| ---: | ---: | ---: |
+| 6 | 0.800 | 0.07354 |
+| 8 | 0.367 | 0.03358 |
+| 10 | 0.133 | 0.00885 |
+| 12 | 0.050 | 0.00120 |
+| 15 | 0.017 | 0.00002 |
+| 20 | 0.000 | 0.00000 |
+| 25 | 0.000 | 0.00000 |
+| 30 | 0.000 | 0.00000 |
+
+**These curves improved sharply in v0.0.59**, when the receiver began tracking
+residual carrier phase across a frame (`remove_common_phase_error`). Measured on
+this fixture with tracking disabled, FER was 0.083 at 20 dB, 0.350 at 15 dB,
+0.550 at 12 dB and 0.717 at 10 dB — error-free reception started at 25 dB rather
+than 20, and every point below it was several times worse.
+
+The cause is that the Schmidl & Cox carrier estimate has variance while
+`TrainingSymbolHold` measures the channel once and holds it for the whole frame,
+so a residual offset integrated into constellation rotation that nothing
+corrected — on this 53.8 ms frame, a few Hz is already tens of degrees by the
+last symbol. The failures looked exactly like an FEC cliff, which is why the gap
+against the batch-demodulator table above is the number worth watching: that one
+isolates the concatenated FEC, this one includes everything the receiver adds.
+
 ### Per-block, single direction
 
 | Block | Variant | Tx Msps | Rx Msps |
@@ -454,20 +489,14 @@ microbenchmarks measure construction in isolation.
 `Ldpc::new`'s ~2.7 ms is why per-frame reconstruction is untenable: the cache turns it
 into a one-time per-link cost. "Mc/s" = millions of constructions per second.
 
-### Full COFDM frame chain
+### Full COFDM frame chain — reading the table above
 
-The end-to-end per-link path: `OfdmFrameMod::modulate_frame` and batch
-`OfdmFrameDemod::decode` over many frames on one modulator/demodulator instance
-(n_fft=64, cp_len=8, QPSK payload, 96-byte payload), for both concatenations.
-"Msps" = frame IQ samples / wall time, directly comparable to the "COFDM frame
-throughput" table above. Both paths reuse a warm `CodecCache` across the measured
-frames — each object holds a persistent one — so both directions measure
-steady-state, codes-warm throughput, not per-frame code construction.
-
-| Config | mod Msps | demod Msps |
-| --- | ---: | ---: |
-| LDPC(n512r12) + BCH(t=8) | ~87 | ~58 |
-| Convolutional r1/2 + RS(60,52) | ~97 | ~29 |
+The COFDM frame-chain figures are published **once**, in the "COFDM frame
+throughput" table above. They used to
+appear twice, and the two copies drifted: one was refreshed in v0.0.58 and the
+other kept quoting pre-0.0.58 numbers (~87/~58 and ~97/~29 against the measured
+~82/~52 and ~90/~19). A number published in two places is a number that will
+disagree with itself, so this section keeps only the caveats that belong with it.
 
 The modulate figure uses a per-pass-varying seed and consumes the whole output, so it
 is not constant-folded. The demodulate figure runs on a noiseless roundtrip: each

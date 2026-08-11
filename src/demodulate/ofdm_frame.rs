@@ -98,9 +98,12 @@ fn soft_demap(
                 SymbolFft::new(n_fft, cp_len).with_window_backoff(base.rx_window_backoff);
             let mut grid_extract = GridExtract::new(grid);
             let mut equalized = vec![C32::default(); n_fft];
+            // Every symbol is extracted before any is demapped: the phase
+            // tracker below needs the whole payload to fit a ramp across it,
+            // and the LLRs must come from the *corrected* symbols.
+            let mut all = vec![C32::default(); n_symbols * n_data];
             let mut in_off = 0;
-            let mut out_off = 0;
-            for _ in 0..n_symbols {
+            for k in 0..n_symbols {
                 let freq = symbol_fft.demod_symbol(&iq[in_off..])?;
                 if eq.process(freq, &mut equalized).out_written != n_fft {
                     return None;
@@ -108,19 +111,164 @@ fn soft_demap(
                 if grid_extract.process(&equalized, &mut symbols).out_written != n_data {
                     return None;
                 }
+                all[k * n_data..(k + 1) * n_data].copy_from_slice(&symbols);
+                in_off += sps;
+            }
+
+            remove_common_phase_error(&cfg, &mut all, n_symbols);
+
+            let mut out_off = 0;
+            for k in 0..n_symbols {
+                let block = &all[k * n_data..(k + 1) * n_data];
                 if let Some(sink) = symbol_sink.as_deref_mut() {
-                    sink.extend_from_slice(&symbols);
+                    sink.extend_from_slice(block);
                 }
-                let sw = soft.process(&symbols, &mut llrs[out_off..out_off + bps]);
+                let sw = soft.process(block, &mut llrs[out_off..out_off + bps]);
                 if sw.out_written != bps {
                     return None;
                 }
-                in_off += sps;
                 out_off += bps;
             }
         }
     }
     Some(llrs)
+}
+
+/// Minimum payload length, in OFDM symbols, worth running phase tracking over.
+///
+/// Below this the accumulated rotation is negligible and a two-point ramp fit
+/// is noise. The frame header (one or two symbols, immediately after the
+/// training symbol the channel was estimated from) falls under it by design.
+const CPE_MIN_SYMBOLS: usize = 4;
+
+/// Removes the residual **common phase error** accumulated across a frame's
+/// symbols, in place.
+///
+/// **Why this is not optional.** The Schmidl & Cox carrier estimate has
+/// variance, and `TrainingSymbolHold` measures the channel once from the
+/// training symbol and holds it for the whole frame — nothing revisits it. A
+/// residual offset `e` therefore integrates to `2*pi*e*T` of constellation
+/// rotation by the end of a frame of duration `T`, and the receiver never sees
+/// it happen. A few Hz of estimation error is already tens of degrees by the
+/// last symbol of a 50 ms frame, and QPSK's decision boundary is 45.
+///
+/// The concatenated FEC itself holds FER = 0 far below that (`snr::cofdm_fer`,
+/// batch demodulator at a known start), so without this the streaming receiver
+/// gives away link budget the FEC already paid for — and the resulting errors
+/// look exactly like an FEC cliff.
+///
+/// **A better initial estimate is not the fix.** S&C's variance is set by the
+/// preamble's total correlated energy, so correlating at lag `3L` instead of
+/// `L` triples the phase-to-frequency scaling and correlates a third as many
+/// samples — measured 10.95 Hz against 10.96 Hz, a gain of 1.0x. Nothing is won
+/// without spending more preamble.
+///
+/// **How.** Two passes over the equalized data symbols:
+///
+/// 1. A decision-directed tracking loop. Each symbol is de-rotated by the
+///    phase predicted from the symbols before it, demapped, and its hard
+///    decisions remapped to ideal constellation points; the residual
+///    `arg(sum(y * conj(y_ideal)))` drives a second-order loop. Prediction is
+///    what makes this work at all: a decision-directed estimate is only valid
+///    while decisions are, and they stop being valid past 45 degrees for QPSK
+///    — the very rotation this exists to remove. Tracking incrementally keeps
+///    the residual *at the point of decision* well under a degree.
+/// 2. A least-squares fit of the accumulated phase against symbol index. A
+///    carrier offset is a straight line by construction, so fitting one pools
+///    every symbol's estimate into two parameters instead of trusting each
+///    alone, and removes the loop's start-up transient from the correction
+///    actually applied.
+///
+/// Correcting per symbol rather than per frame moves the rotation budget from
+/// the frame duration to one symbol. Measured end to end on the standard COFDM
+/// test plan (53.8 ms frame), frame error rate against the known transmitted
+/// payload, 60 trials per point:
+///
+/// | In-band SNR | FER without | FER with |
+/// | --- | --- | --- |
+/// | 20 dB | 0.083 | **0.000** |
+/// | 15 dB | 0.350 | **0.017** |
+/// | 12 dB | 0.550 | **0.050** |
+/// | 10 dB | 0.717 | **0.133** |
+/// | 8 dB | 0.783 | **0.367** |
+///
+/// Error-free reception starts at 20 dB rather than 25, and every point below
+/// it improves several-fold. Reproduce with `snr::cofdm_stream_fer`.
+///
+fn remove_common_phase_error(cfg: &OfdmConfig, symbols: &mut [C32], n_symbols: usize) {
+    let n_data = cfg.carrier_plan.data_carriers().len();
+    if n_symbols < CPE_MIN_SYMBOLS || n_data == 0 || symbols.len() < n_symbols * n_data {
+        return;
+    }
+    // Loop gains: fast enough to lock inside a short payload, slow enough that
+    // per-symbol estimator noise does not drive the prediction. The fit below
+    // is what sets the accuracy of the applied correction, so these only have
+    // to keep the decisions valid.
+    const ALPHA: f32 = 0.5;
+    const BETA: f32 = 0.05;
+
+    let mut soft = OfdmSoftDemod::new(cfg);
+    let mut mapper = crate::modulate::ofdm::ideal_symbol_mapper(cfg.constellation);
+    let bps = cfg.bits_per_ofdm_symbol();
+    let mut llrs = vec![0.0f32; bps];
+    let mut bits = vec![0u8; bps];
+    let mut ideal = vec![C32::default(); n_data];
+    let mut rotated = vec![C32::default(); n_data];
+    let mut measured = vec![0.0f32; n_symbols];
+
+    let (mut phase, mut freq) = (0.0f32, 0.0f32);
+    for k in 0..n_symbols {
+        let block = &symbols[k * n_data..(k + 1) * n_data];
+        let (sin, cos) = (-phase).sin_cos();
+        let p = C32::new(cos, sin);
+        for (dst, src) in rotated.iter_mut().zip(block) {
+            *dst = src * p;
+        }
+        if soft.process(&rotated, &mut llrs).out_written != bps {
+            return;
+        }
+        for (b, l) in bits.iter_mut().zip(llrs.iter()) {
+            // Crate-wide LLR convention: positive means bit 0 is more likely.
+            *b = u8::from(*l <= 0.0);
+        }
+        if mapper.process(&bits, &mut ideal).out_written != n_data {
+            return;
+        }
+        let mut acc = C32::default();
+        for (y, r) in rotated.iter().zip(ideal.iter()) {
+            acc += y * r.conj();
+        }
+        let err = if acc.re == 0.0 && acc.im == 0.0 {
+            0.0
+        } else {
+            acc.im.atan2(acc.re)
+        };
+        // The total rotation observed on this symbol, before the loop moves on.
+        measured[k] = phase + err;
+        phase += freq + ALPHA * err;
+        freq += BETA * err;
+    }
+
+    // Least-squares line through (k, measured[k]).
+    let n = n_symbols as f32;
+    let sum_k = n * (n - 1.0) / 2.0;
+    let sum_k2 = (n - 1.0) * n * (2.0 * n - 1.0) / 6.0;
+    let sum_y: f32 = measured.iter().sum();
+    let sum_ky: f32 = measured.iter().enumerate().map(|(k, y)| k as f32 * y).sum();
+    let denom = n * sum_k2 - sum_k * sum_k;
+    if denom.abs() <= f32::EPSILON {
+        return;
+    }
+    let slope = (n * sum_ky - sum_k * sum_y) / denom;
+    let intercept = (sum_y - slope * sum_k) / n;
+
+    for k in 0..n_symbols {
+        let (sin, cos) = (-(intercept + slope * k as f32)).sin_cos();
+        let p = C32::new(cos, sin);
+        for c in &mut symbols[k * n_data..(k + 1) * n_data] {
+            *c *= p;
+        }
+    }
 }
 
 /// Scattered-pilot variant of [`soft_demap`] for DVB-T: demaps `n_symbols` OFDM
