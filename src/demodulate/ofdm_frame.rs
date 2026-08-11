@@ -32,7 +32,7 @@ use crate::modulate::ofdm_frame::{
     encode_chain_stages, scramble_bytes, symbol_config, symbols_for_coded_bits,
 };
 use crate::multicarrier::{CarrierGrid, GridExtract, SymbolFft};
-use crate::sync::{OfdmPreamble, ofdm_sync};
+use crate::sync::{OfdmPreamble, earliest_accepted, ofdm_sync};
 use num_complex::Complex32 as C32;
 use std::sync::Arc;
 
@@ -1041,7 +1041,10 @@ impl OfdmFrameStreamDemod {
         }
 
         let sync = ofdm_sync(&self.buf, self.fs, &self.preamble, 0, self.buf.len());
-        let Some(best) = sync.into_iter().find(|r| r.score >= self.score_threshold) else {
+        // The EARLIEST accepted candidate, not the best-ranked one: this drains
+        // the buffer front-to-back, and locking onto a later frame discards
+        // every frame before it with nothing reported. See `earliest_accepted`.
+        let Some(best) = earliest_accepted(sync, self.score_threshold, pre_len) else {
             return FrameStep::NeedMore;
         };
 

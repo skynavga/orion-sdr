@@ -1438,3 +1438,142 @@ fn the_per_symbol_modulator_still_upconverts() {
         "and must actually move the signal"
     );
 }
+
+// ── Streaming frame continuity ──────────────────────────────────────────────
+
+/// Every transmitted frame must come back from a continuous stream.
+///
+/// **This is a regression test for silent data loss, and it only works with
+/// noise present.** `ofdm_sync` ranks candidates by quality; a streaming
+/// receiver draining its buffer front-to-back needs the *earliest* one. Taking
+/// the best-ranked candidate makes the receiver lock onto a frame further down
+/// the buffer and drain every frame before it, reporting nothing at all — no
+/// `RxError`, no failed decode. Before `earliest_accepted`, eight back-to-back
+/// frames at an excellent link returned sequence numbers `[6, 7]` with zero
+/// errors.
+///
+/// **The noise level is load-bearing in both directions.** At zero noise every
+/// preamble scores exactly 1.000, the ranking sort is stable, rank order equals
+/// position order, and all eight frames arrive regardless — a clean-signal test
+/// cannot see the bug at all. It needs only enough noise to break the tie:
+/// measured, the old selection picks offset 5168 (the *third* frame) even at a
+/// noise scale of 0.0001.
+///
+/// Too much noise reintroduces losses for an unrelated reason. The S&C carrier
+/// estimate has variance, this receiver holds its channel estimate across the
+/// frame (`TrainingSymbolHold`, no residual-CFO tracking), and the frame is
+/// 2584 samples — 53.8 ms at 48 kHz. At a noise scale of 0.01 a 3.09 Hz
+/// estimation error was measured on one frame, which integrates to ~60 degrees
+/// of constellation rotation by the end of the payload and fails its CRC. That
+/// is a property of the estimator and the frame length, not of candidate
+/// selection: the same body decodes byte-exact through the batch demodulator at
+/// the same known start. 0.001 sits below that and above the tie.
+#[test]
+fn stream_returns_every_frame_in_order() {
+    const FRAMES: u32 = 8;
+    let cfg = plan_config();
+    let pre = preamble(&cfg);
+    let cache = std::sync::Arc::new(CodecCache::new());
+    let table = McsTable::default_ladder();
+    let modu = OfdmFrameMod::with_cache(cfg.clone(), table.clone(), pre, cache.clone());
+    let payload = sample_payload(96);
+
+    let pre_len = pre.total_len();
+    let mut iq: Vec<C32> = Vec::new();
+    let mut frame_len = 0;
+    for seq in 0..FRAMES {
+        let frame = FramePacket::new(FrameMetadata::new(seq, 1), payload.clone());
+        let one = modu.modulate_frame(&frame, 0);
+        frame_len = one.len();
+        iq.extend_from_slice(&one);
+    }
+    // Referenced to the PAYLOAD, not the buffer mean: the preamble is
+    // deliberately hotter, so a buffer-mean reference injects more noise than
+    // the nominal figure claims.
+    let body = &iq[pre_len..frame_len];
+    let body_power: f32 = body.iter().map(|c| c.norm_sqr()).sum::<f32>() / body.len() as f32;
+    add_awgn(&mut iq, body_power * 0.001, 0x5EED_0001);
+
+    // Fed in chunks, as a streaming caller does, so the search window grows and
+    // shrinks the way it does in service.
+    let mut demod =
+        OfdmFrameStreamDemod::with_cache(cfg, table, pre, cache).with_score_threshold(0.5);
+    let mut seqs = Vec::new();
+    let mut errors = 0usize;
+    for chunk in iq.chunks(512) {
+        for result in demod.feed(chunk) {
+            match result {
+                Ok(frame) => {
+                    assert_eq!(frame.packet.payload, payload, "payload corrupted");
+                    seqs.push(frame.packet.metadata.sequence_num);
+                }
+                Err(_) => errors += 1,
+            }
+        }
+    }
+
+    let expected: Vec<u32> = (0..FRAMES).collect();
+    assert_eq!(
+        seqs, expected,
+        "frames went missing with {errors} errors reported — a gap here is \
+         invisible to any metric derived from `feed`'s return value"
+    );
+}
+
+/// `earliest_accepted` must resolve the plateau to its *best* offset, not its
+/// leading edge.
+///
+/// One preamble occurrence yields a run of accepted offsets (the timing metric
+/// forms a plateau, not a spike). Taking the earliest offset outright would
+/// systematically pick the leading edge and give away timing accuracy; the
+/// clustering exists to take the earliest *occurrence* while keeping the
+/// best-aligned offset within it.
+#[test]
+fn earliest_accepted_picks_the_best_offset_within_the_first_cluster() {
+    use orion_sdr::sync::{OfdmSyncResult, earliest_accepted};
+
+    // Two occurrences, each a plateau; the globally best-ranked entry belongs
+    // to the *later* one, exactly as noise makes happen in service.
+    let ranked = vec![
+        OfdmSyncResult {
+            start_sample: 1002,
+            cfo_hz: 0.0,
+            integer_cfo_bins: 0,
+            score: 1.00,
+        },
+        OfdmSyncResult {
+            start_sample: 12,
+            cfo_hz: 0.0,
+            integer_cfo_bins: 0,
+            score: 0.99,
+        },
+        OfdmSyncResult {
+            start_sample: 10,
+            cfo_hz: 0.0,
+            integer_cfo_bins: 0,
+            score: 0.98,
+        },
+        OfdmSyncResult {
+            start_sample: 1000,
+            cfo_hz: 0.0,
+            integer_cfo_bins: 0,
+            score: 0.97,
+        },
+        OfdmSyncResult {
+            start_sample: 11,
+            cfo_hz: 0.0,
+            integer_cfo_bins: 0,
+            score: 0.40,
+        },
+    ];
+
+    let picked = earliest_accepted(ranked.clone(), 0.5, 64).expect("a candidate clears 0.5");
+    assert_eq!(
+        picked.start_sample, 12,
+        "must take the best-ranked offset in the earliest cluster, not the \
+         earliest offset (10) and not the best overall (1002)"
+    );
+
+    // Nothing above threshold means nothing to decode yet.
+    assert!(earliest_accepted(ranked, 1.01, 64).is_none());
+}
