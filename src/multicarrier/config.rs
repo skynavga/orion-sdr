@@ -96,6 +96,23 @@ impl CarrierPlan {
     /// caller-owned (COFDM) carrier layout. `edge_guard == 0` with no pilots
     /// reproduces the full-fill span, so it is regression-safe as a default.
     ///
+    /// # On `include_dc`
+    ///
+    /// `false` is the conventional choice and the right default: a
+    /// direct-conversion front end puts its LO leakage and DC offset squarely
+    /// on bin 0, so most numerologies (802.11, LTE) leave it null and spend the
+    /// carrier rather than fight the impairment. `true` is supported — every
+    /// stage that needs to know which bins are occupied derives that from
+    /// [`occupied_bins`](Self::occupied_bins), including the preamble's
+    /// training symbol — and is worth taking when the link does not sit at
+    /// baseband DC, e.g. one modulated at `rf_hz = 0.0` and then upconverted
+    /// wholesale by a [`Rotator`](crate::dsp::Rotator), where bin 0 lands on
+    /// the RF carrier rather than on the receiver's LO.
+    ///
+    /// Occupying DC does **not** buy DC-offset immunity: nothing here estimates
+    /// or removes a receiver-side DC offset, so an impaired front end corrupts
+    /// that carrier and the FEC absorbs it or does not.
+    ///
     /// Owns the **data**-carrier list only: use it *instead of*
     /// [`with_data_carriers`](Self::with_data_carriers) (both extend the same
     /// vec), but *alongside*
@@ -154,6 +171,35 @@ impl CarrierPlan {
             .map(|idx| idx.unsigned_abs() as usize)
             .max()
             .unwrap_or(0)
+    }
+
+    /// Every rustfft bin this plan occupies — data and pilot alike — resolved
+    /// once via `bin = idx.rem_euclid(n_fft)`, deduplicated and sorted
+    /// ascending. Empty when the plan assigns nothing.
+    ///
+    /// The single answer to "which bins does this link use", so the stages that
+    /// need it cannot disagree. [`occupied_half_carriers`](Self::occupied_half_carriers)
+    /// answers a narrower question — where the band *ends*, which is what a
+    /// spectral mask needs — and cannot express which bins inside that span are
+    /// live. Using it as if it could is what let the preamble's training symbol
+    /// null DC while [`with_contiguous_data`](Self::with_contiguous_data)
+    /// handed DC out as a data carrier: the training symbol never transmitted
+    /// the bin whose channel the equalizer then divided by.
+    pub fn occupied_bins(&self) -> Vec<usize> {
+        if self.n_fft == 0 {
+            return Vec::new();
+        }
+        let n = self.n_fft as i32;
+        let mut bins: Vec<usize> = self
+            .data_carriers
+            .iter()
+            .copied()
+            .chain(self.pilot_carriers.iter().map(|&(idx, _)| idx))
+            .map(|idx| idx.rem_euclid(n) as usize)
+            .collect();
+        bins.sort_unstable();
+        bins.dedup();
+        bins
     }
 
     pub fn pilot_carriers(&self) -> &[(i32, C32)] {

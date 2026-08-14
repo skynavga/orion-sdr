@@ -9,6 +9,73 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.60] - 2026-08-14
+
+`CarrierPlan::with_contiguous_data(_, true)` hands DC out as a data carrier,
+but the preamble's training symbol was built from the occupied band's
+half-width — which can only describe a symmetric span, so it cannot say
+whether bin 0 is live and nulled DC unconditionally. The channel estimate
+there was noise and the equalizer divided the payload by it. Alongside it,
+a bin whose channel estimate falls under the null floor is now erased rather
+than amplified, which applies to any frequency-selective path and not only
+to a bin the transmitter never loaded.
+
+**Measured on a quarter-bandwidth link** — 33 data carriers with DC occupied,
+32 without — a noiseless round trip reported **−15.2 dB EVM against −142.2 dB
+with DC nulled**. `sqrt(1/33)` is −15.2 dB: exactly one carrier of 33 wholly
+wrong, and it was the DC one. It now measures −142.5 dB, and the COFDM
+frame-error-rate sweep's new DC-occupied column tracks the DC-off one point
+for point.
+
+**A null is an absent channel, not a small one.** `EQUALIZER_FLOOR` used to
+clamp `|h|²` up to `1e-6` and divide anyway, turning a null into a gain of up
+to `1e6` — measured at 100x the carrier's own amplitude — so the one bin
+carrying no information became the loudest thing in the symbol and the
+demapper read a large random value as a confident decision. Zero lands on the
+constellation centroid, produces LLRs near zero, and hands the FEC an
+erasure. Had the guard erased rather than amplified, this defect would have
+cost one carrier of 33 rather than the frame.
+
+`OfdmEqualizer` now caches its per-bin coefficient where it is reused:
+`TrainingSymbolHold` measures once per packet, so the magnitude, the divide
+and the erasure compare fold out of the per-symbol loop and leave it a bare
+complex multiply — **3337 Msps against 2691 at `n_fft = 2048`**.
+`PerSymbolPilotInterp` re-estimates every bin every symbol, so it derives the
+coefficient inline and measures unchanged.
+
+DC-off behaviour is bit-identical: preamble output hashes match across five
+plan geometries, and every published DVB-T, OFDM-multipath and
+sync-acquisition curve is unchanged digit for digit.
+
+### Added
+
+- `CarrierPlan::occupied_bins`, every rustfft bin the plan uses (data and
+  pilot, sorted and deduplicated) — the single answer to "which bins does this
+  link occupy", which `occupied_half_carriers` cannot give because a band edge
+  cannot say whether DC is live.
+- A DC-occupied column in the COFDM frame-error-rate sweep
+  (`snr::cofdm_fer`), beside the existing one.
+
+### Changed
+
+- The preamble's training symbol loads exactly `CarrierPlan::occupied_bins()`
+  rather than a symmetric span derived from the band edge, so an asymmetric or
+  sparse plan trains only the bins it actually uses.
+- `OfdmEqualizer` erases a bin whose `|h|²` falls under `EQUALIZER_FLOOR`
+  instead of clamping and dividing through it.
+- `OfdmEqualizer` holds its per-bin equalizer coefficient rather than
+  recomputing it from the channel estimate every symbol under
+  `TrainingSymbolHold`.
+
+### Fixed
+
+- An occupied DC subcarrier (`with_contiguous_data(_, true)`) now demodulates.
+  The flag is kept and fixed rather than removed: `false` remains the right
+  default, since a direct-conversion front end puts its LO leakage on bin 0,
+  but the flag is meaningful for a link modulated at `rf_hz = 0.0` and
+  upconverted wholesale, where bin 0 lands on the RF carrier rather than the
+  receiver's LO.
+
 ## [0.0.59] - 2026-08-11
 
 Two fixes to the streaming receiver, neither visible to the batch

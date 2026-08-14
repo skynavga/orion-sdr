@@ -1,7 +1,7 @@
 ---
 name: release
 description: Push the prepared orion-sdr release tag and publish to crates.io. Run release-prep first.
-allowed-tools: Bash
+allowed-tools: Bash, Read, Write
 argument-hint: <version>  (e.g. 0.0.17)
 ---
 
@@ -47,13 +47,99 @@ list, so they do not affect what gets published.)
 If publish fails with "already uploaded", the version is already on crates.io —
 treat this as success and continue.
 
-## Step 4 — Report
+## Step 4 — Cut the GitHub release
+
+Not every tag gets a GitHub release, so the notes must cover **everything since
+the last release that exists** — which may span several tags — not just the last
+tag. Determine that boundary first:
+
+```
+gh release list --limit 1
+gh release view --json tagName -q .tagName
+```
+
+Call the result PREV_TAG. If there is no prior release at all, use the repo's
+first commit as the boundary.
+
+### Gather the delta
+
+- Commits: `git log PREV_TAG..TAG --oneline`
+- Merged PRs in the range: the merge commits in that log name them
+  (`Merge pull request #NN from ...`). Read each with `gh pr view NN` for the
+  problem statement and any measured numbers.
+- CHANGELOG: read the `## [x.y.z]` sections in `CHANGELOG.md` for **every**
+  version in `(PREV_TAG, TAG]`, not only NEW_VERSION.
+- Scale of the change: `git diff PREV_TAG..TAG --stat | tail -1`
+
+### Match the house style
+
+Read the previous two releases before drafting — they are the style reference:
+
+```
+gh release view PREV_TAG
+```
+
+Title: `vVERSION — <short phrase naming what changed>`, e.g.
+`v0.0.59 — Streaming receiver: frame ordering and carrier tracking`. Describe
+the change, not the version.
+
+Body, in this order (omit a section only when it would be empty):
+
+- **An opening paragraph**, BLUF. Name the PR(s) — "This release covers
+  **PR #47**, …" — then state what changed and why it mattered. A second
+  paragraph is warranted when the changes share a theme worth stating.
+- **`## Highlights`** — bullets, each opening with a **bolded claim** and then
+  the reasoning behind it. Prefer measured numbers over adjectives, and quote
+  the same figures the CHANGELOG does. Include the notable *rejected*
+  alternatives where they explain the design.
+- **`## What it buys`** and/or **`## What it costs`** — the measured effect.
+  Use a table for before/after curves. Say "Nothing" plainly when a change is
+  free rather than omitting the section.
+- **`## Breaking`** — API changes, waveform changes, behaviour a caller may have
+  tuned against. Say "Nothing." explicitly when there are none.
+- **`## Also`** — secondary fixes, test-harness changes, doc updates.
+- The closing line, verbatim:
+
+  ```
+  See [CHANGELOG.md](https://github.com/skynavga/orion-sdr/blob/main/CHANGELOG.md)
+  for the per-version detail.
+  ```
+
+Wrap prose at 80 columns, as the existing release bodies do.
+
+**Do not append a `Co-Authored-By:` trailer, a "Generated with Claude Code"
+line, or any other attribution footer to the release body.** The closing
+CHANGELOG line above is the last thing in it. This matches the same rule for
+commit messages and PR descriptions.
+
+### Create it
+
+Write the body to a scratch file (not into the repo) and create the release
+against the already-pushed tag:
+
+```
+gh release create TAG --title "vVERSION — <phrase>" --notes-file /tmp/orion-sdr-release-VERSION.md --latest
+```
+
+Then verify and clean up:
+
+```
+gh release view TAG
+rm /tmp/orion-sdr-release-VERSION.md
+```
+
+If a release for TAG already exists, do not create a second one — show the user
+the existing release and ask whether to edit it (`gh release edit TAG`).
+
+## Step 5 — Report
 
 Tell the user:
 - Commit and tag TAG have been pushed to GitHub
 - The GitHub Actions workflow is now building wheels for all platforms and
   will publish them to PyPI automatically
 - crates.io publish result (success or already-uploaded)
+- Which tag range the GitHub release notes cover (PREV_TAG..TAG)
 - Link to the Actions run: https://github.com/skynavga/orion-sdr/actions
+- Link to the GitHub release: https://github.com/skynavga/orion-sdr/releases/tag/TAG
 - Link to the crates.io release: https://crates.io/crates/orion-sdr/VERSION
 - Link to the PyPI release: https://pypi.org/project/orion-sdr/VERSION/

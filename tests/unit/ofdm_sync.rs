@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use num_complex::Complex32 as C32;
+use orion_sdr::core::Block;
 use orion_sdr::dsp::Rotator;
 use orion_sdr::modulate::{ConstellationOrder, OfdmConfig};
-use orion_sdr::multicarrier::CarrierPlan;
+use orion_sdr::multicarrier::{CarrierPlan, FftBlock};
 use orion_sdr::sync::{OfdmPreamble, generate_ofdm_preamble, ofdm_sync};
 
 const FS: f32 = 48_000.0;
@@ -266,5 +267,137 @@ fn ofdm_sync_total_cfo_matches_applied_offset() {
         total_cfo,
         applied_cfo,
         tol_hz
+    );
+}
+
+// ── The training symbol occupies exactly the bins the plan does ─────────────
+//
+// `generate_training_symbol_time_domain` used to take the occupied band's
+// half-width, which can only describe a symmetric span and so nulled DC
+// unconditionally — while `CarrierPlan::with_contiguous_data(_, true)` was
+// handing DC out as a data carrier. The receiver divided the never-transmitted
+// bin by a nonzero reference and equalized the payload with the result.
+//
+// These assert the bin set structurally rather than inferring it from a
+// decode: a link-level test only makes a tx/rx disagreement *probable*, and
+// this one cost exactly one carrier of 33.
+
+/// The bins the preamble's training symbol actually transmits — strip the CP,
+/// forward-FFT, and keep everything above the numerical floor. What the
+/// receiver sees, not what the generator meant to emit.
+fn training_symbol_loaded_bins(pre: &OfdmPreamble, cfg: &OfdmConfig) -> Vec<usize> {
+    let training = pre
+        .training_symbol
+        .expect("this preamble carries a training symbol");
+    let iq = generate_ofdm_preamble(pre, cfg);
+    let start = pre.num_repeats * pre.repeat_len + training.cp_len;
+    let mut fft = FftBlock::new(training.n_fft);
+    let mut freq = vec![C32::default(); training.n_fft];
+    fft.process(&iq[start..start + training.n_fft], &mut freq);
+    // The known pattern is unit-magnitude and `FftBlock(IfftBlock(x)) == x`, so
+    // a loaded bin returns at exactly `cfg.gain` and an unloaded one at float
+    // noise some six orders of magnitude down. Half the loaded level is nowhere
+    // near either.
+    freq.iter()
+        .enumerate()
+        .filter(|(_, v)| v.norm() > 0.5 * cfg.gain)
+        .map(|(bin, _)| bin)
+        .collect()
+}
+
+fn plan_config(plan: CarrierPlan) -> OfdmConfig {
+    OfdmConfig::new(plan, FS, 0.0, 1.0, ConstellationOrder::Qpsk)
+}
+
+#[test]
+fn training_symbol_loads_exactly_the_plans_occupied_bins() {
+    let pre = preamble_with_training();
+    let pilots = [(-6i32, C32::new(1.0, 0.0)), (9, C32::new(0.0, 1.0))];
+
+    for (name, plan) in [
+        (
+            "contiguous, DC nulled",
+            CarrierPlan::new(N_FFT, CP_LEN).with_contiguous_data(4, false),
+        ),
+        (
+            "contiguous, DC occupied",
+            CarrierPlan::new(N_FFT, CP_LEN).with_contiguous_data(4, true),
+        ),
+        (
+            "contiguous with pilots, DC occupied",
+            CarrierPlan::new(N_FFT, CP_LEN)
+                .with_pilot_carriers(pilots)
+                .with_contiguous_data(4, true),
+        ),
+        (
+            // The band edge cannot express this one at all: a one-sided plan
+            // has the same occupied half-width as its symmetric counterpart.
+            "one-sided (positive frequencies only)",
+            CarrierPlan::new(N_FFT, CP_LEN).with_data_carriers(1..24),
+        ),
+    ] {
+        let cfg = plan_config(plan.clone());
+        assert_eq!(
+            training_symbol_loaded_bins(&pre, &cfg),
+            plan.occupied_bins(),
+            "{name}: the training symbol must load the plan's occupied bins and nothing else"
+        );
+    }
+}
+
+#[test]
+fn occupying_dc_puts_dc_in_the_training_symbol() {
+    // The defect in one line. `with_contiguous_data(_, true)` promises DC is a
+    // data carrier; the training symbol has to keep that promise or the
+    // equalizer's estimate there is noise.
+    let pre = preamble_with_training();
+    for include_dc in [false, true] {
+        let plan = CarrierPlan::new(N_FFT, CP_LEN).with_contiguous_data(4, include_dc);
+        assert_eq!(
+            plan.data_carriers().contains(&0),
+            include_dc,
+            "the plan itself must agree about DC"
+        );
+        assert_eq!(
+            training_symbol_loaded_bins(&pre, &plan_config(plan)).contains(&0),
+            include_dc,
+            "training symbol DC (include_dc = {include_dc})"
+        );
+    }
+}
+
+#[test]
+fn a_dc_nulled_plan_still_loads_the_symmetric_span() {
+    // This is a fix in a path every OFDM user is on, so the DC-off case must
+    // not move at all. For a contiguous plan the occupied bin set is exactly
+    // the symmetric span `1..=occupied_half` and its mirror — which is what the
+    // band-edge construction produced — so deriving it from the plan is a
+    // no-op here and a fix only where the two disagreed.
+    let guard = 4;
+    let plan = CarrierPlan::new(N_FFT, CP_LEN).with_contiguous_data(guard, false);
+    let half = plan.occupied_half_carriers();
+    let expected: Vec<usize> = (1..=half).chain(N_FFT - half..N_FFT).collect();
+    assert_eq!(plan.occupied_bins(), expected);
+    assert_eq!(
+        training_symbol_loaded_bins(&preamble_with_training(), &plan_config(plan)),
+        expected
+    );
+}
+
+#[test]
+fn the_repeats_never_load_dc_even_when_the_plan_does() {
+    // Unlike the training symbol, the S&C repeats owe the plan no bin-for-bin
+    // agreement: they are correlated for timing and CFO and never used to
+    // estimate a channel. A loaded bin 0 is a constant offset across the
+    // segment, identically self-similar at every lag, so it broadens the timing
+    // plateau while adding nothing to localize on.
+    let cfg = plan_config(CarrierPlan::new(N_FFT, CP_LEN).with_contiguous_data(4, true));
+    let pre = preamble(); // repeats only, no training symbol
+    let iq = generate_ofdm_preamble(&pre, &cfg);
+    let mean: C32 = iq.iter().sum::<C32>() / iq.len() as f32;
+    assert!(
+        mean.norm() < 1.0e-5,
+        "the repeats carry a DC component of {:.3e}",
+        mean.norm()
     );
 }

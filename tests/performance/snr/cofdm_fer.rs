@@ -43,10 +43,21 @@ const PAYLOAD_LEN: usize = 96;
 const NOISE_SCALES: &[f32] = &[0.2, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
 
 /// The same plan the COFDM throughput benchmarks use, so the two tables
-/// describe one link.
-fn frame_config() -> OfdmConfig {
+/// describe one link. `include_dc` adds bin 0 as a 63rd data carrier — appended
+/// last, so the DC-off carrier ordering (and therefore the DC-off column) is
+/// unchanged.
+///
+/// The DC-on column is here because an occupied DC subcarrier used to be
+/// unusable: the preamble's training symbol nulled bin 0 whatever the plan
+/// said, so the equalizer divided a never-transmitted bin by a nonzero
+/// reference. The two columns should now differ only by the one-carrier-in-63
+/// difference in coded throughput, which is well inside the trial noise.
+fn frame_config(include_dc: bool) -> OfdmConfig {
     let half = (FRAME_N / 2) as i32;
-    let data: Vec<i32> = (1..half).chain(-(half - 1)..0).collect();
+    let data: Vec<i32> = (1..half)
+        .chain(-(half - 1)..0)
+        .chain(include_dc.then_some(0))
+        .collect();
     let plan = CarrierPlan::new(FRAME_N, FRAME_CP).with_data_carriers(data);
     OfdmConfig::new(plan, 48_000.0, 0.0, 1.0, ConstellationOrder::Bpsk)
 }
@@ -72,8 +83,14 @@ fn conv_rs_table() -> McsTable {
 ///
 /// A frame counts as an error if it fails to decode *or* decodes to the wrong
 /// bytes — a CRC collision would otherwise be scored as a success.
-fn mean_fer(table: &McsTable, mcs_index: u8, noise_scale: f32, seed_base: u64) -> f32 {
-    let cfg = frame_config();
+fn mean_fer(
+    table: &McsTable,
+    mcs_index: u8,
+    noise_scale: f32,
+    seed_base: u64,
+    include_dc: bool,
+) -> f32 {
+    let cfg = frame_config(include_dc);
     let pre = frame_preamble(&cfg);
     let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
     let payload: Vec<u8> = (0..PAYLOAD_LEN)
@@ -115,16 +132,17 @@ fn snr_sweep_cofdm_frame_error_rate() {
          QPSK payload, {PAYLOAD_LEN}-byte payload, {TRIALS} trials/point, flat channel]"
     );
     println!(
-        "{:>14} {:>12} {:>14} {:>13}",
-        "noise_scale", "equiv_snr_dB", "LDPC+BCH FER", "Conv+RS FER"
+        "{:>14} {:>12} {:>14} {:>15} {:>13}",
+        "noise_scale", "equiv_snr_dB", "LDPC+BCH FER", "…with DC on", "Conv+RS FER"
     );
-    println!("{}", "-".repeat(56));
+    println!("{}", "-".repeat(72));
 
     for &noise_scale in NOISE_SCALES {
-        let a = mean_fer(&ldpc_bch, 1, noise_scale, 0xF00D_0000_0000_0000);
-        let b = mean_fer(&conv_rs, 0, noise_scale, 0xBEEF_0000_0000_0000);
+        let a = mean_fer(&ldpc_bch, 1, noise_scale, 0xF00D_0000_0000_0000, false);
+        let a_dc = mean_fer(&ldpc_bch, 1, noise_scale, 0xF00D_0000_0000_0000, true);
+        let b = mean_fer(&conv_rs, 0, noise_scale, 0xBEEF_0000_0000_0000, false);
         let equiv_snr_db = -10.0 * noise_scale.log10();
-        println!("{noise_scale:>14.4} {equiv_snr_db:>12.1} {a:>14.3} {b:>13.3}");
+        println!("{noise_scale:>14.4} {equiv_snr_db:>12.1} {a:>14.3} {a_dc:>15.3} {b:>13.3}");
     }
     println!();
     // Always passes -- this is a measurement run, not an assertion.

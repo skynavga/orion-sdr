@@ -69,7 +69,19 @@ guard band of null carriers at each edge, pulling those generators inward.
 data-carrier span for exactly this: it fills a contiguous span leaving
 `edge_guard` null carriers at each edge (beyond the always-null Nyquist bin),
 skips DC unless `include_dc`, and skips any index already in `pilot_carriers` so
-data and pilots never overlap. Use it *instead of* `with_data_carriers` but
+data and pilots never overlap.
+
+`include_dc = false` is the conventional choice and the right default — a
+direct-conversion front end puts its LO leakage and DC offset on bin 0, so most
+numerologies spend the carrier rather than fight the impairment. `true` is fully
+supported: every stage that needs to know which bins are occupied reads
+`occupied_bins()`, the preamble's training symbol included. It is worth taking
+when the link does not sit at baseband DC — one modulated at `rf_hz = 0.0` and
+upconverted wholesale by a `Rotator`, where bin 0 lands on the RF carrier rather
+than on the receiver's LO. Occupying DC does **not** buy DC-offset immunity:
+nothing in the crate estimates or removes a receiver-side DC offset yet.
+
+Use it *instead of* `with_data_carriers` but
 *alongside* `with_pilot_carriers` (call `with_pilot_carriers` first so the fill
 can exclude the pilot indices). `edge_guard == 0` reproduces the full-fill span,
 so it is a regression-safe default. `validate_edge_guard(g)` optionally asserts
@@ -228,8 +240,23 @@ domain**: loading only bins that are multiples of `k = n_fft / repeat_len`
 makes the inverse transform repeat with period `repeat_len` by construction, so
 the repetition the receiver correlates on is exact rather than approximate.
 Restricting those bins to the carrier plan's occupied span is what keeps the
-preamble inside the same band as the payload. The training symbol is
-band-limited the same way.
+preamble inside the same band as the payload.
+
+The training symbol is band-limited to the same band, but from the plan itself
+rather than from its edges: **it loads exactly `CarrierPlan::occupied_bins()` —
+every data and pilot carrier, and nothing else.** A band *half-width* can only
+describe a symmetric span, so it cannot say whether bin 0 is live, and the
+training symbol used to null DC unconditionally while
+`with_contiguous_data(_, true)` handed DC out as a data carrier. Two places
+disagreeing about which bins are occupied is the failure mode; deriving both
+from one accessor makes it unrepresentable. It also lets an asymmetric or sparse
+plan train only the bins it actually uses.
+
+The S&C repeats keep DC out whatever the plan says, and owe it no such
+agreement: they are correlated for timing and CFO and never used to estimate a
+channel, and a loaded bin 0 is a constant offset across the segment —
+identically self-similar at every lag, so it broadens the timing plateau while
+adding nothing to localize on.
 
 This matters spectrally, not just tidily. A time-domain pseudo-random sequence
 is white across the full Nyquist band, and a training symbol loading every bin
@@ -240,8 +267,12 @@ out-of-band excess, reduced to 24.6 dB by band-limiting.
 
 Band-limiting also amplitude-matches the training symbol for free: an OFDM
 symbol's time-domain RMS is `sqrt(loaded bins) / n_fft`, so loading the
-occupied span rather than every bin brings it to a data symbol's level. Its
-former excess was that difference, not a gain. The S&C repeats are boosted 2x
+occupied bins rather than every bin brings it to a data symbol's level. Its
+former excess was that difference, not a gain. Loading exactly the plan's bins
+makes the match exact rather than close: a data symbol loads that same set at
+unit *average* energy (the constellations are normalized and pilots are
+conventionally unit-magnitude), so the two levels agree by construction, and
+adding or removing DC moves both counts together. The S&C repeats are boosted 2x
 above data level (`SC_PREAMBLE_BOOST`) so they remain the energy peak the
 timing tie-break above assumes; transmitting a preamble hot is ordinary
 practice, and 802.11 boosts its short training field for the same reason.

@@ -35,7 +35,7 @@
 use crate::core::Block;
 use crate::dsp::Rotator;
 use crate::modulate::OfdmConfig;
-use crate::multicarrier::SymbolFft;
+use crate::multicarrier::{CarrierPlan, SymbolFft};
 use num_complex::Complex32 as C32;
 
 /// Repeated-segment preamble parameters: `num_repeats` identical segments of
@@ -157,7 +157,7 @@ pub fn generate_ofdm_preamble(preamble: &OfdmPreamble, cfg: &OfdmConfig) -> Vec<
     if let Some(training) = preamble.training_symbol {
         out.extend_from_slice(&generate_training_symbol_time_domain(
             training,
-            occupied_half,
+            &cfg.carrier_plan,
         ));
     }
     let g = cfg.gain;
@@ -215,7 +215,12 @@ fn band_limited_repeat_base(
     let k = n_fft / repeat_len;
 
     // Signed carrier indices inside the occupied span that land on a multiple
-    // of `k`. DC is skipped, as the carrier plans do.
+    // of `k`. DC is skipped whether or not the plan occupies it: a loaded bin 0
+    // is a constant offset across the segment, and a constant is identically
+    // self-similar at every lag, so it broadens the S&C timing plateau while
+    // adding nothing the estimator can localize on. The repeats are used only
+    // for timing and CFO — never for channel estimation — so unlike the
+    // training symbol they owe the plan no bin-for-bin agreement.
     let loaded: Vec<usize> = (1..=occupied_half as i32)
         .flat_map(|i| [i, -i])
         .filter(|i| (i.unsigned_abs() as usize).is_multiple_of(k))
@@ -270,33 +275,48 @@ pub(crate) fn training_symbol_freq_pattern(n_fft: usize) -> Vec<C32> {
 /// time-domain symbol and prepends its cyclic prefix, matching
 /// `OfdmMod`'s TX chain (`IfftBlock` then `CyclicPrefixInsert`) so the
 /// training symbol round-trips through the same channel as data symbols.
-fn generate_training_symbol_time_domain(
-    training: TrainingSymbol,
-    occupied_half: usize,
-) -> Vec<C32> {
+///
+/// **The loaded bin set is exactly `plan.occupied_bins()`** — every data and
+/// pilot carrier, and nothing else. Taking the plan rather than a band edge is
+/// what makes that an invariant instead of an approximation: a symmetric
+/// occupied span cannot say whether DC is live, so it used to be nulled
+/// unconditionally while `with_contiguous_data(_, true)` handed it out as data.
+/// The receiver then divided a bin that was never transmitted by a nonzero
+/// reference and equalized the payload with the result.
+fn generate_training_symbol_time_domain(training: TrainingSymbol, plan: &CarrierPlan) -> Vec<C32> {
     use crate::multicarrier::{CyclicPrefixInsert, IfftBlock};
 
-    // Transmit the known pattern only inside the occupied span. The pattern
-    // itself is unchanged — the receiver still divides by the full-band
+    // Transmit the known pattern only on the bins the plan occupies. The
+    // pattern itself is unchanged — the receiver still divides by the full-band
     // reference — so the estimate on an occupied bin is exactly `H`, with no
     // scale to divide back out.
     //
-    // Band-limiting also amplitude-matches it for free: the symbol's RMS is
-    // `sqrt(loaded bins) / n_fft`, so loading the occupied span instead of
-    // every bin brings it to the same level as a data symbol. Its old
-    // full-band excess was that difference, not a gain.
+    // Band-limiting also amplitude-matches it: the symbol's RMS is
+    // `sqrt(loaded bins) / n_fft`, and a data symbol loads exactly this bin set
+    // at unit *average* energy (the constellations are normalized, and pilots
+    // are conventionally unit-magnitude), so the two levels agree by
+    // construction rather than by a span that happened to be close. Adding or
+    // removing DC moves the count by one and the level by half a bin's worth —
+    // the match holds because it is derived, not because one carrier is small.
     //
-    // Bins outside the span are never extracted as data, so the estimate there
-    // going to zero is harmless — `EQUALIZER_FLOOR` guards the division.
+    // Bins the plan does not occupy are never extracted as data, so the
+    // estimate there going to zero is harmless: `OfdmEqualizer` erases a bin
+    // whose estimate falls under `EQUALIZER_FLOOR` rather than dividing by it.
     let mut freq = training_symbol_freq_pattern(training.n_fft);
-    if occupied_half > 0 {
+    let occupied = plan.occupied_bins();
+    if !occupied.is_empty() {
+        // `bin < n_fft` only matters if the training symbol was sized
+        // independently of the plan, which no path that builds a preamble from
+        // an `OfdmConfig` does — the receiver would disagree about the FFT size
+        // too. Bounds-checking beats indexing out of a caller's mistake.
+        let mut load = vec![false; training.n_fft];
+        for bin in occupied {
+            if bin < training.n_fft {
+                load[bin] = true;
+            }
+        }
         for (bin, v) in freq.iter_mut().enumerate() {
-            let idx = if bin <= training.n_fft / 2 {
-                bin
-            } else {
-                training.n_fft - bin
-            };
-            if idx == 0 || idx > occupied_half {
+            if !load[bin] {
                 *v = C32::default();
             }
         }
