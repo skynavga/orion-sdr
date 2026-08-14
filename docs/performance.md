@@ -291,15 +291,24 @@ with pre-v0.0.58 ones. Compare against the uncoded QPSK column of "OFDM BER vs.
 noise scale": the FEC drives *frame* errors to zero at noise scales where the
 uncoded *bit*-error rate is already substantial.
 
-| noise_scale | equiv. SNR (dB) | LDPC+BCH FER | Conv+RS FER |
-| ---: | ---: | ---: | ---: |
-| 0.2 | 7.0 | 0.000 | 0.000 |
-| 0.5 | 3.0 | 0.000 | 0.000 |
-| 0.6 | 2.2 | 0.050 | 0.050 |
-| 0.7 | 1.5 | 0.480 | 0.500 |
-| 0.8 | 1.0 | 0.960 | 0.930 |
-| 0.9 | 0.5 | 1.000 | 1.000 |
-| 1.0 | 0.0 | 1.000 | 1.000 |
+| noise_scale | equiv. SNR (dB) | LDPC+BCH FER | …with DC occupied | Conv+RS FER |
+| ---: | ---: | ---: | ---: | ---: |
+| 0.2 | 7.0 | 0.000 | 0.000 | 0.000 |
+| 0.5 | 3.0 | 0.000 | 0.000 | 0.000 |
+| 0.6 | 2.2 | 0.050 | 0.040 | 0.050 |
+| 0.7 | 1.5 | 0.480 | 0.480 | 0.500 |
+| 0.8 | 1.0 | 0.960 | 0.960 | 0.930 |
+| 0.9 | 0.5 | 1.000 | 1.000 | 1.000 |
+| 1.0 | 0.0 | 1.000 | 1.000 | 1.000 |
+
+The DC-occupied column adds bin 0 as a 63rd data carrier. It tracks the DC-off
+column point for point, which is the claim: an occupied DC subcarrier costs the
+link nothing. Before v0.0.60 it could not be used at all — the preamble's
+training symbol nulled bin 0 whatever the plan said, so the equalizer divided a
+never-transmitted bin by a nonzero reference. On a noiseless quarter-bandwidth
+link (33 data carriers with DC, 32 without) that measured **−15.2 dB EVM against
+−142.2 dB with DC nulled** — `sqrt(1/33)` is −15.2 dB, i.e. exactly one carrier
+of 33 wholly in error. It now measures −142.5 dB.
 
 **The cliff moved out by roughly a factor of two in v0.0.58.** Both
 concatenations previously began failing at `noise_scale = 0.3`; they now hold

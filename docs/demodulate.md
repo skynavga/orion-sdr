@@ -427,6 +427,29 @@ decider.process(&soft, &mut bits);
 The per-bin equalizer models delay spreads up to `cp_len` — a longer channel
 impulse response causes inter-symbol interference the model doesn't capture.
 
+**A null bin is erased, not divided through.** A bin whose channel estimate
+lands under `|h|² = 1e-6` — 60 dB below a unit channel, since the training
+pattern is unit-magnitude — is output as zero rather than corrected. Clamping
+`|h|²` up to that floor and dividing anyway (what this used to do) turns a null
+into a gain of up to `1e6`: the one carrier that survived nothing becomes the
+loudest thing in the symbol, and the demapper reads a large random value as a
+*confident* wrong decision. Zero lands on the constellation centroid, produces
+LLRs near zero, and hands the FEC an erasure, which is the impairment it is best
+at absorbing. This applies to any frequency-selective path, not only to a bin
+the transmitter never loaded.
+
+**The coefficient is cached exactly where it is reused.** `TrainingSymbolHold`
+measures the channel once per packet and applies it to every symbol, so the
+magnitude, the divide and the erasure compare are folded out into a per-bin
+coefficient `conj(h)/|h|²` when the estimate is taken, leaving the per-symbol
+loop a bare complex multiply — measured at `n_fft = 2048`, **3337 Msps against
+2691** for the previous clamp-and-divide. That is also what makes the erasure
+rule free: written inside the loop it cost 6% as a compare-and-select and 65%
+as a branch, the latter by defeating auto-vectorization outright.
+`PerSymbolPilotInterp` re-estimates every occupied bin on every symbol, so there
+is nothing to reuse and a cache is pure overhead — it derives the coefficient in
+the loop instead, and measures unchanged.
+
 ### RX FFT-window back-off
 
 By default the receiver's FFT window is the last `n_fft` samples of each symbol

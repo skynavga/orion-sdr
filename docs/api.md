@@ -379,7 +379,11 @@ carrier-indexing, and numerology conventions these types follow.
 | `TxLowpass` | TX: baseband spectral mask across an assembled stream; carries the guard-budget checks |
 
 `CarrierPlan` builds via `with_data_carriers`/`with_pilot_carriers`, and
-validates via `validate() -> Result<(), CarrierPlanError>`. `GridExtract`
+validates via `validate() -> Result<(), CarrierPlanError>`.
+`occupied_bins() -> Vec<usize>` reports every rustfft bin the plan uses (data
+and pilot, sorted, deduplicated) — the single answer to "which bins does this
+link occupy", which `occupied_half_carriers()` cannot give because a band edge
+cannot say whether DC is live. `GridExtract`
 deliberately ignores pilots/channel estimation — that's `OfdmEqualizer`'s
 job, running upstream of it in the RX chain. Every type above is a
 whole-symbol-per-call `Block`: a partial trailing chunk is a no-op

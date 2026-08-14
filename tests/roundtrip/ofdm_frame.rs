@@ -1636,3 +1636,92 @@ fn a_residual_carrier_offset_after_the_preamble_is_tracked_out() {
 
 /// Residual offset injected after the preamble, in Hz. See the test above.
 const RESIDUAL_HZ: f32 = 6.0;
+
+// ── An occupied DC subcarrier ──────────────────────────────────────────────
+//
+// `CarrierPlan::with_contiguous_data(_, true)` hands DC out as a data carrier,
+// but the preamble's training symbol used to null bin 0 unconditionally: it was
+// built from the occupied band's *half-width*, which cannot say whether DC is
+// live. The channel estimate there was therefore noise, and the equalizer's
+// floor guard turned that into either a dead carrier or a wildly amplified one.
+//
+// Measured on the plan below — 33 data carriers with DC occupied, 32 without —
+// a bare round trip reported -142.4 dB EVM with DC nulled and -15.4 dB with it
+// occupied. `sqrt(1/33)` is -15.2 dB: exactly one carrier of 33 completely
+// wrong, with the other 32 perfect, and it was the DC one.
+
+/// A frame on the quarter-bandwidth plan the defect reproduced at: a 256-point
+/// grid with a 111-carrier edge guard, so 32 data carriers with DC nulled and
+/// 33 with it occupied.
+fn dc_link_frame(include_dc: bool) -> (OfdmConfig, OfdmPreamble, McsTable, Vec<u8>, Vec<C32>) {
+    let plan =
+        orion_sdr::multicarrier::CarrierPlan::new(256, 32).with_contiguous_data(111, include_dc);
+    let cfg = OfdmConfig::new(plan, 1_920_000.0, 0.0, 1.0, ConstellationOrder::Qpsk)
+        .with_payload_crc(CrcKind::Crc32)
+        .with_header_crc(CrcKind::Crc16)
+        .with_rx_window_backoff(16);
+    let pre = OfdmPreamble::new(4, 64).with_training_symbol(256, 32);
+    let table = McsTable::default_ladder();
+    let payload = sample_payload(184);
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+    let frame_iq = modu.modulate_frame(
+        &FramePacket::new(FrameMetadata::new(1, 1), payload.clone()),
+        0,
+    );
+    let mut buf = vec![C32::default(); 64];
+    buf.extend_from_slice(&frame_iq);
+    buf.extend(vec![C32::default(); 512]);
+    (cfg, pre, table, payload, buf)
+}
+
+/// EVM of the first frame the streaming receiver recovers, and whether its
+/// payload came back byte-exact.
+fn dc_link_evm(include_dc: bool) -> (f32, bool) {
+    let (cfg, pre, table, payload, buf) = dc_link_frame(include_dc);
+    let mut rx = OfdmFrameStreamDemod::new(cfg, table, pre);
+    let f = rx
+        .feed(&buf)
+        .into_iter()
+        .filter_map(|r| r.ok())
+        .next()
+        .unwrap_or_else(|| panic!("a noiseless frame must decode (include_dc = {include_dc})"));
+    (
+        f.diagnostics.evm_db.expect("EVM on the frame path"),
+        f.packet.payload == payload,
+    )
+}
+
+#[test]
+fn occupying_dc_costs_the_link_nothing() {
+    // The headline assertion, and the one that failed before this fix. A
+    // noiseless round trip with DC occupied has to reach the same numerical
+    // floor as one with DC nulled — not -15 dB, which is what one wholly-wrong
+    // carrier in 33 measures.
+    let (off, off_exact) = dc_link_evm(false);
+    let (on, on_exact) = dc_link_evm(true);
+    assert!(
+        off_exact && on_exact,
+        "both payloads must round-trip exactly"
+    );
+    assert!(
+        on < -60.0,
+        "a noiseless frame with DC occupied measured {on:.1} dB EVM; with DC nulled the same \
+         link gives {off:.1} dB, and -15.2 dB would be exactly one carrier of 33 in error"
+    );
+    assert!(
+        (on - off).abs() < 10.0,
+        "DC should cost nothing: {on:.1} dB occupied vs {off:.1} dB nulled"
+    );
+}
+
+#[test]
+fn occupying_dc_adds_exactly_one_data_carrier() {
+    // The premise the EVM figures rest on, pinned so a plan change cannot
+    // quietly move what "one carrier of 33" means.
+    let (off, ..) = dc_link_frame(false);
+    let (on, ..) = dc_link_frame(true);
+    assert_eq!(off.carrier_plan.data_carriers().len(), 32);
+    assert_eq!(on.carrier_plan.data_carriers().len(), 33);
+    assert!(!off.carrier_plan.occupied_bins().contains(&0));
+    assert!(on.carrier_plan.occupied_bins().contains(&0));
+}

@@ -35,7 +35,9 @@
     spacing) plus wide-range integer-CFO recovery via a shared training symbol
   - Channel estimation + equalization: `OfdmEqualizer` with `TrainingSymbolHold`
     (default, one estimate/packet) and `PerSymbolPilotInterp` (opt-in, for
-    time-varying/Doppler channels) methods
+    time-varying/Doppler channels) methods; a bin whose estimate falls under the
+    null floor is erased rather than divided through, handing the FEC an erasure
+    instead of a confidently-wrong large value
   - Soft (LLR) demapping per constellation order (`OfdmSoftDemod`,
     `bpsk_soft_llr`/`qpsk_soft_llr`/`qam_soft_llr`)
   - Per-packet RX diagnostics (`OfdmRxFrame`: EVM, CFO, timing offset, channel MSE)

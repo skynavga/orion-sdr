@@ -399,6 +399,81 @@ fn ofdm_equalizer_corrects_known_static_channel() {
 }
 
 #[test]
+fn ofdm_equalizer_erases_a_null_bin_instead_of_amplifying_it() {
+    // A null is an absent channel, not a small one. The floor used to clamp
+    // `|h|²` up to 1e-6 and divide anyway, which turns the one bin carrying no
+    // information into a gain of up to 1e6 — the loudest thing in the symbol,
+    // which the demapper then reads as a *confident* decision. Zero is the
+    // honest output: it lands on the constellation centroid, every LLR it
+    // produces is ~0, and the FEC gets an erasure.
+    //
+    // Reproduced in the shape the DC defect had: the estimate collapses while
+    // the data bin still carries full-amplitude signal. An exactly-zero
+    // estimate would not distinguish the two rules (conj(0) zeroes the product
+    // either way) — it takes a small *nonzero* estimate, which is what noise in
+    // a bin the transmitter never loaded actually looks like.
+    let n_fft = 16;
+    let cp_len = 4;
+    let cfg = qpsk_config(n_fft, cp_len, 48_000.0, 0.0);
+    let null_bin = 3usize;
+
+    // Training symbol through a flat unit channel, then one bin knocked down to
+    // noise: |h|² = 1e-8, a hundredfold under the 1e-6 floor.
+    let preamble = OfdmPreamble::new(4, 4).with_training_symbol(n_fft, cp_len);
+    let training_iq = generate_ofdm_preamble(&preamble, &cfg);
+    let training_start = preamble.num_repeats * preamble.repeat_len + cp_len;
+    let mut fft = FftBlock::new(n_fft);
+    let mut training_freq = vec![C32::default(); n_fft];
+    fft.process(
+        &training_iq[training_start..training_start + n_fft],
+        &mut training_freq,
+    );
+    training_freq[null_bin] *= 1.0e-4;
+
+    let mut eq = OfdmEqualizer::new(&cfg, EqualizerMethod::TrainingSymbolHold);
+    eq.estimate_from_training_symbol(&training_freq);
+
+    // A data symbol arriving over an unimpaired channel: every bin, the null
+    // one included, is at full amplitude.
+    let bits = vec![1u8; cfg.bits_per_ofdm_symbol()];
+    let mut modstage = OfdmMod::new(&cfg);
+    let mut data_iq = vec![C32::default(); cfg.samples_per_ofdm_symbol()];
+    modstage.process(&bits, &mut data_iq);
+    let mut data_freq = vec![C32::default(); n_fft];
+    fft.process(&data_iq[cp_len..], &mut data_freq);
+
+    let mut equalized = vec![C32::default(); n_fft];
+    eq.process(&data_freq, &mut equalized);
+
+    assert_eq!(
+        equalized[null_bin],
+        C32::default(),
+        "a bin whose estimate is under the floor must be erased, not divided through"
+    );
+    // What the old rule did instead: |h| = 1e-4 against a floor of 1e-6 in
+    // |h|², so the bin came back at 1e-4/1e-6 = 100x its own amplitude.
+    let carrier = data_freq[null_bin].norm();
+    assert!(
+        carrier > 0.0,
+        "the fixture must actually put signal on the null bin"
+    );
+
+    // The erasure is confined: every other occupied bin is still corrected
+    // through the flat unit channel it actually saw.
+    for &bin in &cfg.carrier_plan.occupied_bins() {
+        if bin == null_bin {
+            continue;
+        }
+        assert!(
+            (equalized[bin] - data_freq[bin]).norm() < 1.0e-3,
+            "bin {bin} should pass a unit channel through unchanged, got {:?} vs {:?}",
+            equalized[bin],
+            data_freq[bin]
+        );
+    }
+}
+
+#[test]
 fn ofdm_equalizer_interp_between_pilots() {
     let n_fft = 16;
     let cp_len = 4;
