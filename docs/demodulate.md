@@ -665,6 +665,85 @@ for result in rx.feed(&received_iq) {
 let _tail = rx.flush(); // final pass over the residual buffer at end of stream
 ```
 
+### The RX probe (`OfdmRxProbe`)
+
+`feed_probed`/`flush_probed` are `feed`/`flush` plus a caller-owned buffer that
+comes back holding, per frame, the **equalizer's output symbols** and a
+**per-coded-bit correction map**. Unlike the diagnostics above there is no flag:
+the gate is the choice of method, so the plain `feed` gains no branch and no
+receiver state can drift out of step with what the caller believes it enabled.
+
+```rust
+use orion_sdr::demodulate::{BitOutcome, OfdmRxProbe};
+
+let mut probe = OfdmRxProbe::new(); // reuse across calls — that is the point
+
+for chunk in stream {
+    // `probe` is cleared and refilled each call; its allocations are retained.
+    for result in rx.feed_probed(chunk, &mut probe) {
+        let _ = result;
+    }
+    // `iter` hands out resolved slices, not spans: a `ProbedFrame` borrows the
+    // probe, so it cannot outlive the call that filled it.
+    for f in probe.iter() {
+        // ŝ_k = r_k / Ĥ_k, in demap order: post-equalizer, post-CPE-removal,
+        // pre-demapper. QPSK lands on the unit circle whatever the transmit
+        // amplitude was, so a plot extent can be a constant.
+        plot_constellation(f.symbols, f.meta.constellation);
+
+        // Empty when `!f.meta.decoded` — a frame that failed its CRC has no
+        // ground truth, so this is "not measured", not "no errors".
+        let map = f.correction;
+        let fixed = map.iter().filter(|o| o.arrived_wrong() && !o.decoder_disagreed()).count();
+        let left = map.iter().filter(|o| o.decoder_disagreed()).count();
+        // `f.meta.codeword_bits` / `codeword_info_bits` draw the inner code's
+        // block boundaries (0 for the convolutional arm, which has none).
+        println!("{fixed} fixed, {left} not, of {} coded bits", map.len());
+    }
+}
+```
+
+| State | arrived correct | decoder agrees | Meaning |
+| --- | --- | --- | --- |
+| `Clean` | yes | yes | the channel did not touch it |
+| `Corrected` | no | yes | the inner code fixed it |
+| `Uncorrected` | no | no | arrived wrong, still wrong — the outer code's problem |
+| `Introduced` | yes | no | arrived right, the decoder broke it |
+
+The two columns have names: `arrived_wrong()` is `Corrected | Uncorrected` (the
+channel's half) and `decoder_disagreed()` is `Uncorrected | Introduced` (the
+decoder's). They are independent axes, not complements. Counting the first and
+dividing by `map.len()` reproduces `channel_ber` **exactly** — the map is that
+rate's per-bit expansion, not a second measurement of it — and a consumer that
+checks only it is blind to the decoder entirely. `Introduced` is worth keeping
+separate: a belief-propagation decoder that fails to converge flips correct
+bits, and one that does so at high SNR is broken, which folding it into
+`Uncorrected` would hide.
+
+**Symbols and the map do not index 1:1.** A payload occupies a whole number of
+OFDM symbols, so the last one is padded past the end of the coded block:
+`symbols.len() * bits_per_symbol` is `>= correction.len()`, by up to one
+symbol's worth. Walking the map and finding each bit's symbol is always in
+range; walking the symbols and slicing the map per symbol is not.
+
+Boundaries: a failed **payload** yields symbols with an empty map; a failed
+**header** yields nothing at all; a `dvb_t_scattered` link yields no probe
+frames, since its demap path collects no symbols (DVB-T has its own diagnostics
+in `waveform::dvb_t_frame`). See [ofdm.md](ofdm.md) for the design reasoning and
+the measured cost (~+3..4% of the streaming receive path, and 1.6% *faster* than
+before the probe existed when it is off).
+
+The map does **not** depend on `with_error_rates`: probing runs the encode chain
+itself, and the two opt-ins share the one encode. The flag still gates the
+`channel_ber`/`inner_ber` fields, so `feed_probed` on a receiver without it
+returns a full map beside two `None`s.
+
+**Read the probe after the call that filled it.** Every probed entry point
+clears first, so a `flush_probed` following a `feed_probed` discards the feed's
+records before finding nothing of its own — and since `feed` drains the buffer
+to exhaustion, `flush_probed` has nothing to add in the first place. Drain
+`frames()` after each `feed_probed`, not at end of stream.
+
 Both entry points **invert whatever coding chain the config and MCS table
 describe** — non-default FEC, interleavers, and scrambler included — so the
 receiver must be constructed from the *same* `OfdmConfig` and `McsTable` as the

@@ -18,10 +18,10 @@ the OFDM/COFDM conventions.
 | BCH | Bose–Chaudhuri–Hocquenghem | Binary block code (`fec/bch.rs`); COFDM outer FEC option |
 | BER | Bit Error Rate | Fraction of bits decoded wrongly; the CI thresholds and SNR sweeps in [performance.md](performance.md) |
 | BFO | Beat Frequency Oscillator | `bfo_hz` parameter in `SsbProductDemod` |
-| CBER | Channel Bit Error Rate | Pre-FEC BER, at the inner decoder's *input*; `OfdmRxFrame::channel_ber` |
 | BM | Berlekamp–Massey | Error-locator algorithm in the BCH/RS decoders |
 | BP | Belief Propagation | Iterative sum-product algorithm used in LDPC decoders |
 | BPSK | Binary Phase-Shift Keying | 1 bit/symbol; the COFDM header's fixed modulation |
+| CBER | Channel Bit Error Rate | Pre-FEC BER, at the inner decoder's *input*; `OfdmRxFrame::channel_ber` |
 | CFO | Carrier Frequency Offset | TX/RX oscillator mismatch; corrected by `Rotator` before OFDM demod |
 | CLT | Central Limit Theorem | Used in AWGN generation (sum-of-uniforms approximation) |
 | COFDM | Coded OFDM | The concatenated-FEC, framed OFDM link; see [ofdm.md](ofdm.md) |
@@ -55,6 +55,7 @@ the OFDM/COFDM conventions.
 | GF | Galois Field | `Gf256` = GF(2^8) arithmetic (`fec/gf.rs`), foundation for BCH/RS; DVB-T TPS BCH uses GF(2^7) |
 | GI | Guard Interval | The OFDM cyclic prefix as a fraction of the useful symbol (DVB-T: 1/32, 1/16, 1/8, 1/4); `cp_len = n_fft · GI` |
 | HF | High Frequency | 3–30 MHz; primary target band for FT8/FT4 |
+| IBER | Inner-decoder Bit Error Rate | BER at the inner decoder's *output*, before the outer code; `OfdmRxFrame::inner_ber` |
 | IF | Intermediate Frequency | `rf_hz` parameter in modulators |
 | IFFT | Inverse Fast Fourier Transform | `IfftBlock` (1/N-scaled) in `multicarrier/fft.rs`; the OFDM modulator's time-domain synthesis |
 | IIR | Infinite Impulse Response | `Biquad`, `LpCascade` in `dsp/` |
@@ -64,7 +65,6 @@ the OFDM/COFDM conventions.
 | LDPC | Low-Density Parity-Check | LDPC(174,91) in FT8/FT4 (`codec/ldpc.rs`); parameterized family (`fec/ldpc_codes.rs`) for COFDM |
 | LEO | Low Earth Orbit | High-Doppler satellite case motivating OFDM's opt-in `PerSymbolPilotInterp` equalizer |
 | LFSR | Linear-Feedback Shift Register | Basis of the `PnScrambler` whitener (`fec/scrambler.rs`) |
-| IBER | Inner-decoder Bit Error Rate | BER at the inner decoder's *output*, before the outer code; `OfdmRxFrame::inner_ber` |
 | LLR | Log-Likelihood Ratio | `log(P(bit=0)/P(bit=1))`; positive ↔ bit more likely 0 |
 | LO | Local Oscillator | Receiver frequency reference; source of frequency offset |
 | LP | Low-Pass | `FirLowpass`, `LpCascade` filter types |
@@ -110,5 +110,6 @@ the OFDM/COFDM conventions.
 | TX | Transmit / Transmitter | — |
 | UHF | Ultra High Frequency | 300 MHz–3 GHz; secondary target band |
 | VHF | Very High Frequency | 30–300 MHz; lower end of the OFDM target-band range |
+| VSA | Vector Signal Analyzer | Taps its constellation post-equalizer / pre-demapper, as `OfdmRxProbe` does; not a vector *network* one |
 | WBFM | Wideband FM | Broadcast FM with a large deviation-to-audio-bandwidth ratio |
 | ZF | Zero-Forcing | `OfdmEqualizer`'s per-bin channel-inverse equalization; amplifies noise at spectral nulls |

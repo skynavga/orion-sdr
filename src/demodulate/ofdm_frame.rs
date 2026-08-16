@@ -19,6 +19,7 @@ use crate::core::Block;
 use crate::demodulate::ofdm::{
     EqualizerMethod, OfdmDemod, OfdmEqualizer, OfdmRxFrame, OfdmSoftDemod,
 };
+use crate::demodulate::ofdm_probe::{OfdmRxProbe, ProbeMeta};
 use crate::dsp::Rotator;
 use crate::fec::{
     BlockInterleaver, ConvDeinterleaver, ConvInterleaver, CrcKind, DecodeRule, FrameMetadata,
@@ -29,7 +30,8 @@ use crate::modulate::ofdm::{ConstellationOrder, OfdmConfig};
 use crate::modulate::ofdm_frame::{
     BCH_INFO_BITS, BlockPlan, CodecCache, HEADER_CONSTELLATION, HEADER_FIELD_BYTES, HEADER_LDPC,
     McsTable, bits_to_bytes, block_plan, build_scrambler, bytes_to_bits, check_and_strip_crc,
-    encode_chain_stages, scramble_bytes, symbol_config, symbols_for_coded_bits,
+    encode_chain_stages, inner_encode, interleave_bits, scramble_bits, scramble_bytes,
+    symbol_config, symbols_for_coded_bits,
 };
 use crate::multicarrier::{CarrierGrid, GridExtract, SymbolFft};
 use crate::sync::{OfdmPreamble, earliest_accepted, ofdm_sync};
@@ -543,13 +545,22 @@ pub struct ChainOutcome {
     /// Whether the configuration provides an outer code at all, on the same
     /// reasoning as [`crc_present`](Self::crc_present).
     pub outer_present: bool,
-    /// What the inner decoder produced, before outer deinterleaving — the bits
-    /// that actually arrived at the outer decoder's input.
+    /// What the inner decoder produced, **untrimmed** — every bit it decided,
+    /// including the zero-padding tail of the final codeword that the block
+    /// plan discards before the outer decoder sees it.
     ///
     /// Kept rather than dropped so a caller can compare it against a re-encode
     /// of the recovered message and obtain a post-inner-FEC bit error *rate*
     /// instead of a pass/fail flag. Costs nothing: the vector is already
     /// allocated, and is moved out rather than copied.
+    ///
+    /// Untrimmed because re-encoding a *trimmed* copy zero-pads that tail back
+    /// to zero, which silently asserts the decoder got the padding right. For a
+    /// 184-byte payload on the default ladder that is 168 bits of 5120 — enough
+    /// to paint a real decoder error `Clean` in a correction map, and far too
+    /// few to notice in one. Consumers that want only the bits the outer
+    /// decoder saw take `[..plan.outer_il_bits]`; [`bit_error_rate`] compares
+    /// over the shorter of its two inputs, so the trim is implicit there.
     pub inner_out_bits: Vec<u8>,
 }
 
@@ -624,12 +635,15 @@ pub fn decode_chain(
     // 2. Inner deinterleave (LLR), then inner decode.
     let inner_de = deinterleave_llrs(inner_il, &llrs);
     let inner_de = &inner_de[..plan.inner_coded_bits.min(inner_de.len())];
-    let (mut outer_il_bits, inner_ok) =
+    let (outer_il_bits, inner_ok) =
         inner_decode(inner, inner_de, plan.outer_il_bits, cache, ldpc_rule);
-    outer_il_bits.truncate(plan.outer_il_bits);
 
-    // 3. Outer deinterleave (byte/bit domain), then outer decode.
-    let outer_de = deinterleave_bits(outer_il, &outer_il_bits);
+    // 3. Outer deinterleave (byte/bit domain), then outer decode. The plan trims
+    //    the final codeword's zero padding here — as a borrow, so
+    //    `ChainOutcome::inner_out_bits` below still carries every bit the inner
+    //    decoder decided (see its docs for why that matters).
+    let trimmed = &outer_il_bits[..plan.outer_il_bits.min(outer_il_bits.len())];
+    let outer_de = deinterleave_bits(outer_il, trimmed);
     let outer_de = &outer_de[..plan.outer_coded_bits.min(outer_de.len())];
     let (mut framed_bits, outer_ok) = outer_decode(outer, outer_de, cache);
     framed_bits.truncate(plan.framed_bytes * 8);
@@ -658,6 +672,45 @@ pub fn decode_chain(
         // `deinterleave_bits` only borrowed this, so it moves out here.
         inner_out_bits: outer_il_bits,
     })
+}
+
+/// Re-encodes the inner decoder's own output back into the coded-bit domain —
+/// steps 4 and 5 of `encode_chain_stages`, run on what the decoder decided
+/// rather than on the recovered payload — writing into `out` (cleared and
+/// refilled, so its capacity is reused across frames).
+///
+/// This is the third stream a correction map needs: comparing it against the
+/// re-encode of the CRC-verified payload says which bits the inner decoder got
+/// right, in the same index space the received hard decisions live in.
+///
+/// **Why re-encode rather than read the decoder's internal codeword.**
+/// `Ldpc::decode_soft_with` holds a full n-bit hard-decision vector and returns
+/// only its systematic prefix; exposing the rest would be cheaper. But the
+/// convolutional arm has no codeword to expose — soft Viterbi produces
+/// information bits and nothing else — so an accessor-based map would render on
+/// LDPC and come up blank on DVB-T, whose inner code is `ConvCode::DvbK7`. The
+/// re-encode costs one inner encode per frame and works on both.
+fn reencode_inner_output(
+    cfg: &OfdmConfig,
+    inner: InnerFec,
+    inner_out: &[u8],
+    coded_bits: usize,
+    per_frame_seed: u32,
+    cache: &CodecCache,
+    out: &mut Vec<u8>,
+) {
+    let inner_bits = inner_encode(inner, inner_out, cache);
+    out.clear();
+    match cfg.inner_interleaver {
+        InterleaverKind::None => out.extend_from_slice(&inner_bits),
+        il => out.extend_from_slice(&interleave_bits(il, &inner_bits)),
+    }
+    if cfg.scrambler_pos == ScramblerPos::AfterInnerFec
+        && let Some(ref s) = build_scrambler(cfg.scrambler, per_frame_seed)
+    {
+        scramble_bits(s, out);
+    }
+    out.truncate(coded_bits);
 }
 
 /// Applies a PN sequence to LLRs by negating each LLR whose PN bit is 1.
@@ -700,6 +753,25 @@ fn bit_error_rate(a: &[u8], b: &[u8]) -> Option<f32> {
     Some(errs as f32 / n as f32)
 }
 
+/// Per-frame working buffers reused across the frames one receiver decodes.
+///
+/// Both were allocated fresh on every call before, probing or not. Moving them
+/// here is a tidy-up rather than a speed-up — `decode_chain` still copies the
+/// LLRs, `deinterleave_llrs` allocates, `inner_decode` allocates, and the decode
+/// path stays far from allocation-free. Its real purpose is that the probe's
+/// symbol buffer has to be reused anyway, so having the EVM path share the same
+/// sink is cheaper than maintaining two.
+#[derive(Debug, Clone, Default)]
+struct FrameScratch {
+    /// Equalized payload symbols, in demap order — the sink `soft_demap` fills
+    /// when nothing is probing.
+    symbols: Vec<C32>,
+    /// The payload LLRs' hard decisions. EVM needs one per coded bit; the
+    /// channel BER and the correction map need the first `coded_bits` of them,
+    /// which is the same vector rather than a second one.
+    hard: Vec<u8>,
+}
+
 /// What one frame body yielded: the packet, how many samples it consumed, and
 /// the per-stage measurements taken along the way.
 struct DecodedBody {
@@ -727,6 +799,12 @@ struct DecodedBody {
 ///
 /// Returns a [`DecodedBody`], or a [`BodyError`] distinguishing "incomplete"
 /// from a genuine failure.
+///
+/// `scratch` holds the per-frame working buffers (see [`FrameScratch`]). When
+/// `probe` is `Some`, the payload's equalized symbols are appended to it instead
+/// of to the scratch, and a decoded frame also gets a per-coded-bit correction
+/// map — an observation of this decode, never an input to it.
+#[allow(clippy::too_many_arguments)]
 fn decode_frame_body(
     cfg: &OfdmConfig,
     mcs_table: &McsTable,
@@ -734,7 +812,15 @@ fn decode_frame_body(
     channel_estimate: Option<&[C32]>,
     cache: &CodecCache,
     measure_ber: bool,
+    scratch: &mut FrameScratch,
+    probe: Option<&mut OfdmRxProbe>,
 ) -> Result<DecodedBody, BodyError> {
+    // The scattered-pilot path collects no symbols — DVB-T frames are decoded by
+    // `waveform::dvb_t_frame`, which carries its own diagnostics — so a
+    // scattered link reports *no* probe frames rather than symbol-less ones. A
+    // record with an empty constellation would read as "nothing arrived" instead
+    // of "not measured here".
+    let mut probe = probe.filter(|_| !cfg.dvb_t_scattered);
     let mut cursor = 0usize;
 
     // Builds a fresh equalizer for `constellation` carrying the shared channel
@@ -858,30 +944,56 @@ fn decode_frame_body(
     );
     let n_sym = symbols_for_coded_bits(cfg, mcs.constellation, pplan.coded_bits);
     let mut eq = make_eq(mcs.constellation);
+    // The equalized payload symbols go straight into whichever buffer will
+    // outlive this call: the probe's (appended, so several frames from one
+    // `feed` sit end to end) or the reused scratch. EVM reads the same span
+    // back, so probing adds no second copy of the constellation.
+    let sym_start = match probe.as_deref_mut() {
+        Some(p) => p.symbols.len(),
+        None => {
+            scratch.symbols.clear();
+            0
+        }
+    };
     // Too few samples for the (now-known-length) payload ⇒ incomplete.
-    let mut payload_symbols: Vec<C32> = Vec::new();
-    let llrs = demap(
-        mcs.constellation,
-        iq,
-        cursor,
-        n_sym,
-        eq.as_mut(),
-        Some(&mut payload_symbols),
-    )
-    .ok_or(BodyError::Incomplete)?;
+    let llrs = {
+        let sink: &mut Vec<C32> = match probe.as_deref_mut() {
+            Some(p) => &mut p.symbols,
+            None => &mut scratch.symbols,
+        };
+        demap(
+            mcs.constellation,
+            iq,
+            cursor,
+            n_sym,
+            eq.as_mut(),
+            Some(sink),
+        )
+        .ok_or(BodyError::Incomplete)?
+    };
+    // One hard decision per coded bit, taken once: EVM measures against these,
+    // and the channel BER and correction map below are the first
+    // `pplan.coded_bits` of the same vector.
+    scratch.hard.clear();
+    scratch
+        .hard
+        .extend(llrs.iter().map(|&l| u8::from(l <= 0.0)));
     // EVM against the payload's own hard decisions, measured before the FEC
     // stages consume the LLRs. `symbol_config` re-resolves the constellation so
     // the ideal-point mapper matches the one that produced these symbols.
-    let evm_db = crate::demodulate::ofdm::evm_db(
-        &symbol_config(cfg, mcs.constellation),
-        &payload_symbols,
-        &llrs
-            .iter()
-            .map(|&l| u8::from(l <= 0.0))
-            .collect::<Vec<u8>>(),
-        n_sym,
-    );
-    let payload_outcome = decode_chain(
+    let evm_db = {
+        let symbols: &[C32] = match probe.as_deref() {
+            Some(p) => &p.symbols[sym_start..],
+            None => &scratch.symbols,
+        };
+        crate::demodulate::ofdm::evm_db(
+            &symbol_config(cfg, mcs.constellation),
+            symbols,
+            &scratch.hard,
+            n_sym,
+        )
+    };
+    let payload_outcome = match decode_chain(
         &llrs,
         &pplan,
         cfg.payload_crc,
@@ -895,11 +1007,21 @@ fn decode_frame_body(
         cache,
         // The payload honors the configured LDPC decode rule (opt-in min-sum).
         cfg.ldpc_decode_rule,
-    )
-    .map_err(BodyError::Failed)?;
-    if !payload_outcome.is_valid() {
-        return Err(BodyError::Failed(RxError::CrcMismatch));
-    }
+    ) {
+        Ok(outcome) if outcome.is_valid() => outcome,
+        // The payload reached the demapper but did not verify, so there is no
+        // ground truth and no map — but the symbols exist, and a constellation
+        // is precisely what an operator looks at when frames stop decoding.
+        rest => {
+            if let Some(p) = probe.as_deref_mut() {
+                p.push_undecoded(sym_start, mcs.constellation, Some(metadata.sequence_num));
+            }
+            return Err(BodyError::Failed(match rest {
+                Err(e) => e,
+                Ok(_) => RxError::CrcMismatch,
+            }));
+        }
+    };
     // Take the flags before consuming the bytes, so the payload is moved rather
     // than cloned out of the outcome.
     let (inner_ok, outer_ok) = (payload_outcome.inner_ok, payload_outcome.outer_ok);
@@ -913,9 +1035,11 @@ fn decode_frame_body(
     // which is what makes it work over the air, where nothing about the
     // transmitted bits is known in advance.
     //
-    // Off unless asked for: it costs one encode per frame.
-    let (channel_ber, inner_ber) = if measure_ber {
-        let stages = encode_chain_stages(
+    // Off unless asked for: it costs one encode per frame. The probe's
+    // correction map is built from the same re-encode, so asking for both pays
+    // for it once.
+    let stages = (measure_ber || probe.is_some()).then(|| {
+        encode_chain_stages(
             &payload_outcome.bytes,
             cfg.payload_crc,
             mcs.outer_fec,
@@ -926,21 +1050,57 @@ fn decode_frame_body(
             cfg.scrambler_pos,
             per_frame_seed,
             cache,
-        );
+        )
+    });
+    let coded_bits = pplan.coded_bits.min(scratch.hard.len());
+    let (channel_ber, inner_ber) = match stages.as_ref().filter(|_| measure_ber) {
         // The channel's output is the demapped LLRs hard-decided, compared
         // before any descrambling — `stages.coded` carries the scramble too.
-        let received: Vec<u8> = llrs
-            .iter()
-            .take(pplan.coded_bits)
-            .map(|&l| u8::from(l <= 0.0))
-            .collect();
-        (
-            bit_error_rate(&received, &stages.coded),
-            bit_error_rate(&payload_outcome.inner_out_bits, &stages.outer_il_bits),
-        )
-    } else {
-        (None, None)
+        Some(s) => (
+            bit_error_rate(&scratch.hard[..coded_bits], &s.coded),
+            bit_error_rate(&payload_outcome.inner_out_bits, &s.outer_il_bits),
+        ),
+        None => (None, None),
     };
+
+    // The correction map: the same XOR the channel BER collapses to a scalar,
+    // kept per bit, plus a third stream saying what the inner decoder made of
+    // each one. Nothing new is measured or assumed — the ground truth is the
+    // re-encode above, which a noise sweep and a regenerated payload already
+    // vouch for.
+    if let (Some(p), Some(s)) = (&mut probe, stages.as_ref()) {
+        reencode_inner_output(
+            cfg,
+            mcs.inner_fec,
+            &payload_outcome.inner_out_bits,
+            pplan.coded_bits,
+            per_frame_seed,
+            cache,
+            &mut p.estimate,
+        );
+        debug_assert_eq!(
+            p.estimate.len(),
+            pplan.coded_bits,
+            "the re-encoded decoder estimate must span the whole coded block"
+        );
+        // A block code's `n`/`k` let a display draw codeword boundaries; a
+        // convolutional code terminates once per frame and has none to draw.
+        let (codeword_bits, codeword_info_bits) = match mcs.inner_fec {
+            InnerFec::Ldpc(code) => (code.n(), code.k()),
+            InnerFec::None | InnerFec::Convolutional { .. } => (0, 0),
+        };
+        p.push_decoded(
+            sym_start,
+            ProbeMeta {
+                sequence_num: Some(metadata.sequence_num),
+                constellation: mcs.constellation,
+                codeword_bits,
+                codeword_info_bits,
+            },
+            &s.coded[..coded_bits.min(s.coded.len())],
+            &scratch.hard[..coded_bits],
+        );
+    }
 
     let bytes = payload_outcome.bytes;
     let payload_sps = symbol_config(cfg, mcs.constellation).samples_per_ofdm_symbol();
@@ -1009,14 +1169,28 @@ impl OfdmFrameDemod {
     /// [`CodecCache`] is reused across calls, so decoding many frames on one
     /// `OfdmFrameDemod` builds each FEC code only once.
     pub fn decode(&self, iq: &[C32]) -> Result<FramePacket, RxError> {
-        decode_frame_body(&self.cfg, &self.mcs_table, iq, None, &self.cache, false)
-            .map(|body| body.packet)
-            .map_err(|e| match e {
-                // A batch caller has no "wait for more" option; a truncated buffer
-                // is a malformed input here.
-                BodyError::Incomplete => RxError::MalformedHeader,
-                BodyError::Failed(err) => err,
-            })
+        // `&self`, so the working buffers are function-local rather than carried
+        // on the receiver: one frame, one set, dropped on return. Unchanged
+        // behaviour and unchanged cost against the per-call vectors this
+        // replaces.
+        let mut scratch = FrameScratch::default();
+        decode_frame_body(
+            &self.cfg,
+            &self.mcs_table,
+            iq,
+            None,
+            &self.cache,
+            false,
+            &mut scratch,
+            None,
+        )
+        .map(|body| body.packet)
+        .map_err(|e| match e {
+            // A batch caller has no "wait for more" option; a truncated buffer
+            // is a malformed input here.
+            BodyError::Incomplete => RxError::MalformedHeader,
+            BodyError::Failed(err) => err,
+        })
     }
 }
 
@@ -1062,6 +1236,9 @@ pub struct OfdmFrameStreamDemod {
     /// [`CodecCache`]). Held behind `Arc` so it can be shared with a paired
     /// modulator.
     cache: Arc<CodecCache>,
+    /// Per-frame working buffers, reused across every frame this receiver
+    /// decodes (see [`FrameScratch`]).
+    scratch: FrameScratch,
 }
 
 impl OfdmFrameStreamDemod {
@@ -1092,6 +1269,7 @@ impl OfdmFrameStreamDemod {
             want_channel_estimate: false,
             want_error_rates: false,
             cache,
+            scratch: FrameScratch::default(),
         }
     }
 
@@ -1156,20 +1334,60 @@ impl OfdmFrameStreamDemod {
     /// Feeds IQ samples and returns any frames (or errors) that completed.
     pub fn feed(&mut self, iq: &[C32]) -> Vec<Result<RxFrame, RxError>> {
         self.buf.extend_from_slice(iq);
-        self.drain()
+        self.drain(None)
     }
 
     /// Runs a final decode pass over the residual buffer (e.g. at end of
     /// stream). Same semantics as `feed` with no new samples.
     pub fn flush(&mut self) -> Vec<Result<RxFrame, RxError>> {
-        self.drain()
+        self.drain(None)
+    }
+
+    /// [`feed`](Self::feed), additionally filling `probe` with each frame's
+    /// equalized payload symbols and per-coded-bit correction map — the two
+    /// quantities a constellation / decoder display needs. See [`OfdmRxProbe`].
+    ///
+    /// `probe` is **cleared first**, then refilled with everything this call
+    /// produced; its allocations are retained, so probing a steady stream does
+    /// not reallocate.
+    ///
+    /// **The gate is the choice of method, not a flag.** There is no
+    /// `want_probe` field, so the unprobed [`feed`](Self::feed) gains no runtime
+    /// branch and no receiver state can disagree with what the caller believes
+    /// it enabled. A viewer that toggles its pane simply calls the other method.
+    ///
+    /// Costs, per frame: one encode chain (the same one
+    /// [`with_error_rates`](Self::with_error_rates) runs — asking for both pays
+    /// for it once), one further inner encode to re-derive what the decoder
+    /// decided, and two buffer fills. Frames that fail their payload CRC still
+    /// contribute their symbols, with an empty correction map; frames whose
+    /// *header* fails never reach the payload demapper and contribute nothing.
+    ///
+    /// A `dvb_t_scattered` link reports **no** probe frames at all: its demap
+    /// path collects no symbols, because DVB-T frames are decoded by
+    /// `waveform::dvb_t_frame`, which carries its own diagnostics.
+    pub fn feed_probed(
+        &mut self,
+        iq: &[C32],
+        probe: &mut OfdmRxProbe,
+    ) -> Vec<Result<RxFrame, RxError>> {
+        probe.clear();
+        self.buf.extend_from_slice(iq);
+        self.drain(Some(probe))
+    }
+
+    /// [`flush`](Self::flush) with the probe of [`feed_probed`](Self::feed_probed).
+    pub fn flush_probed(&mut self, probe: &mut OfdmRxProbe) -> Vec<Result<RxFrame, RxError>> {
+        probe.clear();
+        self.drain(Some(probe))
     }
 
     /// Repeatedly locates and decodes frames from the front of the buffer,
     /// consuming their samples, until no further complete frame is present.
-    fn drain(&mut self) -> Vec<Result<RxFrame, RxError>> {
+    fn drain(&mut self, mut probe: Option<&mut OfdmRxProbe>) -> Vec<Result<RxFrame, RxError>> {
         let mut out = Vec::new();
-        while let FrameStep::Decoded(result, consume_to) = self.try_one_frame() {
+        while let FrameStep::Decoded(result, consume_to) = self.try_one_frame(probe.as_deref_mut())
+        {
             self.buf.drain(..consume_to);
             out.push(result);
         }
@@ -1177,7 +1395,7 @@ impl OfdmFrameStreamDemod {
     }
 
     /// Attempts to decode one frame at the front of the buffer.
-    fn try_one_frame(&mut self) -> FrameStep {
+    fn try_one_frame(&mut self, mut probe: Option<&mut OfdmRxProbe>) -> FrameStep {
         let n_fft = self.cfg.carrier_plan.n_fft();
         let cp_len = self.cfg.carrier_plan.cp_len();
         let pre_len = self.preamble.total_len();
@@ -1216,6 +1434,12 @@ impl OfdmFrameStreamDemod {
         }
         let body = &corrected[pre_len..];
 
+        // A probe frame is committed as one unit: record where the buffers
+        // stand, so an attempt that turns out to be `Incomplete` — which
+        // consumes nothing and will be re-run from the header on the next
+        // `feed` — leaves nothing behind to be reported a second time.
+        let mark = probe.as_deref().map(|p| p.mark());
+
         match decode_frame_body(
             &self.cfg,
             &self.mcs_table,
@@ -1223,6 +1447,8 @@ impl OfdmFrameStreamDemod {
             channel_estimate.as_deref(),
             &self.cache,
             self.want_error_rates,
+            &mut self.scratch,
+            probe.as_deref_mut(),
         ) {
             Ok(body) => {
                 let diagnostics = OfdmRxFrame {
@@ -1261,8 +1487,14 @@ impl OfdmFrameStreamDemod {
                 )
             }
             // The header or payload has not fully arrived yet — hold and retry
-            // when more samples are fed. No buffer is consumed.
-            Err(BodyError::Incomplete) => FrameStep::NeedMore,
+            // when more samples are fed. No buffer is consumed, and neither is
+            // any probe state.
+            Err(BodyError::Incomplete) => {
+                if let (Some(p), Some(m)) = (&mut probe, mark) {
+                    p.rollback(m);
+                }
+                FrameStep::NeedMore
+            }
             // A genuine decode failure on a fully-present frame: report it and
             // advance just past this preamble so the search continues past it
             // (avoids re-locking the same corrupt occurrence forever).

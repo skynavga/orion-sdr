@@ -282,6 +282,44 @@ the per-frame FEC-*construction* cost, which the `CodecCache` removes entirely
 (see "Per-frame code-object construction cost" below). Larger payloads amortize
 the fixed preamble/header overhead but not the per-codeword decode.
 
+### COFDM RX probe cost (streaming receiver, n_fft=64, cp_len=8, QPSK, 96-byte payload, 2000 passes)
+
+The whole streaming receive path — sync, CFO correction, training-symbol
+equalization, and the concatenated decode — in three configurations, so the RX
+probe's cost separates from the encode chain it shares with `with_error_rates`.
+Reproduce with `throughput::cofdm::throughput_frame_stream_probe_ldpc_bch`.
+
+| Configuration | Msps | vs. baseline |
+| --- | ---: | ---: |
+| `feed` (nothing opted in) | ~7.5 | — |
+| `feed` + `with_error_rates(true)` | ~7.3 | +2..3.5% |
+| `feed_probed` | ~7.2 | +2.5..4.2% |
+
+So the probe costs about **one point over the encode chain** it shares with
+`with_error_rates`: the extra work is one inner re-encode to re-derive what the
+decoder decided, two buffer fills, and an XOR pass. Asking for both diagnostics
+pays for the encode chain once, not twice.
+
+With the probe **off** the path is 1.6% *faster* than before the probe existed
+(7.500 vs 7.379 Msps, measured against `main` over 20 000 passes with tight
+variance): the EVM symbol buffer and the hard-decision vector moved into a
+reused `FrameScratch` on the receiver instead of being allocated per frame.
+There is no runtime branch to pay either — probing is a different method, not a
+flag.
+
+**2000 passes, not the 200 the batch benchmarks use.** At 200 the run is ~0.08 s
+and the clock ramp dominates: the *baseline* measured 18% slower than the
+configurations doing strictly more work. The batch tables above are short enough
+to have the same sensitivity, which is why they are read as steady-state
+orders-of-magnitude rather than to the percent.
+
+**Read the percentages as a band, not a figure.** Three consecutive runs on an
+idle machine gave error-rates +3.4/+2.1/+3.2% and probe +3.9/+2.7/+3.7%; the
+same benchmark under load reported +0.2% and +2.0%. The differences being
+measured are a few percent of a millisecond-scale decode, so the assertion in
+the test guards at 25% — enough to catch a per-frame allocation storm or a lost
+buffer reuse, which is what it is for, and not enough to fail on scheduling.
+
 ### COFDM frame-error-rate vs. noise scale (n_fft=64, cp_len=8, QPSK payload, 100 trials/point, flat channel)
 
 Frame-error-rate (whole-frame CRC pass/fail) for the two concatenations. Here
