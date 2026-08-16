@@ -29,6 +29,9 @@ pub mod ofdm_frame;
 pub use crate::modulate::CodecCache;
 pub use ofdm_frame::{OfdmFrameDemod, OfdmFrameStreamDemod, RxFrame};
 
+pub mod ofdm_probe;
+pub use ofdm_probe::{BitOutcome, OfdmProbeFrame, OfdmRxProbe, ProbedFrame};
+
 pub mod dvb_t_frame;
 pub use dvb_t_frame::{DvbTFrameDemod, DvbTRxError, DvbTRxFrame};
 

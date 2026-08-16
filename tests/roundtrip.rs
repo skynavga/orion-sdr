@@ -16,6 +16,7 @@ mod roundtrip {
     pub mod helpers;
     pub mod ofdm;
     pub mod ofdm_frame;
+    pub mod ofdm_probe;
     pub mod ofdm_snr;
     pub mod pm;
     pub mod psk31;

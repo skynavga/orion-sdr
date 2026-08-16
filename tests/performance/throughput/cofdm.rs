@@ -15,7 +15,7 @@
 use super::fec::random_bytes;
 use super::{measure_throughput, minsps_from_env};
 use num_complex::Complex32 as C32;
-use orion_sdr::demodulate::OfdmFrameDemod;
+use orion_sdr::demodulate::{OfdmFrameDemod, OfdmFrameStreamDemod, OfdmRxProbe};
 use orion_sdr::fec::{ConvCode, FrameMetadata, FramePacket, InnerFec, OuterFec, PunctureRate};
 use orion_sdr::modulate::{ConstellationOrder, Mcs, McsTable, OfdmConfig, OfdmFrameMod};
 use orion_sdr::multicarrier::CarrierPlan;
@@ -150,4 +150,105 @@ fn throughput_frame_chain_conv_rs() {
         OuterFec::ReedSolomon { n: 60, n_parity: 8 },
     )]);
     frame_chain(table, 0, "Conv+RS");
+}
+
+// ── Streaming receiver: the RX probe's cost, on and off ────────────────────
+
+/// Measures the full streaming receive path — sync, CFO correction,
+/// training-symbol equalization, and the concatenated decode — in three
+/// configurations, so the probe's cost is separable from the encode chain it
+/// shares with `with_error_rates`:
+///
+/// 1. `feed`, nothing opted in — the baseline a caller who does not want
+///    diagnostics pays. The probe adds no branch here by construction: it is a
+///    different method, not a flag.
+/// 2. `feed` with `with_error_rates(true)` — one whole encode chain per frame.
+/// 3. `feed_probed` — the same encode chain, plus one inner re-encode to
+///    re-derive what the decoder decided, plus two buffer fills and an XOR pass.
+///
+/// Backs the "COFDM RX probe cost" row in docs/performance.md.
+fn stream_probe_cost(table: McsTable, mcs_index: u8, label: &str) {
+    let cfg = frame_config();
+    let pre = frame_preamble(&cfg);
+    let modu = OfdmFrameMod::new(cfg.clone(), table.clone(), pre);
+    let payload = random_bytes(96, 0xF4A3);
+    let frame = FramePacket::new(FrameMetadata::new(0x2468, mcs_index), payload.clone());
+
+    // Lead-in silence, one frame, trailing silence — what the sync search sees.
+    let mut iq = vec![C32::default(); 24];
+    iq.extend_from_slice(&modu.modulate_frame(&frame, 0));
+    iq.extend(vec![C32::default(); 64]);
+    let frame_samples = iq.len();
+    // 2000, not the 200 the batch benchmarks use: at 200 the run is ~0.08 s and
+    // the clock ramp dominates, which made the *baseline* read 18% slower than
+    // the configurations doing strictly more work.
+    let repeats = 2000;
+
+    // The buffer is cleared between passes so the residual padding cannot
+    // accumulate and drift the sync-search cost across the run.
+    let measure =
+        |mut rx: OfdmFrameStreamDemod, mut probe: Option<OfdmRxProbe>, tag: &str| -> f32 {
+            let (msps, dt) = measure_throughput(
+                || {
+                    rx.clear();
+                    let out = match probe.as_mut() {
+                        Some(p) => rx.feed_probed(black_box(&iq), p),
+                        None => rx.feed(black_box(&iq)),
+                    };
+                    assert_eq!(out.len(), 1, "{tag}: one frame per pass");
+                    let got = out[0].as_ref().expect("decode");
+                    assert_eq!(got.packet.payload, payload, "{tag}: payload recovered");
+                    black_box(got.packet.payload[0]);
+                    if let Some(p) = probe.as_ref() {
+                        black_box(p.frames().len());
+                    }
+                    frame_samples
+                },
+                frame_samples,
+                repeats,
+            );
+            println!("[Frame-Stream-{tag} {label}] {msps:.4} Msps in {dt:.3}s");
+            msps
+        };
+
+    let plain = measure(
+        OfdmFrameStreamDemod::new(cfg.clone(), table.clone(), pre),
+        None,
+        "Feed",
+    );
+    let with_ber = measure(
+        OfdmFrameStreamDemod::new(cfg.clone(), table.clone(), pre).with_error_rates(true),
+        None,
+        "Feed-ErrorRates",
+    );
+    let probed = measure(
+        OfdmFrameStreamDemod::new(cfg, table, pre),
+        Some(OfdmRxProbe::new()),
+        "FeedProbed",
+    );
+
+    let pct = |m: f32| 100.0 * (plain / m - 1.0);
+    println!(
+        "[Frame-Stream-Overhead {label}] error-rates {:+.1}%, probe {:+.1}%",
+        pct(with_ber),
+        pct(probed)
+    );
+
+    let floor = minsps_from_env(0.05);
+    assert!(plain >= floor && with_ber >= floor && probed >= floor);
+    // Measured on this machine: baseline ~7.5 Msps, error rates +2.5..3.0%,
+    // probe +3.1..4.2% — i.e. the probe costs about a point over the encode
+    // chain it shares with `with_error_rates`. The guard is deliberately loose:
+    // it is here to catch a per-frame allocation storm or a lost buffer reuse,
+    // not to police a few percent of timing noise.
+    assert!(
+        probed >= 0.75 * plain,
+        "probing costs {:.1}% of the receive path, far past the ~4% budget",
+        100.0 * (plain / probed - 1.0)
+    );
+}
+
+#[test]
+fn throughput_frame_stream_probe_ldpc_bch() {
+    stream_probe_cost(McsTable::default_ladder(), 1, "LDPC+BCH");
 }

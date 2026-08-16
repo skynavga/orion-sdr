@@ -9,6 +9,88 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.61] - 2026-08-16
+
+`OfdmFrameStreamDemod::feed_probed`/`flush_probed` expose the two quantities
+a COFDM analyzer's constellation/decoder display needs: the **equalizer's
+output symbols** and a **per-coded-bit correction map**. Both were already
+computed inside the decode path on every frame; neither escaped it.
+
+**The constellation is not new work.** `decode_frame_body` fills a vector
+with every equalized data-carrier symbol in demap order, hands it to `evm_db`
+and drops it — post-equalizer, post-common-phase-error-removal,
+pre-demapper, which is where a VSA takes its constellation. `soft_demap`'s
+sink now writes straight into the caller's probe (or into a reused scratch
+when nothing is probing) and EVM reads the same span back, so nothing is
+copied twice. Because the equalizer divides out the channel *including* any
+uniform scalar, the QPSK cloud lands on the unit circle whatever the transmit
+amplitude was — verified across four decades of gain — so a display can fix
+its plot extent instead of auto-scaling.
+
+**The correction map is a rate already measured, kept per bit.** Under
+`with_error_rates`, `channel_ber` is `popcount(received XOR transmitted)`
+over the coded block, where "transmitted" is a re-encode of the CRC-verified
+payload. The map is that XOR without the division, plus a third stream —
+the re-encode of the inner decoder's own output — saying what the decoder
+made of each bit: `Clean`, `Corrected`, `Uncorrected`, or `Introduced`. It
+needs no new measurement and no new ground truth, and counting its
+channel-error states reproduces `channel_ber` **exactly**, asserted frame by
+frame across a noise sweep.
+
+**Re-encoding rather than reading the decoder's codeword is what makes it
+work on both inner arms.** `Ldpc::decode_soft_with` holds a full n-bit hard
+vector and returns only its systematic prefix, so exposing the rest would be
+cheaper — but soft Viterbi produces information bits and nothing else, so an
+accessor-based map would render on LDPC and come up blank on DVB-T, whose
+inner code is `ConvCode::DvbK7`.
+
+**Cost.** Measured on the streaming receiver at `n_fft = 64`: baseline
+~7.5 Msps, `with_error_rates` +2.5..3.0%, `feed_probed` +3.1..4.2% — about a
+point over the encode chain the two share, and asking for both pays for that
+chain once. With the probe **off** the path is **1.6% faster than before the
+probe existed** (7.500 against 7.379 Msps), because the EVM symbol buffer and
+the hard-decision vector moved into a reused `FrameScratch` instead of being
+allocated per frame. There is no runtime branch to pay either: the gate is
+the choice of method, not a flag, so no receiver state can drift from what
+the caller believes it enabled.
+
+### Added
+
+- `OfdmRxProbe`, `OfdmProbeFrame`, `ProbedFrame` and `BitOutcome`
+  (`demodulate::ofdm_probe`) — caller-owned, reusable per-call diagnostic
+  buffers holding each frame's equalized payload symbols and per-coded-bit
+  correction map, flat across the call with per-frame spans. Capacity is
+  retained, so steady-state probing does not reallocate; `iter()` hands back
+  frames with both slices already resolved, so a record cannot outlive the
+  call that filled it.
+- `OfdmFrameStreamDemod::feed_probed` and `flush_probed`.
+
+### Changed
+
+- `ChainOutcome::inner_out_bits` now carries **every** bit the inner decoder
+  produced, including the final codeword's zero-padding tail;
+  `decode_chain` trims to the block plan's `outer_il_bits` as a borrow
+  instead of truncating the vector. Re-encoding a trimmed copy pads that tail
+  back to zero, which silently asserts the decoder got the padding right.
+  `inner_ber` is unchanged — `bit_error_rate` compares over the shorter of
+  its two inputs, so the trim is implicit there.
+- The per-frame equalized-symbol buffer and payload hard decisions moved onto
+  the streaming receiver as reused scratch, and the hard decisions are now
+  taken once and shared by EVM, the channel BER and the correction map.
+
+### Notes
+
+- A frame that fails its **payload** CRC contributes symbols with an empty
+  map: there is no ground truth, so this reads as "not measured", not "no
+  errors". A frame whose **header** fails never reaches the payload demapper
+  and contributes nothing.
+- A `dvb_t_scattered` link reports no probe frames at all — its demap path
+  collects no symbols, since DVB-T frames are decoded by
+  `waveform::dvb_t_frame` with its own diagnostics. A known gap, asserted
+  rather than assumed.
+- `OfdmRxProbe` is not exposed through the Python bindings; the consumer is
+  Rust.
+
 ## [0.0.60] - 2026-08-14
 
 `CarrierPlan::with_contiguous_data(_, true)` hands DC out as a data carrier,

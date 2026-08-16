@@ -468,8 +468,13 @@ and the DVB-T chain. See [ofdm.md](ofdm.md) for how they compose.
 | `OfdmFrameMod` | `modulate_frame(&FramePacket, seed) -> Vec<C32>`: CRC → concatenated FEC → interleave → map → preamble/header |
 | `OfdmFrameStreamDemod` | `feed`/`flush` streaming RX: acquisition, CFO correction, equalization, decode. Baseband only |
 | `OfdmFrameStreamDemod::with_*` | `with_score_threshold`, `with_channel_estimate`, `with_error_rates` (last two opt-in) |
+| `OfdmFrameStreamDemod::feed_probed` / `flush_probed` | As above, plus an `OfdmRxProbe`; opting in is the method, not a flag |
 | `OfdmFrameDemod` | Batch RX for a known start (IQ begins after preamble + training) |
 | `RxFrame` | A recovered frame: `packet`, plus the per-frame RX diagnostics |
+| `OfdmRxProbe` | Caller-owned, reused per call: `iter` (per frame), `symbols`/`correction` (flat), `frames`, `clear` |
+| `ProbedFrame` | One frame's resolved view: `meta`, `symbols`, `correction`. Borrows the probe, so it cannot go stale |
+| `OfdmProbeFrame` | The metadata: `sequence_num`, `constellation`, `codeword_bits`/`codeword_info_bits`, `decoded` |
+| `BitOutcome` | Per coded bit: `Clean` / `Corrected` / `Uncorrected` / `Introduced`, plus `arrived_wrong` / `decoder_disagreed` |
 | `Mcs` / `McsTable` | Per-frame adaptive coding: constellation + inner/outer code, selected by header index |
 | `CodecCache` | Per-link cache of constructed FEC codes, shareable across a mod/demod pair |
 | `FrameConfigError` | Returned by `OfdmConfig::validate_frame` |

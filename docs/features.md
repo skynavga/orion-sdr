@@ -69,6 +69,11 @@
     the basis for a power delay profile) and true pre/post-inner-FEC bit error
     rates (`with_error_rates`), measured by re-encoding a decoded frame so no
     prior knowledge of the payload is required
+  - RX probe (`feed_probed`/`flush_probed` → `OfdmRxProbe`): the equalizer's
+    output symbols as the demapper saw them, plus a per-coded-bit correction map
+    (`Clean`/`Corrected`/`Uncorrected`/`Introduced`) that is the exact per-bit
+    expansion of `channel_ber`. Caller-owned reusable buffers, ~+3..4% of the
+    receive path when on and no branch at all when off
 - Out-of-band spectral shaping — three independent, off-by-default levers that
   compose, with a shared cyclic-prefix budget (see [ofdm.md](ofdm.md) for the
   geometry, [modulate.md](modulate.md#choosing-the-numbers) for sizing):

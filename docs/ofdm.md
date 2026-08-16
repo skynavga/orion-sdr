@@ -487,6 +487,103 @@ cost per frame:
   measured, so a rising rate that stops reporting is itself the signal the link
   has given up. Measured cost: +0.4% of a frame decode.
 
+**The RX probe: equalized symbols and a per-coded-bit correction map.**
+`OfdmFrameStreamDemod::feed_probed`/`flush_probed` fill a caller-owned
+`OfdmRxProbe` with the two quantities an analyzer's constellation / decoder
+display needs. Both are observations of a decode that runs anyway.
+
+- **The symbols** are the equalizer's output — `ŝ_k = r_k / Ĥ_k`, after
+  `OfdmEqualizer`, after `remove_common_phase_error`, before `OfdmSoftDemod`.
+  That is where a VSA takes its constellation, and it is where the decode path
+  already has it: the vector was being filled on every frame to
+  measure EVM and then dropped. Because the equalizer divides out the channel
+  *including* any uniform scalar, the QPSK cloud lands on the unit circle
+  whatever the transmit amplitude was, so a display can fix its plot extent
+  instead of auto-scaling.
+- **The map** assigns each coded bit one of `Clean` / `Corrected` /
+  `Uncorrected` / `Introduced`, from three streams in the coded-bit index space:
+  the re-encode of the CRC-verified payload (what the transmitter sent), the
+  demapper's hard decisions (what arrived), and the re-encode of the inner
+  decoder's own output (what the decoder decided). The first two are exactly
+  what `channel_ber` is the ratio of, so **the map is that rate's per-bit
+  expansion**, not a second measurement — asserted exactly, frame by frame, in
+  `roundtrip::ofdm_probe`. `Introduced` is not padding for a fourth cell: a
+  belief-propagation decoder that fails to converge flips correct bits, and one
+  that does so at high SNR is broken.
+
+**`Introduced` and `Uncorrected` co-occur, and their counts do not.** Measured
+across 16 seeds at several noise levels on both inner arms, *every* frame
+carrying an `Uncorrected` bit also carried an `Introduced` one. They are two
+faces of one event — a block the decoder got wrong — separating the bits that
+happened to arrive correct from the ones that did not. The magnitudes differ by
+orders of magnitude, though, and a display should expect that: belief
+propagation scatters a failed codeword across all N positions (hundreds of
+bits), while Viterbi errors stay localised (tens). An LDPC map and a
+convolutional map of equally-failed frames look nothing alike.
+
+Three design points worth keeping:
+
+- **Re-encode, don't read the decoder's codeword.** `Ldpc::decode_soft_with`
+  holds a full n-bit hard vector and returns only its systematic prefix, so
+  exposing the rest would be cheaper. But the convolutional arm has no codeword
+  to expose — soft Viterbi produces information bits and nothing else — so an
+  accessor-based map would render on LDPC and come up blank on DVB-T. The
+  re-encode costs one inner encode and works on both, which
+  `the_convolutional_arm_maps_the_same_way` holds to the same exact-agreement
+  standard as the LDPC path. **That arm is reachable now**, on any link whose
+  MCS selects a convolutional inner code — it is not gated behind DVB-T, and
+  the batch benchmarks already build such a table.
+- **Re-encode the decoder's *untrimmed* output.** `decode_chain` trims to the
+  block plan's `outer_il_bits` before the outer decoder sees it, discarding the
+  final codeword's zero-padding tail. Re-encoding the trimmed vector pads that
+  tail back to zero, which silently asserts the decoder got the padding right
+  and paints any error there `Clean`. `ChainOutcome::inner_out_bits` therefore
+  carries every bit the inner decoder decided.
+- **The gate is the choice of method, not a flag.** There is no `want_probe`
+  field, so `feed` gains no branch and no receiver state can disagree with what
+  the caller believes it enabled. A receiver-owned `with_probe(bool)` would read
+  more like `with_channel_estimate`, but a viewer toggling the pane would then
+  need `set_probe`, and rebuilding the receiver to change a diagnostic drops
+  sync.
+
+The caller owns the buffers because a probed frame is ~2600 complex symbols and
+~5100 outcome bytes at 8–51 frames per second, and `feed` returns *several*
+frames per call — so a per-frame `Option<Vec<_>>` is paid on every frame and a
+borrowed buffer could not live on `RxFrame` at all. Symbols and outcomes are
+flat across the call with per-frame spans into them; capacity is retained, so
+steady-state probing does not reallocate.
+
+**The spans are private, and that is the price of the flat-buffer design.** An
+index is only meaningful against the buffer it was minted from, and the probe's
+buffers are cleared and refilled on every call — so a record that outlived its
+call would index the wrong frame's data, silently, whenever the newer call
+happened to be longer. `OfdmRxProbe::iter` therefore yields `ProbedFrame`, whose
+symbol and outcome slices are already resolved and whose lifetime is the probe's:
+the next `feed_probed` needs `&mut`, so the borrow checker refuses to let a view
+survive it. The mistake is unrepresentable rather than documented, and cloning
+an `OfdmProbeFrame` is harmless again because the record carries metadata and
+has no way to index anything.
+
+Two boundaries: a frame that fails its **payload** CRC has no ground truth, so
+it contributes symbols with an empty map (`decoded: false`) — the constellation
+is precisely where an operator looks when frames stop decoding, and the map
+emptying exactly when the link is worst has to be rendered as "no ground truth",
+not "no errors". A frame whose **header** fails never reaches the payload
+demapper and contributes nothing. `cfg.dvb_t_scattered` links report **no**
+probe frames at all: `soft_demap_scattered` collects no symbols, because DVB-T
+frames are decoded by `waveform::dvb_t_frame` with its own diagnostics. That is
+a known gap, asserted rather than assumed. It is about the *pilot* structure,
+not the inner code: the convolutional re-encode is already exercised on the
+static-grid path, so wiring the scattered path up is a matter of giving its
+demap a symbol sink, not of new decode machinery.
+
+Measured cost (`throughput::cofdm`, streaming receiver, n_fft = 64): baseline
+~7.5 Msps; `with_error_rates` +2.5..3.0%; `feed_probed` +3.1..4.2% — about a
+point over the encode chain the two share. Asking for both pays for that chain
+once. With the probe off the path is 1.6% *faster* than before it existed,
+because the EVM symbol buffer and hard-decision vector moved into a reused
+`FrameScratch` instead of being allocated per frame.
+
 **Block-size bookkeeping.** Because FEC and interleaving change bit counts and
 fragment into fixed codeword blocks (LDPC N, BCH/RS codewords), the
 transmitter and receiver agree on every intermediate length via a deterministic

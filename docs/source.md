@@ -52,6 +52,8 @@ src/
                         bpsk_soft_llr/qpsk_soft_llr/qam_soft_llr
     ofdm_frame.rs      — OfdmFrameDemod (batch), OfdmFrameStreamDemod (streaming
                         feed/flush RX), RxFrame (COFDM frame demodulator)
+    ofdm_probe.rs      — OfdmRxProbe, OfdmProbeFrame, BitOutcome (opt-in RX probe:
+                        equalized symbols + per-coded-bit correction map)
     dvb_t_frame.rs     — DvbTFrameDemod, DvbTRxFrame (conformant preamble-less
                         DVB-T RX: GI-acquire → equalize → soft-demap → TPS + FEC;
                         optional integer-CFO builder flag)
