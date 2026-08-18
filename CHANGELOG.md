@@ -9,6 +9,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.62] - 2026-08-18
+
+Documentation-only release. No library, binding, or test behavior changed —
+the compiled crate and the Python wheel are functionally identical to 0.0.61.
+
+### Changed
+
+- Rescope the documented probe gap in
+  `the_scattered_path_reports_no_probe_frames` to pilot structure. The comment
+  claimed the scattered path is where `Introduced` and the convolutional arm's
+  re-encode get exercised for real; both are already covered on the
+  static-grid path, so what the scattered path still lacks is a symbol sink on
+  its demap, not new decode machinery.
+
+### Notes
+
+- Nothing under `src/` changed; the sole commit touches a comment in
+  `tests/roundtrip/ofdm_probe.rs`.
+
 ## [0.0.61] - 2026-08-16
 
 `OfdmFrameStreamDemod::feed_probed`/`flush_probed` expose the two quantities

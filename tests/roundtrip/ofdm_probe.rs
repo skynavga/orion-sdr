@@ -1274,9 +1274,12 @@ fn the_scattered_path_reports_no_probe_frames() {
     // link decodes normally and reports ZERO probe frames.
     //
     // Asserted rather than left implicit, so it is a known gap instead of a
-    // silent one. Wiring the probe through the scattered path is the DVB-T
-    // follow-on, and it is where `Introduced` and the convolutional arm's
-    // re-encode get exercised for real.
+    // silent one. The gap is about the *pilot* structure, not the inner code:
+    // the convolutional re-encode and `Introduced` are both already exercised
+    // on the static-grid path (`the_convolutional_arm_maps_the_same_way`,
+    // `a_diverged_decoder_introduces_errors_on_both_arms`), so wiring the
+    // scattered path up is a matter of giving its demap a symbol sink, not of
+    // new decode machinery.
     use orion_sdr::waveform::dvb_t::{GuardInterval, dvb_t_mcs_table, dvb_t_scattered_config};
 
     let cfg = dvb_t_scattered_config(GuardInterval::G1_32, 1_000_000.0);
