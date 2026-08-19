@@ -320,6 +320,97 @@ Three layers assemble the on-air stream, each over the one below:
   entry point takes it; `feed` is chunk-boundary-invariant (chunked input decodes
   identically to one-shot).
 
+## Receive diagnostics and the probe
+
+`DvbTRxFrame::diagnostics` (`DvbTRxDiagnostics`) is the measured quality ladder,
+and `DvbTRxProbe` is the constellation / correction view behind it. Both mirror
+what the generic COFDM path exposes (`OfdmRxFrame`, `OfdmRxProbe`), with three
+DVB-T-specific departures argued below.
+
+**Free versus gated.** Six rungs are read straight off work the decode already
+does and are always populated: `cfo_hz`, `sync_score`, `timing_offset_samples`,
+`integer_cfo_bins`, `outer_fec_ok`, `rs_corrected_bytes`. Three cost work the
+decode would not otherwise do and are behind `with_error_rates(true)` on
+`DvbTFrameDemod`, `DvbTSuperFrameDemod` and `DvbTFrameStreamDemod`: `evm_db`,
+`channel_ber` (CBER) and `inner_ber` (IBER). The probe is gated separately, by
+choice of method — `feed_probed` / `flush_probed` — so the unprobed `feed` gains
+no runtime branch.
+
+`None` never means zero. A rung that goes absent exactly when the link fails
+must stay distinguishable from one reporting a perfect result, or a dead link
+renders as a flawless one. `integer_cfo_bins` makes the same distinction within
+a single rung: `Some(0)` is "the estimator ran and the link is on frequency",
+`None` is "no estimate exists".
+
+**Three deliberate absences.**
+
+- **No `inner_fec_ok`.** DVB-T's inner code is always `ConvCode::DvbK7`, and
+  `ChainOutcome::inner_ok` is documented as always `true` for the convolutional
+  arm — its soft Viterbi has no per-block convergence flag. Exposing it would put
+  a permanently-green lock on a display that no link condition could move. The
+  meaningful post-inner measurement is `inner_ber`.
+- **No `crc_ok`.** DVB-T carries no CRC, so the chain's `crc_ok` reports `true`
+  because nothing was checked. Reed–Solomon is the integrity check here, which is
+  why `outer_fec_ok` — not `crc_ok` — is the frame-good signal.
+- **No sequence number on a probe frame, and no codeword geometry.** DVB-T has no
+  frame header to carry a monotonic counter; `DvbTProbeFrame` carries the whole
+  `TpsWord` instead, whose `frame_number` wraps 0..3 every super-frame.
+  Synthesising a counter from it would invite gap arithmetic that cannot work.
+  The convolutional inner code likewise terminates once per frame and has no
+  codeword boundaries to draw, so the generic path's `codeword_bits` pair is
+  omitted rather than carried as permanent zeroes.
+
+**A measurement decodes the whole frame; a plain decode does not.** `DvbTFrameMod`
+stuffs null TS packets until the coded stream fills every data carrier, so a
+receiver told `payload_len = 184` decodes a *prefix* — 39 180 of 205 632 coded
+bits for a 68-symbol QPSK frame. That is fine for recovering the payload, but a
+BER or a correction map has to reproduce what the transmitter actually sent, and
+with a Forney(12,17) outer interleaver no prefix of a re-encode does: each output
+byte draws from twelve branches at different depths, so the first coded bits
+already depend on TS bytes from codewords the prefix never recovers. Re-encoding
+the prefix puts zeros where the transmitter had data, and measures a CBER around
+0.25 on a *noiseless* link. So when any gated rung is requested the demod decodes
+the full frame — roughly 5× the FEC work, which is exactly why it sits behind the
+same gate.
+
+One consequence is worth knowing: a prefix decode carries a **structural RS
+correction floor**. The Forney deinterleaver's tail draws on codewords the prefix
+does not cover, and Reed–Solomon quietly repairs the shortfall — one byte of the
+eight RS(204,188) can correct, spent before the channel has done anything. A
+whole-frame decode has no shortfall and reports zero. Pinned by
+`a_prefix_decode_carries_a_structural_rs_correction_floor`.
+
+**Measured cost** (`throughput::dvbt`, G1/32 QPSK R1/2). Diagnostics off is
+13.0–13.2 Msps against 13.14 on the pre-diagnostics baseline — parity, the EVM
+branch being hoisted to once per OFDM symbol rather than once per data carrier.
+
+The gated path always decodes the whole frame, so **its cost does not depend on
+`payload_len` — it is ~4.85 Msps either way — and the overhead percentage is
+really a statement about the baseline**:
+
+| Payload | Fill | `with_error_rates` | `feed_probed` |
+| ---: | ---: | ---: | ---: |
+| 184 B | 2% | +171% | +158% |
+| 9 724 B | ~100% | **+5.5%** | **+4.4%** |
+
+At a realistic DATV fill that is the same neighbourhood as the generic COFDM
+path (+3.3% / +4.3%), which never shows the sparse case because it sizes the
+frame to the payload rather than to a fixed TPS block. A caller sending one TS
+packet per 68-symbol frame is paying for 98% stuffing in the plain decode too —
+it is simply invisible there, because the plain decode skips it.
+
+The modulator runs at ~88 Msps. `dvb_t_map_symbol` is allocation-free — it folds
+the axis de-interleave into the label pack rather than materializing two `Vec`s
+per constellation point, which at ~103 k points per frame would otherwise
+dominate the mapping loop.
+
+**What `cfo_hz` reports.** The total offset — acquisition's fractional estimate
+plus any whole-subcarrier offset removed ahead of it — matching `OfdmRxFrame`.
+Reporting the post-correction residual would describe the receiver's internal
+state rather than the link. Note the demod *estimates* the fractional CFO but
+does not *apply* it, so a link more than roughly a fifth of a subcarrier off
+needs `with_integer_cfo_correction`.
+
 ## Conformance and testing
 
 **Spec-exact + self-verified**: every stage is bit-exact to EN 300 744 where a
@@ -336,3 +427,18 @@ continual-only). The super-frame and streaming layers have their own roundtrips:
 sequence) and the `dvb_t_stream_*` suite (chunk-boundary-invariance, a continuous
 multi-frame run, partial-frame holding). External-IQ validation against published
 captures is an opportunistic, non-CI-gating follow-up.
+
+The diagnostics and probe have their own suite, `roundtrip::dvb_t_probe`, written
+so a rung has to *move* rather than merely be present: a rung that is always
+`Some(0.0)` passes an `is_some()` check and tells an operator nothing. `cfo_hz`
+is checked against an
+injected fractional offset (and against an injected integer one, to prove it
+reports the total rather than the residual); `rs_corrected_bytes` against
+injected noise; the correction map is required to reproduce `channel_ber`
+exactly, since it is that scalar's per-bit expansion and not a second
+measurement of it. Probing is proven not to change what decodes, to partition its
+flat buffers into non-overlapping per-frame spans, and to be
+chunk-boundary-invariant. Noise in this suite is scaled to the frame's own mean
+power (~4.4e-4), not given absolutely — an absolute "0.1" is 225× the signal, and
+every frame then dies in TPS decode long before the payload is interestingly
+degraded.

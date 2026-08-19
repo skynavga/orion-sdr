@@ -493,8 +493,14 @@ The conformant EN 300 744 2K chain. See [dvb.md](dvb.md) for the waveform design
 | `DvbTFrameMod` / `DvbTFrame` | TX: `modulate(&[u8]) -> DvbTFrame`; `with_symbol_window`, `with_tx_lowpass`, `tx_lowpass_for_2k` |
 | `DvbTSuperFrameMod` / `DvbTSuperFrame` | TX: four sequenced frames; same two shaping builders (the mask runs once over all four) |
 | `DvbTFrameDemod` / `DvbTRxFrame` / `DvbTRxError` | Batch RX: GI acquisition, scattered-pilot equalization, TPS, payload FEC |
+| `DvbT*Demod::with_*` | `with_integer_cfo_correction`, `with_rx_window_backoff`, `with_error_rates` (all opt-in), on all three receivers |
 | `DvbTSuperFrameDemod` / `DvbTRxSuperFrame` / `DvbTRxSuperFrameError` | Batch RX over four frames: sequence check + cell-id reassembly |
 | `DvbTFrameStreamDemod` | Streaming RX: `feed`/`flush` over a continuous run of frames |
+| `DvbTFrameStreamDemod::feed_probed` / `flush_probed` | As above, plus a `DvbTRxProbe`; opting in is the method, not a flag |
+| `DvbTRxDiagnostics` | Per-frame quality ladder on `DvbTRxFrame`: six free rungs, three behind `with_error_rates` |
+| `DvbTRxProbe` | Caller-owned, reused per call: `iter` (per frame), `symbols`/`correction` (flat), `frames`, `clear` |
+| `DvbTProbedFrame` | One frame's resolved view: `meta`, `symbols`, `correction`. Borrows the probe, so it cannot go stale |
+| `DvbTProbeFrame` | The metadata: `tps` (no sequence number — DVB-T has no header), `constellation`, `decoded` |
 | `TpsWord` | The recovered TPS signalling |
 | `DVB_T_N_FFT` / `DVB_T_KMAX` / `DVB_T_ACTIVE_CARRIERS` | 2048 / 1704 / 1705 |
 | `DVB_T_SCATTERED_PILOT_SPACING` | 12 |

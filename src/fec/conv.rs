@@ -162,6 +162,43 @@ fn parity(x: u16) -> u8 {
     (x.count_ones() & 1) as u8
 }
 
+/// One trellis branch, resolved once per decode instead of once per visit.
+#[derive(Clone, Copy)]
+struct Branch {
+    /// The branch's coded pair packed as `(c0 << 1) | c1`, which indexes the
+    /// four correlations any branch can contribute at a given step.
+    sym: u8,
+    /// The state this branch leads to.
+    next: u16,
+}
+
+/// The whole trellis for `code`: `num_states · 2` branches, indexed
+/// `state * 2 + bit`.
+///
+/// **Why this is precomputed.** [`branch_bits`] and [`next_state`] take `code`
+/// as a *runtime* value, so each call re-`match`es the enum for `generators()`,
+/// `reg_bits()` and `reg_mask()` before taking two `count_ones` parities. Called
+/// from inside the ACS loop that is `n_steps · num_states · 2` visits deep, that
+/// costs about half the decoder's throughput — measured, when the coder was
+/// generalized over `ConvCode` to add the DVB-T K=7 code, as a drop from ~26 to
+/// ~13.6 Msps at rate 1/2 with bit-identical output. Resolving every branch once
+/// up front is 32 entries for K=5 and 128 for K=7, against the tens of thousands
+/// of repeat evaluations it replaces.
+fn branch_table(code: ConvCode) -> Vec<Branch> {
+    let num_states = code.num_states();
+    let mut out = Vec::with_capacity(num_states * 2);
+    for s in 0..num_states as u16 {
+        for b in 0..2u8 {
+            let (c0, c1) = branch_bits(code, s, b);
+            out.push(Branch {
+                sym: (c0 << 1) | c1,
+                next: next_state(code, s, b),
+            });
+        }
+    }
+    out
+}
+
 /// Systematic-free rate-1/2 encode of `bits` (already tail-padded) under `code`,
 /// returning the interleaved `[g0_0, g1_0, g0_1, g1_1, …]` mother-code output.
 /// For [`ConvCode::K5`] this defers to `codec::conv_encode` so the output stays
@@ -306,26 +343,39 @@ pub fn viterbi_decode_soft_with(
     let neg_inf = f32::MIN / 2.0;
     let mut pm = vec![neg_inf; num_states];
     pm[0] = 0.0; // known start state
-    let mut prev_state_table: Vec<Vec<u16>> = vec![vec![0u16; num_states]; n_steps];
+    // The trellis, resolved once (see `branch_table`) rather than re-derived on
+    // every visit.
+    let table = branch_table(code);
+    // Flat survivor table, `prev_state[t * num_states + s]`. This was a
+    // `Vec<Vec<u16>>`, i.e. one heap allocation per trellis step — 516 of them
+    // for a 512-bit block, to hold 16 `u16` each.
+    let mut prev_state = vec![0u16; n_steps * num_states];
     let top_bit = code.reg_bits() - 1;
 
     let mut new_pm = vec![neg_inf; num_states];
     for t in 0..n_steps {
         let l0 = full[t * 2];
         let l1 = full[t * 2 + 1];
+        // The only four correlations any branch can contribute at this step,
+        // indexed by the branch's `(c0 << 1) | c1`. Arithmetically identical to
+        // `(1 − 2c0)·l0 + (1 − 2c1)·l1`, which scales by exactly ±1 — so this is
+        // bit-identical, not merely equivalent.
+        let corr = [l0 + l1, l0 - l1, -l0 + l1, -l0 - l1];
         new_pm.iter_mut().for_each(|m| *m = neg_inf);
+        let row = &mut prev_state[t * num_states..(t + 1) * num_states];
         for (prev, &pm_prev) in pm.iter().enumerate() {
             if pm_prev <= neg_inf {
                 continue;
             }
-            for &bit in &[0u8, 1u8] {
-                let (c0, c1) = branch_bits(code, prev as u16, bit);
-                let corr = (1.0 - 2.0 * c0 as f32) * l0 + (1.0 - 2.0 * c1 as f32) * l1;
-                let ns = next_state(code, prev as u16, bit) as usize;
-                let cand = pm_prev + corr;
+            // Bit 0 then bit 1, states ascending — the same visit order as
+            // before, which matters: survivors are kept on a strict `>`, so ties
+            // go to whichever branch is seen first.
+            for br in &table[prev * 2..prev * 2 + 2] {
+                let ns = br.next as usize;
+                let cand = pm_prev + corr[br.sym as usize];
                 if cand > new_pm[ns] {
                     new_pm[ns] = cand;
-                    prev_state_table[t][ns] = prev as u16;
+                    row[ns] = prev as u16;
                 }
             }
         }
@@ -336,7 +386,7 @@ pub fn viterbi_decode_soft_with(
     let mut state = 0usize;
     let mut bits = vec![0u8; n_steps];
     for t in (0..n_steps).rev() {
-        let prev = prev_state_table[t][state] as usize;
+        let prev = prev_state[t * num_states + state] as usize;
         // The input bit driving prev → state is the top register bit of `state`
         // (next_state inserts b at bit `reg_bits-1`).
         bits[t] = ((state >> top_bit) & 1) as u8;

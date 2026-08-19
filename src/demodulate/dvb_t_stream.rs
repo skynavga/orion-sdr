@@ -16,6 +16,7 @@
 // configuration (or an out-of-band TPS lock) and confirms it via the TPS word.
 
 use super::dvb_t_frame::{DvbTFrameDemod, DvbTRxError, DvbTRxFrame};
+use super::dvb_t_probe::DvbTRxProbe;
 use crate::sync::dvb_t_gi_sync;
 use crate::waveform::dvb_t::{DVB_T_N_FFT, DvbTFrameParams};
 use num_complex::Complex32 as C32;
@@ -76,6 +77,14 @@ impl DvbTFrameStreamDemod {
         self
     }
 
+    /// Enables (or disables) the BER rungs on each decoded frame's diagnostics
+    /// (see [`DvbTFrameDemod::with_error_rates`]). Off by default — it costs one
+    /// encode chain per frame.
+    pub fn with_error_rates(mut self, on: bool) -> Self {
+        self.demod = self.demod.with_error_rates(on);
+        self
+    }
+
     /// Accumulated (not-yet-consumed) sample count.
     pub fn len(&self) -> usize {
         self.buf.len()
@@ -103,20 +112,67 @@ impl DvbTFrameStreamDemod {
     /// Feeds IQ samples and returns any frames (or errors) that completed.
     pub fn feed(&mut self, iq: &[C32]) -> Vec<Result<DvbTRxFrame, DvbTRxError>> {
         self.buf.extend_from_slice(iq);
-        self.drain()
+        self.drain(None)
     }
 
     /// Runs a final decode pass over the residual buffer (end of stream). Same
     /// semantics as [`feed`](Self::feed) with no new samples.
     pub fn flush(&mut self) -> Vec<Result<DvbTRxFrame, DvbTRxError>> {
-        self.drain()
+        self.drain(None)
+    }
+
+    /// [`feed`](Self::feed), additionally filling `probe` with each frame's
+    /// equalized data-carrier symbols and per-coded-bit correction map — the two
+    /// quantities a constellation / decoder display needs. See [`DvbTRxProbe`].
+    ///
+    /// `probe` is **cleared first**, then refilled with everything this call
+    /// produced; its allocations are retained, so probing a steady stream does
+    /// not reallocate.
+    ///
+    /// **The gate is the choice of method, not a flag.** There is no
+    /// `want_probe` field, so the unprobed [`feed`](Self::feed) gains no runtime
+    /// branch and no receiver state can disagree with what the caller believes
+    /// it enabled. A viewer that toggles its pane calls the other method.
+    ///
+    /// Costs, per frame: one encode chain (the same one
+    /// [`with_error_rates`](Self::with_error_rates) runs — asking for both pays
+    /// for it once), one further inner encode to re-derive what the decoder
+    /// decided, and two buffer fills totalling ~1 MB for a 68-symbol frame.
+    /// Frames that fail their Reed–Solomon check still contribute their symbols,
+    /// with an empty correction map.
+    ///
+    /// This does **not** enable the EVM or BER rungs of
+    /// [`DvbTRxDiagnostics`](crate::demodulate::DvbTRxDiagnostics); those remain
+    /// gated by [`with_error_rates`](Self::with_error_rates), which composes
+    /// with this freely.
+    pub fn feed_probed(
+        &mut self,
+        iq: &[C32],
+        probe: &mut DvbTRxProbe,
+    ) -> Vec<Result<DvbTRxFrame, DvbTRxError>> {
+        probe.clear();
+        self.buf.extend_from_slice(iq);
+        self.drain(Some(probe))
+    }
+
+    /// [`flush`](Self::flush) with the probe of [`feed_probed`](Self::feed_probed).
+    pub fn flush_probed(
+        &mut self,
+        probe: &mut DvbTRxProbe,
+    ) -> Vec<Result<DvbTRxFrame, DvbTRxError>> {
+        probe.clear();
+        self.drain(Some(probe))
     }
 
     /// Repeatedly acquires and decodes frames from the front of the buffer,
     /// consuming their samples, until no further complete frame is present.
-    fn drain(&mut self) -> Vec<Result<DvbTRxFrame, DvbTRxError>> {
+    fn drain(
+        &mut self,
+        mut probe: Option<&mut DvbTRxProbe>,
+    ) -> Vec<Result<DvbTRxFrame, DvbTRxError>> {
         let mut out = Vec::new();
-        while let FrameStep::Decoded(result, consume_to) = self.try_one_frame() {
+        while let FrameStep::Decoded(result, consume_to) = self.try_one_frame(probe.as_deref_mut())
+        {
             self.buf.drain(..consume_to);
             out.push(result);
         }
@@ -124,7 +180,7 @@ impl DvbTFrameStreamDemod {
     }
 
     /// Attempts to acquire and decode one frame at the front of the buffer.
-    fn try_one_frame(&mut self) -> FrameStep {
+    fn try_one_frame(&mut self, probe: Option<&mut DvbTRxProbe>) -> FrameStep {
         let n_fft = DVB_T_N_FFT;
         let cp_len = self.sps - n_fft;
         let fs = self.demod.params().config().fs;
@@ -150,10 +206,16 @@ impl DvbTFrameStreamDemod {
         // Decode the frame from its acquired start (the batch demod re-locks the
         // CP at offset 0 of this slice, which is idempotent; with integer-CFO
         // correction enabled it also removes any whole-subcarrier offset there).
-        match self
-            .demod
-            .decode(&self.buf[start..], self.n_symbols, self.payload_len)
-        {
+        let decoded = match probe {
+            Some(p) => {
+                self.demod
+                    .decode_probed(&self.buf[start..], self.n_symbols, self.payload_len, p)
+            }
+            None => self
+                .demod
+                .decode(&self.buf[start..], self.n_symbols, self.payload_len),
+        };
+        match decoded {
             Ok(frame) => FrameStep::Decoded(Ok(frame), consume_to),
             // A genuine decode failure on a fully-present frame: report it and
             // consume past this frame so the stream advances (no re-locking the
