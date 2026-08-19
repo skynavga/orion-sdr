@@ -54,13 +54,16 @@ src/
                         feed/flush RX), RxFrame (COFDM frame demodulator)
     ofdm_probe.rs      — OfdmRxProbe, OfdmProbeFrame, BitOutcome (opt-in RX probe:
                         equalized symbols + per-coded-bit correction map)
-    dvb_t_frame.rs     — DvbTFrameDemod, DvbTRxFrame (conformant preamble-less
-                        DVB-T RX: GI-acquire → equalize → soft-demap → TPS + FEC;
-                        optional integer-CFO builder flag)
+    dvb_t_frame.rs     — DvbTFrameDemod, DvbTRxFrame, DvbTRxDiagnostics (conformant
+                        preamble-less DVB-T RX: GI-acquire → equalize → soft-demap →
+                        TPS + FEC; optional integer-CFO and error-rate builder flags)
+    dvb_t_probe.rs     — DvbTRxProbe, DvbTProbeFrame, DvbTProbedFrame (opt-in DVB-T
+                        RX probe: equalized symbols + per-coded-bit correction map,
+                        reusing ofdm_probe's BitOutcome)
     dvb_t_super_frame.rs — DvbTSuperFrameDemod, DvbTRxSuperFrame (four-frame RX:
                         verifies the 0..3 frame sequence, reassembles the 16-bit cell id)
     dvb_t_stream.rs    — DvbTFrameStreamDemod (streaming feed/flush DVB-T RX over a
-                        continuous sample stream)
+                        continuous sample stream; feed_probed/flush_probed gate the probe)
     pm.rs             — PmQuadratureDemod
     psk31.rs          — Bpsk31Demod, Bpsk31Decider, Qpsk31Demod, Qpsk31Decider
     qam.rs            — QamDemod, QamDecider<BITS>, Qam16/64/256Decider

@@ -430,8 +430,8 @@ impulse response causes inter-symbol interference the model doesn't capture.
 **A null bin is erased, not divided through.** A bin whose channel estimate
 lands under `|h|² = 1e-6` — 60 dB below a unit channel, since the training
 pattern is unit-magnitude — is output as zero rather than corrected. Clamping
-`|h|²` up to that floor and dividing anyway (what this used to do) turns a null
-into a gain of up to `1e6`: the one carrier that survived nothing becomes the
+`|h|²` up to that floor and dividing anyway would turn a null into a gain of up
+to `1e6`: the one carrier that survived nothing becomes the
 loudest thing in the symbol, and the demapper reads a large random value as a
 *confident* wrong decision. Zero lands on the constellation centroid, produces
 LLRs near zero, and hands the FEC an erasure, which is the impairment it is best
@@ -727,11 +727,14 @@ symbol's worth. Walking the map and finding each bit's symbol is always in
 range; walking the symbols and slicing the map per symbol is not.
 
 Boundaries: a failed **payload** yields symbols with an empty map; a failed
-**header** yields nothing at all; a `dvb_t_scattered` link yields no probe
-frames, since its demap path collects no symbols (DVB-T has its own diagnostics
-in `waveform::dvb_t_frame`). See [ofdm.md](ofdm.md) for the design reasoning and
-the measured cost (~+3..4% of the streaming receive path, and 1.6% *faster* than
-before the probe existed when it is off).
+**header** yields nothing at all; a `dvb_t_scattered` link yields no probe frames
+at all, since its demap path collects no symbols here. That last one is routing
+rather than a gap — a DVB-T receiver has its own equivalent, and this is the
+wrong object to instrument it with; see
+[The DVB-T RX probe](#the-dvb-t-rx-probe-dvbtrxprobe). See [ofdm.md](ofdm.md) for
+the design reasoning and [performance.md](performance.md) for the measured cost
+(~+3..4% of the streaming receive path; nothing at all when it is off, since the
+gate is the choice of method).
 
 The map does **not** depend on `with_error_rates`: probing runs the encode chain
 itself, and the two opt-ins share the one encode. The flag still gates the
@@ -832,9 +835,9 @@ back-off problem:
   margin to absorb the interpolation error when there is no noise to spend it on.
   Under noise it does not: `b = 64` costs ~6 dB and `b = 85` never closes. Keep
   `b ≤ 32` (free) or `≤ 42` (~1 dB).
-- **Nothing else.** Shaping used to have a second failure mode here — a tapered
-  frame beginning at sample 0 of the buffer would lock onto the wrong symbol —
-  which is now handled inside the estimator (below).
+- **Nothing else.** A tapered frame beginning at sample 0 of the buffer, with no
+  lead-in to acquire against, is handled inside the estimator (below) rather
+  than being a caller's concern.
 
 #### Acquiring a shaped signal with no lead-in
 
@@ -948,3 +951,123 @@ per call. Under noise the pilot peak is modest (45 of 1705 carriers, boosted
 ~1.78×), so the demod accumulates several symbols' pilot energy before estimating.
 Always-on, the correction costs on the order of a few percent of the decode
 (continual-pilot search per frame; see [performance.md](performance.md)).
+
+### DVB-T RX diagnostics (`DvbTRxDiagnostics`)
+
+Every recovered frame carries `rx.diagnostics`, the DVB-T counterpart of
+`OfdmRxFrame`. `Option` means "not measured", never "measured zero" — a rung that
+went absent exactly when the link failed would be indistinguishable from a
+perfect one.
+
+Six rungs read straight off work the decode already does and are **always
+populated**. Three cost work it would not otherwise do and are behind
+`with_error_rates(true)`, which every DVB-T receiver accepts.
+
+| Field | Source | Gate |
+| --- | --- | --- |
+| `cfo_hz` | guard-interval acquisition, **plus** any integer offset removed ahead of it | free |
+| `sync_score` | the GI correlation score, `[0, 1]` | free |
+| `timing_offset_samples` | the acquired symbol boundary | free |
+| `integer_cfo_bins` | the continual-pilot estimate | free |
+| `outer_fec_ok` | the Reed–Solomon verdict | free |
+| `rs_corrected_bytes` | bytes RS corrected across the frame | free |
+| `evm_db` | the payload's own hard decisions | `with_error_rates` |
+| `channel_ber` (CBER) | re-encode vs. the demapper's decisions | `with_error_rates` |
+| `inner_ber` (IBER) | re-encode vs. the inner decoder's output | `with_error_rates` |
+
+```rust
+use orion_sdr::demodulate::DvbTFrameStreamDemod;
+
+// Off by default: the gated rungs cost an encode chain and a whole-frame FEC
+// decode per frame. The free rungs need no flag.
+let mut rx = DvbTFrameStreamDemod::new(params, n_symbols, payload_len)
+    .with_error_rates(true);
+
+for result in rx.feed(&received_iq) {
+    if let Ok(frame) = result {
+        let d = &frame.diagnostics;
+        // `rs_corrected_bytes` is the rung that degrades gracefully: it rises as
+        // the link approaches the cliff while every byte is still delivered.
+        println!(
+            "cfo {:?} Hz  score {:?}  EVM {:?} dB  CBER {:?}  RS fixed {:?} bytes",
+            d.cfo_hz, d.sync_score, d.evm_db, d.channel_ber, d.rs_corrected_bytes
+        );
+    }
+}
+```
+
+**`cfo_hz` is the total offset** — the fractional estimate plus any
+whole-subcarrier offset removed ahead of it — so it describes the link rather
+than the receiver's residual. `integer_cfo_bins` keeps `Some(0)` ("the estimator
+ran; the link is on frequency") apart from `None` ("no estimate exists"), since
+integer correction is off by default.
+
+Two fields the COFDM ladder has are **deliberately absent**. There is no
+`inner_fec_ok`: DVB-T's inner code is always `ConvCode::DvbK7`, whose soft
+Viterbi has no per-block convergence flag, so the field could only ever read
+`true` — a permanently-green lock no link condition could move. `inner_ber` is
+the post-inner measurement that does vary. There is no `crc_ok` either: DVB-T
+carries no CRC, so Reed–Solomon is the integrity check, and `outer_fec_ok` is the
+frame-good signal. Note that `outer_fec_ok` is itself always `Some(true)` on a
+frame you can read, because a frame whose RS stage failed is returned as
+`DvbTRxError::PayloadDecode` instead. See [dvb.md](dvb.md) for the reasoning.
+
+### The DVB-T RX probe (`DvbTRxProbe`)
+
+`DvbTFrameStreamDemod::feed_probed`/`flush_probed` are `feed`/`flush` plus a
+caller-owned buffer holding, per frame, the **equalizer's output symbols** (1512
+data carriers × `n_symbols`) and a **per-coded-bit correction map**. As on the
+COFDM path the gate is the choice of method rather than a flag, so the plain
+`feed` gains no branch. The `BitOutcome` states, their two named axes
+(`arrived_wrong()` / `decoder_disagreed()`), and the "symbols and the map do not
+index 1:1" caveat are all identical to
+[the COFDM probe](#the-rx-probe-ofdmrxprobe) — the same enum is reused rather
+than duplicated.
+
+```rust
+use orion_sdr::demodulate::{DvbTFrameStreamDemod, DvbTRxProbe};
+
+let mut rx = DvbTFrameStreamDemod::new(params, n_symbols, payload_len);
+let mut probe = DvbTRxProbe::new(); // reuse across calls — that is the point
+
+for chunk in stream.chunks(4096) {
+    // Cleared and refilled each call; allocations are retained. Read it after
+    // the call that filled it — a following `flush_probed` clears it first.
+    for result in rx.feed_probed(chunk, &mut probe) {
+        let _ = result;
+    }
+    for f in probe.iter() {
+        // Post-equalizer, pre-demapper, in demap order.
+        plot_constellation(f.symbols, f.meta.constellation);
+
+        // Empty when `!f.meta.decoded`: a frame whose RS stage failed has no
+        // ground truth, so this reads "not measured", not "no errors".
+        let corrected = f.correction.iter().filter(|o| o.arrived_wrong()).count();
+        println!("{corrected} of {} coded bits arrived wrong", f.correction.len());
+    }
+}
+```
+
+Two differences from `OfdmProbeFrame`, both deliberate:
+
+- **`meta.tps` instead of a sequence number.** DVB-T transmits no frame header
+  and so has no monotonic counter; what it has is a TPS `frame_number` in
+  `0..=3`, which wraps every super-frame. The whole `TpsWord` is carried rather
+  than a synthesised counter, because gap arithmetic across that wrap would
+  silently report four-frame jumps that never happened.
+- **No `codeword_bits` / `codeword_info_bits`.** The inner code is convolutional:
+  it terminates once per frame and has no block structure for a display to draw.
+  Carrying a pair of permanent zeroes would invite a consumer to divide by them.
+
+A frame that reaches the demapper and then fails its Reed–Solomon check still
+records its symbols with an empty map — the constellation is precisely what an
+operator looks at when frames stop decoding. A frame that loses its **TPS** word
+never reaches the payload decode and records nothing.
+
+Probing composes with `with_error_rates` and does not imply it: both run the same
+encode chain and pay for it once, but the `channel_ber`/`inner_ber` fields stay
+`None` unless the flag is set. Both opt-ins do trigger a whole-frame FEC decode,
+because reproducing what the transmitter sent means decoding the null-packet
+stuffing too — see [dvb.md](dvb.md) for why a prefix re-encode cannot work under
+the Forney interleaver, and [performance.md](performance.md) for what it costs at
+each frame fill.

@@ -9,6 +9,68 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.63] - 2026-08-19
+
+Gives the DVB-T receiver the instrumentation the generic COFDM path already
+had: a per-frame diagnostics ladder and an opt-in probe carrying equalized
+symbols and a per-coded-bit correction map. Also fixes a convolutional-decode
+regression that had halved every path using the inner code since 0.0.46.
+
+### Added
+
+- `DvbTRxDiagnostics` on `DvbTRxFrame`. Six rungs are always populated because
+  each is read off work the decode already does — `cfo_hz` (the **total**
+  offset, including any integer correction removed ahead of acquisition),
+  `sync_score`, `timing_offset_samples`, `integer_cfo_bins`, `outer_fec_ok`,
+  `rs_corrected_bytes`. Three cost extra work and are gated: `evm_db`,
+  `channel_ber` (CBER), `inner_ber` (IBER).
+- `with_error_rates(bool)` on `DvbTFrameDemod`, `DvbTSuperFrameDemod` and
+  `DvbTFrameStreamDemod`, gating the three measured rungs.
+- `DvbTRxProbe` / `DvbTProbeFrame` / `DvbTProbedFrame` (`demodulate::dvb_t_probe`),
+  reached via `DvbTFrameStreamDemod::feed_probed` / `flush_probed`. Caller-owned
+  reusable buffers; the gate is the choice of method, so the plain `feed` gains
+  no branch. Reuses `BitOutcome` rather than adding a parallel enum.
+- `ReedSolomon::decode_counted`, reporting how many codeword bytes the
+  correction changed — a measurement that tracks the channel where `outer_ok`
+  saturates. `ChainOutcome::outer_corrected_bytes` carries it through the shared
+  decode chain, so the generic COFDM path gets it too.
+
+### Changed
+
+- `viterbi_decode_soft_with` resolves its trellis once into a branch table
+  instead of re-deriving each branch from the `ConvCode` on every
+  add-compare-select visit, and its survivor table is one flat allocation rather
+  than a `Vec<Vec<u16>>` allocating per trellis step. Output is bit-identical,
+  verified by checksum over 63 456 decoded bits spanning both mother codes and
+  all five puncture rates. Convolutional decode goes 13.6 → 30.8 Msps, COFDM
+  Conv+RS frame demodulate 19 → 31, DVB-T frame demodulate 13.5 → 15.8.
+- `dvb_t_map_symbol` folds the even/odd axis de-interleave into the axis-label
+  pack, removing two heap allocations per constellation point (~103 000 per
+  frame). The DVB-T modulator goes 33 → 88 Msps.
+- Requesting any gated DVB-T rung decodes the whole frame rather than the
+  payload prefix. The modulator stuffs null packets to fill the frame, and under
+  the Forney(12,17) outer interleaver a prefix re-encode does not reproduce what
+  was transmitted — it measures CBER ≈ 0.25 on a noiseless link. Costs ~5× the
+  FEC work on a sparsely-filled frame and nothing at a realistic DATV fill,
+  which is why it is behind the same gate.
+- `docs/` describe current behaviour rather than release-over-release change;
+  the historical record moves to the plan directory.
+
+### Notes
+
+- No `inner_fec_ok` or `crc_ok` on the DVB-T ladder. The inner code is always
+  `ConvCode::DvbK7`, whose soft Viterbi has no per-block convergence flag, and
+  the waveform carries no CRC — both fields could only ever read `true`.
+  `outer_fec_ok` is likewise always `Some(true)` on a frame a caller can read,
+  since a failed Reed–Solomon stage is returned as `DvbTRxError::PayloadDecode`.
+- `DvbTProbeFrame` carries the `TpsWord` in place of a sequence number: DVB-T
+  transmits no frame header, and its TPS `frame_number` wraps every super-frame,
+  so a synthesised counter would break gap arithmetic silently.
+- The DVB-T receiver's diagnostics-off throughput is unchanged (13.0–13.2 Msps
+  against a 13.14 baseline).
+- No Python bindings for the new types, matching the generic path — `OfdmRxProbe`
+  and `with_error_rates` are likewise Rust-only.
+
 ## [0.0.62] - 2026-08-18
 
 Documentation-only release. No library, binding, or test behavior changed —

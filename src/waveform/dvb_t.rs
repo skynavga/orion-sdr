@@ -150,13 +150,6 @@ fn dvb_t_axis_table(v: usize) -> Option<&'static [i32]> {
     }
 }
 
-/// Packs the axis bits (MSB-first) into a table index.
-#[inline]
-fn axis_index(bits: &[u8]) -> usize {
-    bits.iter()
-        .fold(0usize, |acc, &b| (acc << 1) | (b & 1) as usize)
-}
-
 /// Maps one DVB-T symbol's `v` bits `y0..y(v-1)` to a normalized constellation
 /// point. Even bits (`y0,y2,…`) form the I axis, odd bits (`y1,y3,…`) the Q axis,
 /// each Gray-mapped per Figure 9a. Returns `None` if `bits.len()` is not a
@@ -165,11 +158,26 @@ pub fn dvb_t_map_symbol(bits: &[u8]) -> Option<num_complex::Complex32> {
     let v = bits.len();
     let table = dvb_t_axis_table(v)?;
     let scale = crate::modulate::qam::axis_scale(v);
-    // De-interleave: even indices → I, odd indices → Q (both MSB-first in y-order).
-    let i_bits: Vec<u8> = bits.iter().step_by(2).copied().collect();
-    let q_bits: Vec<u8> = bits.iter().skip(1).step_by(2).copied().collect();
-    let i = table[axis_index(&i_bits)] as f32 * scale;
-    let q = table[axis_index(&q_bits)] as f32 * scale;
+    // De-interleave and pack in one fold: even indices build the I-axis label,
+    // odd indices the Q-axis one, both MSB-first in y-order — the same index
+    // the two de-interleaved halves would produce, without materializing them.
+    //
+    // The obvious `step_by(2).collect()` spelling costs two heap allocations
+    // per constellation point, and this runs once per data carrier: 1512 per
+    // OFDM symbol, ~103k per frame, on the modulator's mapping loop and again
+    // on the receiver's EVM pass. That pair of allocations, not the table
+    // lookup, was the mapping's dominant cost.
+    let (mut i_idx, mut q_idx) = (0usize, 0usize);
+    for (j, &b) in bits.iter().enumerate() {
+        let axis = if j.is_multiple_of(2) {
+            &mut i_idx
+        } else {
+            &mut q_idx
+        };
+        *axis = (*axis << 1) | (b & 1) as usize;
+    }
+    let i = table[i_idx] as f32 * scale;
+    let q = table[q_idx] as f32 * scale;
     Some(num_complex::Complex32::new(i, q))
 }
 
@@ -222,7 +230,8 @@ pub fn dvb_t_soft_llr(sym: num_complex::Complex32, v: usize) -> Option<Vec<f32>>
     let scale = crate::modulate::qam::axis_scale(v);
     let k = v / 2; // bits per axis
 
-    // Per-axis LLRs for the k axis bits (MSB-first, matching `axis_index`).
+    // Per-axis LLRs for the k axis bits, MSB-first — the same axis-label bit
+    // order `dvb_t_map_symbol` packs.
     let axis_llrs = |coord: f32| -> Vec<f32> {
         let mut out = vec![0.0f32; k];
         for (b, slot) in out.iter_mut().enumerate() {

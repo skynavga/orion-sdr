@@ -462,12 +462,26 @@ fn inner_decode(
     }
 }
 
+/// What the outer decoder produced: the message bits, whether every block
+/// decoded, and — for a byte-domain code — how many bytes it had to correct.
+struct OuterOutcome {
+    bits: Vec<u8>,
+    all_ok: bool,
+    /// Summed over every codeword the decoder corrected; `None` for a code with
+    /// no byte-domain correction count to report. See
+    /// [`ChainOutcome::outer_corrected_bytes`].
+    corrected_bytes: Option<u32>,
+}
+
 /// Outer-decodes hard bits into message bits, fragmenting into shortened-BCH
-/// codeword blocks (mirroring `outer_encode`). Returns the message bits and
-/// whether every block decoded.
-fn outer_decode(outer: OuterFec, coded_bits: &[u8], cache: &CodecCache) -> (Vec<u8>, bool) {
+/// codeword blocks (mirroring `outer_encode`).
+fn outer_decode(outer: OuterFec, coded_bits: &[u8], cache: &CodecCache) -> OuterOutcome {
     match outer {
-        OuterFec::None => (coded_bits.to_vec(), true),
+        OuterFec::None => OuterOutcome {
+            bits: coded_bits.to_vec(),
+            all_ok: true,
+            corrected_bytes: None,
+        },
         OuterFec::Bch { t } => {
             let code = cache.bch(t, BCH_INFO_BITS);
             let n = code.n();
@@ -488,7 +502,14 @@ fn outer_decode(outer: OuterFec, coded_bits: &[u8], cache: &CodecCache) -> (Vec<
                     }
                 }
             }
-            (msg, all_ok)
+            OuterOutcome {
+                bits: msg,
+                all_ok,
+                // BCH is a *binary* code: a located error is a bit flip, so it
+                // has no byte-correction count to report. `None` rather than a
+                // bit count, so the field means one thing on every arm.
+                corrected_bytes: None,
+            }
         }
         OuterFec::ReedSolomon { n, n_parity } => {
             // Byte-domain: pack coded bits to bytes, decode each n-byte codeword.
@@ -496,20 +517,28 @@ fn outer_decode(outer: OuterFec, coded_bits: &[u8], cache: &CodecCache) -> (Vec<
             let coded_bytes = bits_to_bytes(coded_bits);
             let mut msg_bytes = Vec::new();
             let mut all_ok = true;
+            let mut corrected = 0u32;
             for chunk in coded_bytes.chunks(n) {
                 if chunk.len() < n {
                     all_ok = false;
                     break;
                 }
-                match rs.decode(chunk) {
-                    Ok(block) => msg_bytes.extend_from_slice(&block),
+                match rs.decode_counted(chunk) {
+                    Ok((block, n_fixed)) => {
+                        msg_bytes.extend_from_slice(&block);
+                        corrected += n_fixed as u32;
+                    }
                     Err(_) => {
                         all_ok = false;
                         msg_bytes.extend_from_slice(&chunk[..rs.k()]);
                     }
                 }
             }
-            (bytes_to_bits(&msg_bytes), all_ok)
+            OuterOutcome {
+                bits: bytes_to_bits(&msg_bytes),
+                all_ok,
+                corrected_bytes: Some(corrected),
+            }
         }
     }
 }
@@ -545,6 +574,22 @@ pub struct ChainOutcome {
     /// Whether the configuration provides an outer code at all, on the same
     /// reasoning as [`crc_present`](Self::crc_present).
     pub outer_present: bool,
+    /// How many codeword bytes the **outer** decoder corrected across this
+    /// block, or `None` when the outer code reports no such count — every arm
+    /// but [`OuterFec::ReedSolomon`], since BCH is binary and corrects bits.
+    ///
+    /// The measurement [`outer_ok`](Self::outer_ok) cannot make. That flag
+    /// saturates — a codeword one error from the cliff and a pristine one both
+    /// read `true` — whereas this rises smoothly with the channel, so it shows
+    /// a link *approaching* failure while it is still delivering. It is the
+    /// count real DVB-T receivers report, and it costs nothing: the Forney
+    /// correction loop already computed every magnitude.
+    ///
+    /// **Counted only over codewords that decoded.** A block the code could not
+    /// correct contributes nothing, because a correction the decoder does not
+    /// trust is not a correction to report. So on a frame with
+    /// `outer_ok == false` this is a lower bound; read the two together.
+    pub outer_corrected_bytes: Option<u32>,
     /// What the inner decoder produced, **untrimmed** — every bit it decided,
     /// including the zero-padding tail of the final codeword that the block
     /// plan discards before the outer decoder sees it.
@@ -645,7 +690,11 @@ pub fn decode_chain(
     let trimmed = &outer_il_bits[..plan.outer_il_bits.min(outer_il_bits.len())];
     let outer_de = deinterleave_bits(outer_il, trimmed);
     let outer_de = &outer_de[..plan.outer_coded_bits.min(outer_de.len())];
-    let (mut framed_bits, outer_ok) = outer_decode(outer, outer_de, cache);
+    let OuterOutcome {
+        bits: mut framed_bits,
+        all_ok: outer_ok,
+        corrected_bytes: outer_corrected_bytes,
+    } = outer_decode(outer, outer_de, cache);
     framed_bits.truncate(plan.framed_bytes * 8);
 
     if framed_bits.len() < plan.framed_bytes * 8 {
@@ -669,6 +718,7 @@ pub fn decode_chain(
         crc_ok,
         crc_present: crc != CrcKind::None,
         outer_present: outer != OuterFec::None,
+        outer_corrected_bytes,
         // `deinterleave_bits` only borrowed this, so it moves out here.
         inner_out_bits: outer_il_bits,
     })
@@ -740,7 +790,11 @@ enum BodyError {
 
 /// Fraction of positions where two bit-streams differ, over their common
 /// length. `None` if either is empty.
-fn bit_error_rate(a: &[u8], b: &[u8]) -> Option<f32> {
+///
+/// `pub(crate)` so the per-standard frame assemblers that reuse
+/// [`decode_chain`] measure their BER rungs the same way rather than
+/// reimplementing the comparison — see `demodulate::dvb_t_frame`.
+pub(crate) fn bit_error_rate(a: &[u8], b: &[u8]) -> Option<f32> {
     let n = a.len().min(b.len());
     if n == 0 {
         return None;
@@ -815,11 +869,16 @@ fn decode_frame_body(
     scratch: &mut FrameScratch,
     probe: Option<&mut OfdmRxProbe>,
 ) -> Result<DecodedBody, BodyError> {
-    // The scattered-pilot path collects no symbols — DVB-T frames are decoded by
-    // `waveform::dvb_t_frame`, which carries its own diagnostics — so a
-    // scattered link reports *no* probe frames rather than symbol-less ones. A
-    // record with an empty constellation would read as "nothing arrived" instead
-    // of "not measured here".
+    // The scattered-pilot path collects no symbols here, so a scattered link
+    // reports *no* probe frames rather than symbol-less ones. A record with an
+    // empty constellation would read as "nothing arrived" instead of "not
+    // measured here".
+    //
+    // This is a routing decision, not a gap: a DVB-T link is decoded by
+    // `demodulate::dvb_t_frame`, which carries its own probe
+    // (`demodulate::dvb_t_probe::DvbTRxProbe`, reached via
+    // `DvbTFrameStreamDemod::feed_probed`) and its own diagnostics ladder
+    // (`DvbTRxDiagnostics`). Instrument a DVB-T receiver there, not here.
     let mut probe = probe.filter(|_| !cfg.dvb_t_scattered);
     let mut cursor = 0usize;
 
@@ -856,8 +915,9 @@ fn decode_frame_body(
                      sink: Option<&mut Vec<C32>>|
      -> Option<Vec<f32>> {
         match scattered.as_mut() {
-            // The scattered path does not collect symbols: DVB-T frames are
-            // decoded by `waveform::dvb_t_frame`, which has its own diagnostics.
+            // The scattered path does not collect symbols here; a DVB-T link is
+            // instrumented by `demodulate::dvb_t_frame`, which has its own probe
+            // and diagnostics. See the note at the top of this function.
             Some(x) => soft_demap_scattered(cfg, constellation, &iq[off..], n_sym, x),
             None => soft_demap(cfg, constellation, &iq[off..], n_sym, eq, sink),
         }
@@ -1364,8 +1424,13 @@ impl OfdmFrameStreamDemod {
     /// *header* fails never reach the payload demapper and contribute nothing.
     ///
     /// A `dvb_t_scattered` link reports **no** probe frames at all: its demap
-    /// path collects no symbols, because DVB-T frames are decoded by
-    /// `waveform::dvb_t_frame`, which carries its own diagnostics.
+    /// path collects no symbols here. That is routing rather than absence — a
+    /// DVB-T receiver has its own equivalent, and this is the wrong object to
+    /// instrument it with. Use
+    /// [`DvbTFrameStreamDemod::feed_probed`](crate::demodulate::DvbTFrameStreamDemod::feed_probed)
+    /// with a [`DvbTRxProbe`](crate::demodulate::DvbTRxProbe), and read its
+    /// quality ladder from
+    /// [`DvbTRxDiagnostics`](crate::demodulate::DvbTRxDiagnostics).
     pub fn feed_probed(
         &mut self,
         iq: &[C32],

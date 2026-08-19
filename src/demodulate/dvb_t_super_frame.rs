@@ -64,6 +64,7 @@ pub struct DvbTSuperFrameDemod {
     params: DvbTSuperFrameParams,
     integer_cfo: bool,
     rx_window_backoff: usize,
+    measure_ber: bool,
 }
 
 impl DvbTSuperFrameDemod {
@@ -74,6 +75,7 @@ impl DvbTSuperFrameDemod {
             params,
             integer_cfo: false,
             rx_window_backoff: 0,
+            measure_ber: false,
         }
     }
 
@@ -93,9 +95,21 @@ impl DvbTSuperFrameDemod {
         self
     }
 
+    /// Enables (or disables) the BER rungs on every constituent frame's
+    /// diagnostics (see [`DvbTFrameDemod::with_error_rates`]). Off by default.
+    pub fn with_error_rates(mut self, on: bool) -> Self {
+        self.measure_ber = on;
+        self
+    }
+
     /// The super-frame parameters this demodulator was built with.
     pub fn params(&self) -> DvbTSuperFrameParams {
         self.params
+    }
+
+    /// Whether the BER rungs are measured on each constituent frame.
+    pub fn error_rates(&self) -> bool {
+        self.measure_ber
     }
 
     /// Whether internal integer-CFO correction is enabled.
@@ -144,6 +158,7 @@ impl DvbTSuperFrameDemod {
             let rx = DvbTFrameDemod::new(params.frame(f as u8))
                 .with_integer_cfo_correction(self.integer_cfo)
                 .with_rx_window_backoff(self.rx_window_backoff)
+                .with_error_rates(self.measure_ber)
                 .decode(sub, symbols_per_frame, frame_payload_lens[f])
                 .map_err(|source| DvbTRxSuperFrameError::Frame { frame: f, source })?;
 

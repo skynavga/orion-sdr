@@ -16,8 +16,8 @@ apply to the planned SC-FDMA/OTFS waveforms that will share the
 OFDM is the first of a planned family of multicarrier waveforms sharing the
 `multicarrier/` module (waveform-agnostic FFT-domain primitives); DFT-s-OFDM
 (SC-FDMA) and OTFS are expected to follow and reuse `CarrierPlan`/`CarrierGrid`
-verbatim. The conventions below were decided during OFDM's implementation and
-apply to those future waveforms too.
+verbatim. The conventions below come out of OFDM's implementation and apply to
+those future waveforms too.
 
 **FFT normalization.** Unity-gain forward FFT (`FftBlock`); `1/N` scale
 folded into the inverse FFT's output copy (`IfftBlock`), not a separate
@@ -245,15 +245,15 @@ preamble inside the same band as the payload.
 The training symbol is band-limited to the same band, but from the plan itself
 rather than from its edges: **it loads exactly `CarrierPlan::occupied_bins()` —
 every data and pilot carrier, and nothing else.** A band *half-width* can only
-describe a symmetric span, so it cannot say whether bin 0 is live, and the
-training symbol used to null DC unconditionally while
-`with_contiguous_data(_, true)` handed DC out as a data carrier. Two places
-disagreeing about which bins are occupied is the failure mode; deriving both
-from one accessor makes it unrepresentable. It also lets an asymmetric or sparse
-plan train only the bins it actually uses.
+describe a symmetric span, so it cannot say whether bin 0 is live: a half-width
+description and a `with_contiguous_data(_, true)` plan that hands DC out as a
+data carrier would disagree about whether the training symbol loads it. Two
+places disagreeing about which bins are occupied is the failure mode; deriving
+both from one accessor makes it unrepresentable. It also lets an asymmetric or
+sparse plan train only the bins it actually uses.
 
 The S&C repeats keep DC out whatever the plan says, and owe it no such
-agreement: they are correlated for timing and CFO and never used to estimate a
+agreement: they are correlated for timing and CFO rather than used to estimate a
 channel, and a loaded bin 0 is a constant offset across the segment —
 identically self-similar at every lag, so it broadens the timing plateau while
 adding nothing to localize on.
@@ -555,9 +555,9 @@ steady-state probing does not reallocate.
 
 **The spans are private, and that is the price of the flat-buffer design.** An
 index is only meaningful against the buffer it was minted from, and the probe's
-buffers are cleared and refilled on every call — so a record that outlived its
+buffers are cleared and refilled on every call — so a record that outlives its
 call would index the wrong frame's data, silently, whenever the newer call
-happened to be longer. `OfdmRxProbe::iter` therefore yields `ProbedFrame`, whose
+happens to be longer. `OfdmRxProbe::iter` therefore yields `ProbedFrame`, whose
 symbol and outcome slices are already resolved and whose lifetime is the probe's:
 the next `feed_probed` needs `&mut`, so the borrow checker refuses to let a view
 survive it. The mistake is unrepresentable rather than documented, and cloning
@@ -570,12 +570,10 @@ is precisely where an operator looks when frames stop decoding, and the map
 emptying exactly when the link is worst has to be rendered as "no ground truth",
 not "no errors". A frame whose **header** fails never reaches the payload
 demapper and contributes nothing. `cfg.dvb_t_scattered` links report **no**
-probe frames at all: `soft_demap_scattered` collects no symbols, because DVB-T
-frames are decoded by `waveform::dvb_t_frame` with its own diagnostics. That is
-a known gap, asserted rather than assumed. It is about the *pilot* structure,
-not the inner code: the convolutional re-encode is already exercised on the
-static-grid path, so wiring the scattered path up is a matter of giving its
-demap a symbol sink, not of new decode machinery.
+probe frames at all: `soft_demap_scattered` collects no symbols here. That is
+routing, not a gap — a DVB-T link is instrumented by `demodulate::dvb_t_frame`,
+which carries its own `DvbTRxProbe` (via `DvbTFrameStreamDemod::feed_probed`)
+and its own `DvbTRxDiagnostics` ladder. See [DVB-T / NB-DVB-T design](dvb.md).
 
 Measured cost (`throughput::cofdm`, streaming receiver, n_fft = 64): baseline
 ~7.5 Msps; `with_error_rates` +2.5..3.0%; `feed_probed` +3.1..4.2% — about a

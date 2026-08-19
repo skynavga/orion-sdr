@@ -869,3 +869,76 @@ fn rs_shortened_corrects() {
     }
     assert_eq!(rs.decode(&rx).unwrap(), msg);
 }
+
+#[test]
+fn rs_decode_counted_reports_the_number_of_bytes_it_fixed() {
+    // The measurement `outer_ok` cannot make: how HARD the decoder had to work.
+    // For each error count from 0 to t, the reported tally must equal exactly
+    // the number of bytes corrupted — not the locator degree, not the root
+    // count, and not a saturating flag.
+    let rs = ReedSolomon::dvb();
+    let msg: Vec<u8> = (0..rs.k()).map(|i| (i % 251) as u8).collect();
+    let cw = rs.encode(&msg);
+
+    for n_errors in 0..=rs.t() {
+        let mut rx = cw.clone();
+        // Spread the corruptions so no two share a position.
+        for j in 0..n_errors {
+            rx[j * 17 + 3] ^= 0x5A;
+        }
+        let (got, corrected) = rs.decode_counted(&rx).expect("within t");
+        assert_eq!(got, msg, "{n_errors} errors still recover the message");
+        assert_eq!(
+            corrected, n_errors,
+            "decode_counted must report exactly the {n_errors} bytes it fixed"
+        );
+    }
+}
+
+#[test]
+fn rs_decode_counted_includes_parity_bytes() {
+    // The count spans the whole codeword, not just the k message bytes returned.
+    // A byte error in the parity region is one the channel caused and the
+    // decoder absorbed; excluding it would under-report the channel by the
+    // parity fraction of every codeword.
+    let rs = ReedSolomon::dvb();
+    let msg: Vec<u8> = (0..rs.k()).map(|i| (i * 5 % 251) as u8).collect();
+    let cw = rs.encode(&msg);
+
+    // Corrupt three bytes, all inside the parity region [k, n).
+    let mut rx = cw.clone();
+    for off in [0usize, 5, 11] {
+        rx[rs.k() + off] ^= 0x9C;
+    }
+    let (got, corrected) = rs.decode_counted(&rx).expect("3 parity errors < t");
+    assert_eq!(got, msg);
+    assert_eq!(
+        corrected, 3,
+        "parity-region corrections count toward the total"
+    );
+}
+
+#[test]
+fn rs_decode_counted_agrees_with_decode() {
+    // `decode` is a thin wrapper over `decode_counted`; the two must never
+    // disagree about the recovered message, including on the uncorrectable path.
+    let rs = ReedSolomon::new(40, 8).unwrap();
+    let msg: Vec<u8> = (0..rs.k()).map(|i| (i * 7 + 1) as u8).collect();
+    let cw = rs.encode(&msg);
+
+    // Correctable.
+    let mut rx = cw.clone();
+    for &pos in &[1usize, 15, 28, 38] {
+        rx[pos] ^= 0x33;
+    }
+    assert_eq!(rs.decode(&rx).unwrap(), rs.decode_counted(&rx).unwrap().0);
+
+    // Uncorrectable: t+1 = 5 errors. Both arms report failure, and the counted
+    // form yields no tally — a correction the decoder does not trust is not one
+    // to report.
+    let mut bad = cw.clone();
+    for &pos in &[0usize, 8, 16, 24, 32] {
+        bad[pos] ^= 0x71;
+    }
+    assert_eq!(rs.decode(&bad).is_err(), rs.decode_counted(&bad).is_err());
+}

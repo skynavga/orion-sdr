@@ -6,13 +6,13 @@
 # orion-sdr
 
 A composable SDR/DSP library in Rust with Python bindings, targeting HF
-through EHF signal processing — analog modes, single-carrier digital modes,
-FT8/FT4, PSK31, OFDM, a coded and framed COFDM link, and a conformant
-DVB-T / NB-DVB-T waveform for amateur DATV.
+through EHF signal processing — analog modes, single-carrier digital modes
+(BPSK, QPSK, QAM), FT8/FT4, PSK31, OFDM, a coded and framed COFDM link,
+and a conformant DVB-T.
 
 ## Status
 
-Pre-alpha (v0.0.62). See [CHANGELOG.md](CHANGELOG.md) for release history.
+Pre-alpha (v0.0.63). See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Next Milestones
 

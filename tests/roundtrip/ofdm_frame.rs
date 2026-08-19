@@ -1329,6 +1329,7 @@ fn acceptance_falls_back_when_there_is_no_crc_to_ask() {
             crc_ok,
             crc_present: crc != CrcKind::None,
             outer_present: outer != OuterFec::None,
+            outer_corrected_bytes: None,
             inner_out_bits: Vec::new(),
         }
     };

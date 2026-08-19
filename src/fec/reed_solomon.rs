@@ -111,7 +111,34 @@ impl ReedSolomon {
 
     /// Decodes an `n`-byte received word, correcting up to `t` symbol errors,
     /// and returns the recovered `k`-byte message.
+    ///
+    /// See [`decode_counted`](Self::decode_counted) to also learn *how many*
+    /// bytes had to be corrected — the measurement a receiver reports as its
+    /// outer-FEC load.
     pub fn decode(&self, received: &[u8]) -> Result<Vec<u8>, RsError> {
+        self.decode_counted(received).map(|(msg, _)| msg)
+    }
+
+    /// [`decode`](Self::decode), additionally returning the number of codeword
+    /// bytes the correction actually changed.
+    ///
+    /// **Why this is worth reporting.** A pass/fail flag saturates: RS(204,188)
+    /// either delivers or it does not, and every codeword below the cliff looks
+    /// identical to a perfect one. The corrected-byte count does not — it rises
+    /// smoothly as the link degrades, so it measures the margin *remaining*
+    /// rather than the moment it runs out. It is what real DVB-T receivers
+    /// report, and it is free here: the correction loop already computes every
+    /// error position and magnitude and was discarding the tally.
+    ///
+    /// The count spans the **whole codeword**, parity bytes included, not just
+    /// the `k` message bytes returned — a byte error in the parity region is an
+    /// error the channel caused and the decoder had to absorb, and excluding it
+    /// would under-report the channel by `n_parity/n` of the codeword.
+    ///
+    /// A word whose syndromes are already zero returns `0`. A word the code
+    /// cannot correct returns [`RsError::Uncorrectable`] and no count — there is
+    /// nothing meaningful to count when the correction itself is not trusted.
+    pub fn decode_counted(&self, received: &[u8]) -> Result<(Vec<u8>, usize), RsError> {
         assert_eq!(received.len(), self.n, "RS word must be exactly n bytes");
         let gf = self.gf;
         let shift = 255 - self.n; // shortening: leading zero positions
@@ -135,7 +162,7 @@ impl ReedSolomon {
             }
         }
         if !nonzero {
-            return Ok(received[..self.k].to_vec());
+            return Ok((received[..self.k].to_vec(), 0));
         }
 
         // Berlekamp–Massey → error-locator σ(x) (low-degree-first, σ[0] = 1).
@@ -173,6 +200,12 @@ impl ReedSolomon {
         //   e = X · Ω(X^{-1}) / σ'(X^{-1}),  X = α^i,  with FCR = 0
         // (the general FCR-b factor X^{1-b} reduces to X for b = 0).
         let mut corrected = received.to_vec();
+        // Bytes this correction actually changed. Counted from applied
+        // magnitudes rather than from `error_degrees.len()`: a root can fall on
+        // a shortened (never-transmitted) position, which Forney locates but the
+        // loop below cannot apply, and a zero magnitude changes nothing. Both
+        // would inflate a count taken from the root list.
+        let mut n_corrected = 0usize;
         for &i in &error_degrees {
             let x = gf.exp_of(i % 255); // α^i
             let x_inv = gf.inv(x);
@@ -185,8 +218,9 @@ impl ReedSolomon {
             // Map code degree i back to a received index p (if present).
             if i >= shift && i <= self.n - 1 + shift {
                 let p = self.n - 1 + shift - i;
-                if p < self.n {
+                if p < self.n && magnitude != 0 {
                     corrected[p] = gf.add(corrected[p], magnitude);
+                    n_corrected += 1;
                 }
             }
         }
@@ -195,7 +229,7 @@ impl ReedSolomon {
         if self.residual_errors(&corrected) != 0 {
             return Err(RsError::Uncorrectable(error_degrees.len()));
         }
-        Ok(corrected[..self.k].to_vec())
+        Ok((corrected[..self.k].to_vec(), n_corrected))
     }
 
     fn residual_errors(&self, word: &[u8]) -> usize {

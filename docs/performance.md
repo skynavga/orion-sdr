@@ -9,7 +9,7 @@ Measurements taken on Apple M2 Pro, release build (`opt-level=3`, `lto=fat`,
 `codegen-units=1`), no SIMD.  Results are ordered by throughput (descending)
 within each table.
 
-## v0.0.62 Results
+## v0.0.63 Results
 
 ### Analog modes (65536 samples × 30 passes)
 
@@ -142,10 +142,10 @@ iterative refinement.
 
 | Primitive | n_fft | Msps |
 | --- | ---: | ---: |
-| FFT/IFFT round trip | 64 | 324 |
-| FFT/IFFT round trip | 1024 | 256 |
-| FFT/IFFT round trip | 4096 | 210 |
-| CyclicPrefix insert/remove round trip | 1024 | 5066 |
+| FFT/IFFT round trip | 64 | 348 |
+| FFT/IFFT round trip | 1024 | 264 |
+| FFT/IFFT round trip | 4096 | 217 |
+| CyclicPrefix insert/remove round trip | 1024 | 5300 |
 
 `FftBlock`/`IfftBlock` cache their `rustfft` plan and scratch buffer (allocated
 once in `new()`); cyclic-prefix insertion/removal is a pure copy, hence its
@@ -156,8 +156,8 @@ much higher throughput. FFT round-trip throughput falls off gradually with
 
 | Stage | QPSK Msps | QAM-64 Msps |
 | --- | ---: | ---: |
-| mod only | 320 | 261 |
-| full roundtrip (mod → demod → decide) | 159 | 98 |
+| mod only | 331 | 268 |
+| full roundtrip (mod → demod → decide) | 168 | 104 |
 
 `OfdmMod`'s TX-only throughput sits close to the multicarrier FFT primitive's
 own ceiling, since the mapper/grid/CP stages are comparatively cheap. The full
@@ -213,13 +213,12 @@ noise scales, since a 2-tap channel spreads each subcarrier's SNR unevenly
 across the band. A per-bin equalizer corrects channel *gain/phase*, not the SNR
 penalty of nulls the channel introduces at some subcarriers.
 
-**These curves improved sharply in v0.0.58** — QPSK at `noise_scale = 0.05`
-fell from 0.12148 to 0.00853, a 14x reduction, and QAM-16 from 0.24696 to
-0.07659. The band-limited preamble is the cause: acquisition timing is more
-accurate (see the sync table below, where wide-CFO lock at `noise_scale = 0.2`
-went 74% → 100%), and a timing error under multipath costs far more than under
-a flat channel because it adds inter-symbol interference on top of the
-frequency-selective fade.
+**These curves depend heavily on acquisition timing.** The band-limited preamble
+is what keeps them where they are: a full-band preamble measures QPSK at
+`noise_scale = 0.05` around 0.12 rather than 0.0085, and QAM-16 around 0.25
+rather than 0.077 — a 14x difference on QPSK. A timing error costs far more under
+multipath than under a flat channel, because it adds inter-symbol interference on
+top of the frequency-selective fade.
 
 ### OFDM packet-sync acquisition probability (50 trials/point)
 
@@ -243,14 +242,13 @@ The fractional-only curve degrades past `noise_scale ≈ 0.2` as AWGN comes to
 dominate the preamble's own energy — timing lock is the limiting factor at low
 SNR, not the CFO estimators layered on top of it.
 
-**The wide-CFO curve improved markedly in v0.0.58**, from 74% to 100% lock at
-`noise_scale = 0.2` and 18% to 46% at 0.5, and now holds 100% two points
-further than the fractional-only path. Two changes contribute: the training
-symbol it depends on is band-limited and amplitude-matched to the data, so the
-integer-CFO correlation is cleaner; and `ofdm_sync` no longer folds the
-correlated-window energy ratio into the reported score, so acceptance is a
-question about phase coherence rather than about whether the preamble happened
-to be the loudest thing in the buffer.
+The wide-CFO curve holds 100% lock two points further than the fractional-only
+path. Two properties of the design account for that: the training symbol it
+depends on is band-limited and amplitude-matched to the data, so the integer-CFO
+correlation is clean; and `ofdm_sync` keeps the correlated-window energy ratio
+out of the reported score, so acceptance is a question about phase coherence
+rather than about whether the preamble happens to be the loudest thing in the
+buffer.
 
 ### COFDM frame throughput (n_fft=64, cp_len=8, QPSK payload, 96-byte payload, 200 passes)
 
@@ -267,14 +265,14 @@ per-frame FEC-code construction. Warm-run steady-state numbers.
 
 | Config | mod Msps | demod Msps | frame samples |
 | --- | ---: | ---: | ---: |
-| LDPC(n512r12) + BCH(t=8) | ~82 | ~52 | 2584 |
-| Convolutional r1/2 + RS(60,52) | ~90 | ~19 | 1936 |
+| LDPC(n512r12) + BCH(t=8) | ~83 | ~54 | 2584 |
+| Convolutional r1/2 + RS(60,52) | ~90 | ~31 | 1936 |
 
 Decode is the limiting side of both concatenations, but for different reasons.
-The LDPC+BCH demodulator (~52 Msps) runs the sum-product decoder, whose per-edge
+The LDPC+BCH demodulator (~54 Msps) runs the sum-product decoder, whose per-edge
 message storage is a flat contiguous buffer and whose check-node update caches
 `tanh(msg/2)` per edge — so its cost is the belief-propagation iteration itself,
-not memory or transcendental overhead. The Conv+RS demodulator (~19 Msps) is
+not memory or transcendental overhead. The Conv+RS demodulator (~31 Msps) is
 slower because the punctured convolutional inner code runs a full-block soft
 Viterbi over the whole payload every frame, which the LDPC path's per-codeword
 belief propagation and the shared code cache do not lighten. Both are far above
@@ -291,9 +289,9 @@ Reproduce with `throughput::cofdm::throughput_frame_stream_probe_ldpc_bch`.
 
 | Configuration | Msps | vs. baseline |
 | --- | ---: | ---: |
-| `feed` (nothing opted in) | ~7.5 | — |
-| `feed` + `with_error_rates(true)` | ~7.3 | +2..3.5% |
-| `feed_probed` | ~7.2 | +2.5..4.2% |
+| `feed` (nothing opted in) | ~7.6 | — |
+| `feed` + `with_error_rates(true)` | ~7.4 | +1.6..3.5% |
+| `feed_probed` | ~7.4 | +2.3..4.6% |
 
 So the probe costs about **one point over the encode chain** it shares with
 `with_error_rates`: the extra work is one inner re-encode to re-derive what the
@@ -313,9 +311,9 @@ configurations doing strictly more work. The batch tables above are short enough
 to have the same sensitivity, which is why they are read as steady-state
 orders-of-magnitude rather than to the percent.
 
-**Read the percentages as a band, not a figure.** Three consecutive runs on an
-idle machine gave error-rates +3.4/+2.1/+3.2% and probe +3.9/+2.7/+3.7%; the
-same benchmark under load reported +0.2% and +2.0%. The differences being
+**Read the percentages as a band, not a figure.** Five runs on an idle machine
+gave error-rates +3.4/+2.1/+3.2/+2.6/+1.6% and probe +3.9/+2.7/+3.7/+3.1/+2.3%;
+the same benchmark under load reported +0.2% and +2.0%. The differences being
 measured are a few percent of a millisecond-scale decode, so the assertion in
 the test guards at 25% — enough to catch a per-frame allocation storm or a lost
 buffer reuse, which is what it is for, and not enough to fail on scheduling.
@@ -324,9 +322,9 @@ buffer reuse, which is what it is for, and not enough to fail on scheduling.
 
 Frame-error-rate (whole-frame CRC pass/fail) for the two concatenations. Here
 `noise_scale` is AWGN power relative to the **payload's** power — see the note
-below the table, which is why these figures are not comparable point-for-point
-with pre-v0.0.58 ones. Compare against the uncoded QPSK column of "OFDM BER vs.
-noise scale": the FEC drives *frame* errors to zero at noise scales where the
+below the table, since a figure quoted against a different reference is not
+comparable point-for-point. Compare against the uncoded QPSK column of "OFDM BER
+vs. noise scale": the FEC drives *frame* errors to zero at noise scales where the
 uncoded *bit*-error rate is already substantial.
 
 | noise_scale | equiv. SNR (dB) | LDPC+BCH FER | …with DC occupied | Conv+RS FER |
@@ -341,31 +339,32 @@ uncoded *bit*-error rate is already substantial.
 
 The DC-occupied column adds bin 0 as a 63rd data carrier. It tracks the DC-off
 column point for point, which is the claim: an occupied DC subcarrier costs the
-link nothing. Before v0.0.60 it could not be used at all — the preamble's
-training symbol nulled bin 0 whatever the plan said, so the equalizer divided a
-never-transmitted bin by a nonzero reference. On a noiseless quarter-bandwidth
-link (33 data carriers with DC, 32 without) that measured **−15.2 dB EVM against
-−142.2 dB with DC nulled** — `sqrt(1/33)` is −15.2 dB, i.e. exactly one carrier
-of 33 wholly in error. It now measures −142.5 dB.
+link nothing. This requires the preamble's training symbol to honour the carrier
+plan rather than nulling bin 0 unconditionally — a training symbol that nulls a
+bin the plan occupies leaves the equalizer dividing a never-transmitted bin by a
+nonzero reference, which puts that whole carrier in error. On a noiseless
+quarter-bandwidth link (33 data carriers with DC, 32 without) the correct
+behaviour measures **−142.5 dB EVM**; a training symbol that nulls DC would
+measure −15.2 dB, which is `sqrt(1/33)` — exactly one carrier of 33 wholly in
+error.
 
-**The cliff moved out by roughly a factor of two in v0.0.58.** Both
-concatenations previously began failing at `noise_scale = 0.3`; they now hold
-FER = 0 through 0.5 and break between 0.6 and 0.8. Two causes, and the second
-matters when comparing against the older table:
+Both concatenations hold FER = 0 through `noise_scale = 0.5` and break between
+0.6 and 0.8. Two properties of the setup set where that cliff sits:
 
-- Frame acceptance no longer requires inner-FEC convergence (v0.0.57). A frame
-  whose payload the CRC vouches for is accepted however the stages beneath
-  fared, which recovers frames that were previously discarded while correct.
-- The noise reference changed meaning. `noise_scale` here is relative to the
-  **payload's** power. Before the preamble was band-limited it was ~30 dB hotter
-  than the payload and full-band, so a buffer-mean reference injected
-  substantially more noise for the same nominal figure. Numbers either side of
-  v0.0.58 are not directly comparable at a given `noise_scale`.
+- **Frame acceptance does not require inner-FEC convergence.** A frame whose
+  payload the CRC vouches for is accepted however the stages beneath it fared,
+  so a frame that is verifiably correct is never discarded for having made the
+  inner decoder work hard.
+- **`noise_scale` is relative to the payload's own power**, not the buffer mean.
+  That distinction matters because the preamble is band-limited and
+  amplitude-matched to the payload; a full-band preamble tens of dB hotter than
+  the payload would make a buffer-mean reference inject substantially more noise
+  for the same nominal figure.
 
 Both hold FER = 0 well past the point where uncoded QPSK shows BER ≈ 0.08
 (`noise_scale = 0.5`) — the concatenated FEC's coding gain. The two
-concatenations now track each other closely through the cliff rather than
-Conv+RS holding a clear edge.
+concatenations track each other closely through the cliff rather than Conv+RS
+holding a clear edge.
 
 Measured with the batch `OfdmFrameDemod` at a known start, so this is a
 measurement of the FEC rather than of acquisition; the sync table above covers
@@ -373,9 +372,8 @@ acquisition separately. Feeding the streaming receiver instead folds in sync
 failures and reports 0.35 rather than 0.000 at `noise_scale = 0.02` for the
 same link.
 
-Regenerate with `snr::cofdm_fer` (see the SNR sweep command at the top). This
-table previously had no committed test behind it and had drifted a full noise
-decade out of date as a result.
+Regenerate with `snr::cofdm_fer` (see the SNR sweep command at the top), which
+is the committed test this table is generated from.
 
 ## COFDM FEC block throughput
 
@@ -407,44 +405,62 @@ nominal figure claims.
 | 25 | 0.000 | 0.00000 |
 | 30 | 0.000 | 0.00000 |
 
-**These curves improved sharply in v0.0.59**, when the receiver began tracking
-residual carrier phase across a frame (`remove_common_phase_error`). Measured on
-this fixture with tracking disabled, FER was 0.083 at 20 dB, 0.350 at 15 dB,
-0.550 at 12 dB and 0.717 at 10 dB — error-free reception started at 25 dB rather
-than 20, and every point below it was several times worse.
+**These curves depend on residual carrier-phase tracking**
+(`remove_common_phase_error`). The same fixture with tracking disabled measures
+FER 0.083 at 20 dB, 0.350 at 15 dB, 0.550 at 12 dB and 0.717 at 10 dB —
+error-free reception starting at 25 dB rather than 20, with every point below it
+several times worse.
 
-The cause is that the Schmidl & Cox carrier estimate has variance while
-`TrainingSymbolHold` measures the channel once and holds it for the whole frame,
-so a residual offset integrated into constellation rotation that nothing
-corrected — on this 53.8 ms frame, a few Hz is already tens of degrees by the
-last symbol. The failures looked exactly like an FEC cliff, which is why the gap
-against the batch-demodulator table above is the number worth watching: that one
-isolates the concatenated FEC, this one includes everything the receiver adds.
+The reason it is load-bearing: the Schmidl & Cox carrier estimate has variance,
+while `TrainingSymbolHold` measures the channel once and holds it for the whole
+frame. A residual offset therefore integrates into constellation rotation that
+nothing else corrects — on this 53.8 ms frame, a few Hz is already tens of
+degrees by the last symbol, and the resulting failures look exactly like an FEC
+cliff. That is why the gap against the batch-demodulator table above is the
+number worth watching: that one isolates the concatenated FEC, this one includes
+everything the receiver adds.
 
 ### Per-block, single direction
 
 | Block | Variant | Tx Msps | Rx Msps |
 | --- | --- | ---: | ---: |
-| LDPC | N512R12 (rate 1/2) | 457 | ~24 |
-| LDPC | N576R23 (rate 2/3) | 577 | ~25 |
-| LDPC | N512R34 (rate 3/4) | 640 | ~11 |
-| Convolutional | rate 1/2 | 610 | 27.1 |
-| Convolutional | rate 2/3 | 347 | 27.3 |
-| Convolutional | rate 3/4 | 384 | 26.1 |
-| Convolutional | rate 5/6 | 345 | 28.4 |
-| Convolutional | rate 7/8 | 328 | 28.8 |
-| BCH | t=8 | 99.6 | 27.1 |
-| Reed–Solomon | RS(204,188) | 799 | 165 |
-| Reed–Solomon | RS(60,52) | 1126 | 140 |
-| Interleaver | u8, 32×32 (kernel) | 5088 | 6083 |
-| Interleaver | f32, 32×32 (kernel) | 4668 | 7042 |
-| Interleave-Bits | chain driver, 8+ blocks | ~1700 | — |
-| Scrambler | width 7 / 15 / 32 | 196 / 198 / 202 | (self-inverse) |
+| LDPC | N512R12 (rate 1/2) | 517 | ~24.8 |
+| LDPC | N576R23 (rate 2/3) | 587 | ~25.1 |
+| LDPC | N512R34 (rate 3/4) | 645 | ~11.5 |
+| Convolutional | rate 1/2 | 657 | 30.8 |
+| Convolutional | rate 2/3 | 380 | 30.7 |
+| Convolutional | rate 3/4 | 388 | 29.1 |
+| Convolutional | rate 5/6 | 394 | 29.8 |
+| Convolutional | rate 7/8 | 399 | 28.4 |
+| BCH | t=8 | 130 | 29.7 |
+| Reed–Solomon | RS(204,188) | 830 | 179 |
+| Reed–Solomon | RS(60,52) | 1173 | 153 |
+| Interleaver | u8, 32×32 (kernel) | 6053 | 6884 |
+| Interleaver | f32, 32×32 (kernel) | 5425 | 7597 |
+| Interleave-Bits | chain driver, 8+ blocks | ~1890 | — |
+| Scrambler | width 7 / 15 / 32 | 211 / 209 / 211 | (self-inverse) |
 
 Decode is the limiting direction for every code: the algebraic Berlekamp–Massey and
-the LDPC belief propagation cost far more than the systematic encoders. `LDPC-Decode
-N512R34` is the slowest block (~11 Msps) — the rate-3/4 code's denser checks and
-tighter error margin run the most belief-propagation work per information bit.
+the LDPC belief propagation cost far more than the systematic encoders.
+`LDPC-Decode N512R34` (~11.5 Msps) is the slowest block — the rate-3/4 code's
+denser checks and tighter error margin run the most belief-propagation work per
+information bit.
+
+**Convolutional decode resolves its trellis once per call.** `branch_bits` and
+`next_state` take the `ConvCode` as a runtime value, so evaluating them inside
+the add-compare-select loop would re-`match` the enum for `generators()`,
+`reg_bits()` and `reg_mask()` on every one of the `n_steps · num_states · 2`
+branch visits, then take two `count_ones` parities. `branch_table` instead
+resolves every branch to a `(sym, next_state)` pair up front — 32 entries for
+K=5, 128 for K=7 — and the survivor table is one flat allocation of
+`n_steps · num_states` rather than a `Vec<Vec<u16>>` allocating per trellis step.
+Together these are worth roughly 2.3× on the decode; the per-step correlations
+reduce to four values indexed by the branch's packed `(c0 << 1) | c1`.
+
+**Reed–Solomon decode carries a corrected-byte tally at no cost.**
+`ReedSolomon::decode` delegates to `decode_counted`, whose counter increments
+inside the Forney correction loop — at most `t = 8` times per codeword, against a
+Chien search over 255 positions. The two are indistinguishable in measurement.
 
 **LDPC decoder structure.** The sum-product decoder stores its per-edge messages in a
 flat contiguous buffer with a `check_start` offset table (a compressed-sparse-row
@@ -468,15 +484,15 @@ advance.
 
 | Roundtrip | Variant | Msps |
 | --- | --- | ---: |
-| LDPC enc→dec | N512R12 | 207 |
-| LDPC enc→dec | N576R23 | 253 |
-| LDPC enc→dec | N512R34 | 282 |
-| Conv enc→dec | rate 1/2 | 25.1 |
-| Conv enc→dec | rate 2/3…7/8 | 24.3–25.4 |
-| BCH enc→dec (t errors) | t=8 | 21.9 |
-| RS enc→dec (t errors) | RS(204,188) | 141 |
-| RS enc→dec (t errors) | RS(60,52) | 128 |
-| Interleaver round trip | u8/f32 32×32 | 1533 (f32) |
+| LDPC enc→dec | N512R12 | 219 |
+| LDPC enc→dec | N576R23 | 271 |
+| LDPC enc→dec | N512R34 | 296 |
+| Conv enc→dec | rate 1/2 | 28.7 |
+| Conv enc→dec | rate 2/3…7/8 | 27.8–28.4 |
+| BCH enc→dec (t errors) | t=8 | 23.0 |
+| RS enc→dec (t errors) | RS(204,188) | 148 |
+| RS enc→dec (t errors) | RS(60,52) | 135 |
+| Interleaver round trip | u8/f32 32×32 | 1570 (f32) |
 | Scrambler round trip | width 32 | (see per-block) |
 
 The LDPC roundtrip runs faster than the standalone `LDPC-Decode` block because it
@@ -495,12 +511,14 @@ fixture, warm steady-state Msps):
 
 | Code | sum-product | min-sum | scaled-min-sum(0.75) |
 | --- | ---: | ---: | ---: |
-| N512R12 | ~8.4 | ~14.9 (1.8×) | ~12.6 (1.5×) |
-| N576R23 | ~12.3 | ~21.3 (1.7×) | ~21.7 (1.8×) |
-| N512R34 | ~7.4 | ~17.8 (2.4×) | ~19.0 (2.6×) |
+| N512R12 | ~24.8 | ~42.7 (1.7×) | ~43.1 (1.7×) |
+| N576R23 | ~25.1 | ~60.0 (2.4×) | ~59.9 (2.4×) |
+| N512R34 | ~11.3 | ~33.5 (3.0×) | ~33.6 (3.0×) |
 
-Min-sum runs ~1.7–2.6× faster, and the densest/most-iterating code (`N512R34`) gains
-most. **Coding gain** (`snr::ldpc_decode_rule`, BPSK-over-AWGN on the codeword, 200
+Min-sum runs ~1.7–3.0× faster, and the densest/most-iterating code (`N512R34`)
+gains most. The sum-product column agrees with the standalone `LDPC-Decode` rows
+in the per-block table above, as it must — same code, same error-injected
+fixture. **Coding gain** (`snr::ldpc_decode_rule`, BPSK-over-AWGN on the codeword, 200
 trials/point, mean post-decode BER; all rules see the identical noise realization):
 
 | Es/N0 (dB) | N512R12 SP | MS | SMS(0.75) | N512R34 SP | MS | SMS(0.75) |
@@ -531,7 +549,7 @@ microbenchmarks measure construction in isolation.
 | `Ldpc::new(N512R12)` | ~2.7 ms | sparse-H build + HashSet 4-cycle guard; three orders of magnitude above the algebraic codes |
 | `Bch::new(t=8)` | ~3.1 µs (0.32 Mc/s) | dominated by generator-polynomial conjugacy-class LCMs |
 | `ReedSolomon::dvb()` | ~0.41 µs (2.4–2.6 Mc/s) | 2t linear-factor multiplies over the shared `Gf256` |
-| LDPC ×64 frames, built once & reused | **~5000×** vs. rebuilding each frame | the amortized behavior the `CodecCache` delivers |
+| LDPC ×64 frames, built once & reused | **~5300×** vs. rebuilding each frame | the amortized behavior the `CodecCache` delivers |
 
 `Ldpc::new`'s ~2.7 ms is why per-frame reconstruction is untenable: the cache turns it
 into a one-time per-link cost. "Mc/s" = millions of constructions per second.
@@ -539,11 +557,9 @@ into a one-time per-link cost. "Mc/s" = millions of constructions per second.
 ### Full COFDM frame chain — reading the table above
 
 The COFDM frame-chain figures are published **once**, in the "COFDM frame
-throughput" table above. They used to
-appear twice, and the two copies drifted: one was refreshed in v0.0.58 and the
-other kept quoting pre-0.0.58 numbers (~87/~58 and ~97/~29 against the measured
-~82/~52 and ~90/~19). A number published in two places is a number that will
-disagree with itself, so this section keeps only the caveats that belong with it.
+throughput" table above. A number published in two places is a number that will
+disagree with itself, so this section carries only the caveats that belong with
+it and no figures of its own.
 
 The modulate figure uses a per-pass-varying seed and consumes the whole output, so it
 is not constant-folded. The demodulate figure runs on a noiseless roundtrip: each
@@ -575,9 +591,9 @@ slower (decode) direction.
 
 | Bandwidth mode | fs (MS/s) | mod Msps | demod Msps | roundtrip Msps |
 | --- | ---: | ---: | ---: | ---: |
-| 333 kHz | 0.400 | ~66 | ~5.8 | ~5.4 |
-| 1 MHz | 1.201 | ~66 | ~5.8 | ~5.4 |
-| 2 MHz | 2.402 | ~66 | ~5.8 | ~5.4 |
+| 333 kHz | 0.400 | ~61 | ~9.9 | ~8.5 |
+| 1 MHz | 1.201 | ~60 | ~9.9 | ~8.6 |
+| 2 MHz | 2.402 | ~60 | ~10.0 | ~8.6 |
 
 The takeaway: the amateur bandwidth choice is an RF/hardware concern (channel
 occupancy, PlutoSDR's ~521 kS/s continuous-TX floor rules out 333 kHz), **not a
@@ -593,22 +609,29 @@ GI-acquires and decodes one frame per pass.
 
 | Path | Msps |
 | --- | ---: |
-| modulate | ~33 |
-| demodulate (incl. GI acquisition) | ~13 |
-| roundtrip (mod → GI-acquire → demod) | ~9.5 |
+| modulate | ~88 |
+| demodulate (incl. GI acquisition) | ~15.8 |
+| roundtrip (mod → GI-acquire → demod) | ~13.6 |
 
-The modulate figure is lower than the generic 2K chain above (~33 vs ~66) because
-the conformant modulator **fills the frame**: a short payload is stuffed with null
-TS packets (§4.4 — every data carrier must carry data), so it runs the full
-payload FEC over a whole frame's worth of RS packets rather than one packet plus
-zeros. The RX adds per-symbol scattered-pilot equalization, DVB-T-exact soft LLRs,
+`dvb_t_map_symbol` is allocation-free: it folds the even/odd axis de-interleave
+and the axis-label pack into a single pass rather than materializing two `Vec`s
+per constellation point. At 1512 data carriers per symbol and ~103 000 per frame,
+a pair of heap allocations per point would dominate the mapping loop outright.
+The conformant modulator does more work than the generic 2K chain per frame
+because it **fills the frame**: a short
+payload is stuffed with null TS packets (§4.4 — every data carrier must carry
+data), so it runs the full payload FEC over a whole frame's worth of RS packets
+rather than one packet plus zeros.
+
+The RX adds per-symbol scattered-pilot equalization, DVB-T-exact soft LLRs,
 TPS DBPSK recovery, and the guard-interval correlation search on top of the FFT
 chain; the per-symbol pilot interpolation is its dominant cost, locating each data
 carrier's bracketing pilots by binary search over the sorted pilot set
 (O(data·log pilots) per symbol, for 1512 data carriers × ~176 reference pilots)
 and reusing a ratio scratch buffer across symbols, so the estimate is a fraction
-of the FFT rather than an O(data·pilots) scan. The roundtrip (~9.5 Msps) is set by
-the two directions in series.
+of the FFT rather than an O(data·pilots) scan. The roundtrip (~13.6 Msps) is now
+set almost entirely by the decode direction, the modulator having stopped being a
+meaningful share of it.
 
 ### DVB-T super-frame, end to end (700-byte payload, 4 frames, 20 passes)
 
@@ -618,9 +641,9 @@ cell id split across them.
 
 | Path | Msps |
 | --- | ---: |
-| modulate | ~32 |
-| demodulate | ~13 |
-| roundtrip | ~9.5 |
+| modulate | ~86 |
+| demodulate | ~15.6 |
+| roundtrip | ~13.3 |
 
 A super-frame is the single-frame conformant path run four times plus the
 multi-frame sequencing and cross-frame checks (frame-number sequence, cell-id
@@ -635,9 +658,9 @@ frame at the front of the buffer, decodes it, and drains its samples.
 
 | Path | Msps |
 | --- | ---: |
-| streaming demodulate (feed → decode → drain) | ~12 |
+| streaming demodulate (feed → decode → drain) | ~14.8 |
 
-Slightly below the batch conformant demodulate (~13): the per-frame decode work
+Slightly below the batch conformant demodulate (~15.8): the per-frame decode work
 is identical, and the small gap is the streaming buffer management — the repeated
 front-of-buffer GI search and the per-frame `drain` of consumed samples.
 
@@ -652,15 +675,65 @@ estimate returns k = 0 and the rotate is skipped — the normal locked-link case
 
 | Path | Msps |
 | --- | ---: |
-| decode, correction off | ~13.1 |
-| decode, correction on (always estimating) | ~12.5 |
+| decode, correction off | ~15.8 |
+| decode, correction on (always estimating) | ~15.0 |
 
-That is **a few percent** (measured ~4–6% across six runs — the added work, an FFT
+That is **a few percent** (measured ~5% across six runs — the added work, an FFT
 of a few symbols plus a 45-bin continual-pilot search per frame, is small enough
 that the ratio is dominated by decode jitter). It is off by default (a clean link
 needs no correction), so the common path pays nothing; when a capture carries an
 integer offset, the flag removes it internally rather than the caller running a
 pre-pass. The estimator `sync::dvb_t_integer_cfo` is also public for standalone use.
+
+### DVB-T RX diagnostics and probe (G1/32 QPSK r1/2)
+
+What `DvbTRxDiagnostics` and `DvbTRxProbe` cost. Measured by
+`throughput_dvb_t_diagnostics_sparse_frame` and `..._full_frame`, each of which
+runs the plain configuration twice — once before and once after the instrumented
+one — and reports the drift between them, because on a ramping CPU the first
+configuration measured can look slower than ones doing strictly more work. Drift
+was ≤1.5% in both, so the numbers below are the real thing.
+
+**The overhead is a function of how full the frame is, not of the diagnostics.**
+A DVB-T frame is a fixed 68 OFDM symbols — the TPS block — and the modulator
+stuffs null packets into whatever the payload leaves empty. A plain decode reads
+only the payload's prefix; an exact re-encode needs everything transmitted. So
+the two configurations converge as the payload fills the frame:
+
+| Payload | Fill | plain | `with_error_rates` | `feed` | `feed_probed` |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 184 B | 2% | 15.8 Msps | 7.27 Msps (**+118%**) | 14.6 Msps | 7.12 Msps (**+105%**) |
+| 9 724 B | ~100% | 7.69 Msps | 7.35 Msps (**+5.5%**) | 7.45 Msps | 7.07 Msps (**+5.3%**) |
+
+Read the *gated* column first: it is ~4.85 Msps in both rows. The instrumented
+path always decodes the whole frame, so its cost does not depend on
+`payload_len` at all. What varies is the baseline — 13.0 Msps when 98% of the
+frame is stuffing the plain decode skips, 5.11 when there is nothing to skip. The
+"+171%" is a cheap baseline, not an expensive measurement.
+
+At a realistic DATV fill the cost is **+5.5% for the rungs and +4.4% for the
+probe**, which is the same neighbourhood as the generic COFDM path's +3.3% and
++4.3% (`throughput_frame_stream_probe_ldpc_bch`). COFDM never shows the sparse
+case because it sizes the frame to the payload — its prefix is already the whole
+block, so `with_error_rates` costs it only the encode chain.
+
+**Why the whole-frame decode is needed at all.** A Forney(12,17)-interleaved
+re-encode of a *prefix* does not reproduce what was transmitted: each output byte
+draws from twelve branches at different depths, so the first coded bits already
+depend on TS bytes from codewords the prefix never recovers. Re-encoding the
+prefix yields a CBER near 0.25 on a noiseless link. See
+[DVB-T / NB-DVB-T design](dvb.md) for the full argument.
+
+**The default path is unchanged.** 13.0–13.2 Msps against 13.14 on the
+pre-diagnostics baseline is parity. Six of the nine rungs — `cfo_hz`,
+`sync_score`, `timing_offset_samples`, `integer_cfo_bins`, `outer_fec_ok`,
+`rs_corrected_bytes` — are read straight off values the decode already computed
+and discarded, and the EVM branch is hoisted to once per OFDM symbol rather than
+once per data carrier, so the unmeasured demap loop is the one that shipped
+before any of this existed. Both instruments are opt-in regardless:
+`with_error_rates` on the three demod builders, and the probe by choice of method
+(`feed_probed` / `flush_probed`, so unprobed `feed` gains no runtime branch).
+Asking for both pays for the shared encode chain once.
 
 ### DVB-T conformant frame, decode-vs-SNR (GI 1/8, 30 trials/point)
 
@@ -779,16 +852,21 @@ identical work.
 
 | Configuration | mod Msps | vs. plain |
 | --- | ---: | ---: |
-| plain | ~35 | — |
-| symbol windowing (roll_off 16) | ~35 | free |
-| 45-tap mask | ~18.5 | −47% |
-| roll_off 16 + 89-tap mask | ~10.8 | −69% |
+| plain | ~99 | — |
+| symbol windowing (roll_off 16) | ~93 | −6% |
+| 45-tap mask | ~28 | −72% |
+| roll_off 16 + 89-tap mask | ~13.6 | −86% |
 
-**The taper is free; the mask is not.** The taper is `O(roll_off)` per symbol and
-touches 32 of 2304 samples; the mask is `O(num_taps)` per sample across the whole
-frame, so its cost scales linearly with the filter length the guard budget
-affords — and a longer guard, which buys a sharper mask, also buys a more
-expensive one. Halving the filter (89 → 45 taps) nearly halves the overhead.
+**The taper is nearly free; the mask is not.** The taper is `O(roll_off)` per
+symbol and touches 32 of 2304 samples; the mask is `O(num_taps)` per sample
+across the whole frame, so its cost scales linearly with the filter length the
+guard budget affords — and a longer guard, which buys a sharper mask, also buys a
+more expensive one. Halving the filter (89 → 45 taps) roughly doubles the
+throughput back.
+
+Read the absolute column rather than the percentage when comparing against
+another configuration: the mask's cost is a fixed per-sample filter, so its
+*share* of the frame moves with whatever the unshaped baseline happens to be.
 
 This is a **transmit-side compute** cost only. Receiving a shaped signal costs no
 extra compute: the back-off is a change of FFT-window offset, and the mask is

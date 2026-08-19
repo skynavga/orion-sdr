@@ -15,7 +15,9 @@ use super::cofdm::frame_chain_with;
 use super::fec::random_bytes;
 use super::{measure_throughput, minsps_from_env};
 use num_complex::Complex32 as C32;
-use orion_sdr::demodulate::{DvbTFrameDemod, DvbTFrameStreamDemod, DvbTSuperFrameDemod};
+use orion_sdr::demodulate::{
+    DvbTFrameDemod, DvbTFrameStreamDemod, DvbTRxProbe, DvbTSuperFrameDemod,
+};
 use orion_sdr::fec::PunctureRate as DvbPunctureRate;
 use orion_sdr::modulate::{
     ConstellationOrder, DvbTFrameMod, DvbTSuperFrameMod, DvbTSuperFrameParams,
@@ -331,6 +333,184 @@ fn throughput_dvb_t_integer_cfo() {
     );
     let floor = minsps_from_env(0.02);
     assert!(base_msps >= floor && cfo_msps >= floor);
+}
+
+/// What the RX diagnostics ladder costs, for one payload size. Four
+/// configurations over the same buffer:
+///
+///   (a) plain            — the default demod. Every *free* rung (CFO, sync
+///                          score, timing offset, integer-CFO bins, outer-FEC
+///                          verdict, RS corrected bytes) is populated here,
+///                          because each is read straight off work the decode
+///                          already does.
+///   (b) with_error_rates — adds EVM (an ideal-point remap per data carrier),
+///                          the two BERs (one shared encode chain), and a
+///                          WHOLE-FRAME FEC decode.
+///   (c) plain again      — a repeat of (a) at the end of the run.
+///   (d) feed_probed      — the streaming probe, which needs the same
+///                          whole-frame truth plus two buffer fills.
+///
+/// (c) exists because of the measurement trap `ofdm-rx-probe.md` hit: on a
+/// ramping CPU the FIRST configuration measured looks slower than ones doing
+/// strictly more work, and at 200 passes that artifact was 18%. Comparing (a)
+/// against (c) bounds the drift; the real overhead is (b) against the BETTER of
+/// the two plain runs, which cannot flatter the gated path.
+///
+/// **The payload size is the whole story, which is why this is parameterized.**
+/// A DVB-T frame is a fixed 68 OFDM symbols — the TPS block — and the modulator
+/// stuffs null packets to fill whatever the payload leaves empty. A plain decode
+/// reads only the payload's prefix; an exact re-encode needs everything that was
+/// transmitted, stuffing included, because Forney(12,17) couples the coded bits
+/// across the whole stream. So the gated cost is set by the FILL RATIO, and
+/// measuring one payload size measures nothing general. The generic COFDM path
+/// never shows this: it sizes the frame to the payload, so its prefix is already
+/// the whole block and `with_error_rates` costs it only the encode chain (~3.3%,
+/// `throughput_frame_stream_probe_ldpc_bch`).
+fn dvb_t_diagnostics_cost(payload_len: usize, repeats: usize, label: &str) {
+    let params = DvbTFrameParams {
+        link: DvbTLinkParams {
+            guard: GuardInterval::G1_32,
+            constellation: ConstellationOrder::Qpsk,
+            code_rate: DvbPunctureRate::R1_2,
+        },
+        frame_number: 0,
+        cell_id: 0,
+    };
+    let modulator = DvbTFrameMod::new(params);
+    let plain = DvbTFrameDemod::new(params);
+    let measured = DvbTFrameDemod::new(params).with_error_rates(true);
+    let payload = random_bytes(payload_len, 0xD1A6);
+    let frame = modulator.modulate(&payload);
+    let frame_samples = frame.iq.len();
+    let n_symbols = frame.n_symbols;
+
+    let mut buf = vec![C32::default(); 200];
+    buf.extend_from_slice(&frame.iq);
+    buf.extend(vec![C32::default(); frame.samples_per_symbol]);
+
+    // Warm-up, unmeasured: pulls the clock up before the first timed run so the
+    // ordering artifact above is bounded rather than merely detected.
+    for _ in 0..10 {
+        black_box(
+            plain
+                .decode(black_box(&buf), n_symbols, payload_len)
+                .expect("decode"),
+        );
+        black_box(
+            measured
+                .decode(black_box(&buf), n_symbols, payload_len)
+                .expect("decode"),
+        );
+    }
+
+    let run = |demod: &DvbTFrameDemod| {
+        measure_throughput(
+            || {
+                let got = demod
+                    .decode(black_box(&buf), n_symbols, payload_len)
+                    .expect("decode");
+                black_box(got.payload[0]);
+                frame_samples
+            },
+            frame_samples,
+            repeats,
+        )
+    };
+
+    let (plain_msps, plain_dt) = run(&plain);
+    println!("[DVB-T-Diag-Plain {label}] {plain_msps:.4} Msps in {plain_dt:.3}s");
+    let (meas_msps, meas_dt) = run(&measured);
+    println!("[DVB-T-Diag-ErrorRates {label}] {meas_msps:.4} Msps in {meas_dt:.3}s");
+    let (plain2_msps, plain2_dt) = run(&plain);
+    println!("[DVB-T-Diag-Plain-Repeat {label}] {plain2_msps:.4} Msps in {plain2_dt:.3}s");
+
+    let drift = (plain_dt / plain2_dt - 1.0) * 100.0;
+    println!("[DVB-T-Diag-PlainDrift {label}] {drift:.1}% (first plain run vs repeat)");
+    // Against the FASTER plain run, so the gated path is never flattered by
+    // drift in its favour.
+    let best_plain_dt = plain_dt.min(plain2_dt);
+    let overhead = (meas_dt / best_plain_dt - 1.0) * 100.0;
+    println!(
+        "[DVB-T-Diag-Overhead {label}] {overhead:.1}% (plain {plain_msps:.2} -> error-rates {meas_msps:.2} Msps)"
+    );
+
+    // (d) The streaming probe. Measured on the stream receiver because that is
+    //     the only place it is offered, so this row carries the stream's
+    //     GI-search and buffer drain as well — read it against the probe-off
+    //     stream row beside it, not against the batch numbers above.
+    let mut probe = DvbTRxProbe::new();
+    let (stream_msps, stream_dt) = measure_throughput(
+        || {
+            let mut rx = DvbTFrameStreamDemod::new(params, n_symbols, payload_len);
+            black_box(rx.feed(black_box(&buf)));
+            frame_samples
+        },
+        frame_samples,
+        repeats,
+    );
+    println!("[DVB-T-Diag-Stream {label}] {stream_msps:.4} Msps in {stream_dt:.3}s");
+    let (probed_msps, probed_dt) = measure_throughput(
+        || {
+            let mut rx = DvbTFrameStreamDemod::new(params, n_symbols, payload_len);
+            black_box(rx.feed_probed(black_box(&buf), &mut probe));
+            frame_samples
+        },
+        frame_samples,
+        repeats,
+    );
+    println!("[DVB-T-Diag-Probed {label}] {probed_msps:.4} Msps in {probed_dt:.3}s");
+    let probe_overhead = (probed_dt / stream_dt - 1.0) * 100.0;
+    println!(
+        "[DVB-T-Diag-ProbeOverhead {label}] {probe_overhead:.1}% (stream {stream_msps:.2} -> probed {probed_msps:.2} Msps)"
+    );
+    assert!(
+        !probe.is_empty(),
+        "the probed run must actually have filled the probe, or the row above \
+         is measuring nothing"
+    );
+
+    // The free rungs are always populated; the gated ones are not.
+    let got = plain.decode(&buf, n_symbols, payload_len).expect("decode");
+    assert!(
+        got.diagnostics.cfo_hz.is_some()
+            && got.diagnostics.sync_score.is_some()
+            && got.diagnostics.rs_corrected_bytes.is_some(),
+        "the free rungs cost nothing and are always on"
+    );
+    assert!(
+        got.diagnostics.evm_db.is_none()
+            && got.diagnostics.channel_ber.is_none()
+            && got.diagnostics.inner_ber.is_none(),
+        "the measured rungs stay None until asked for — this is what makes the \
+         plain run above a true baseline"
+    );
+
+    let floor = minsps_from_env(0.02);
+    assert!(
+        plain_msps >= floor
+            && meas_msps >= floor
+            && plain2_msps >= floor
+            && stream_msps >= floor
+            && probed_msps >= floor
+    );
+}
+
+#[test]
+fn throughput_dvb_t_diagnostics_sparse_frame() {
+    // The WORST case, and an unrealistic one: 184 bytes in a frame that holds
+    // ~9.7 kB, so 98% of what was transmitted is null stuffing the plain decode
+    // skips and a measured decode cannot. Kept because it is the bound, and
+    // because a caller who really does send one TS packet per frame pays it.
+    dvb_t_diagnostics_cost(184, 60, "Sparse-184B");
+}
+
+#[test]
+fn throughput_dvb_t_diagnostics_full_frame() {
+    // The REALISTIC case for DATV: a payload that fills the frame, so the plain
+    // decode and the measured decode read the same coded bits and the only
+    // added work is the encode chain the rungs actually need. 9724 = 52 TS
+    // packets x 187 payload bytes.
+    dvb_t_diagnostics_cost(9724, 30, "Full-9724B");
 }
 
 #[test]

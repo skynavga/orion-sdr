@@ -33,7 +33,10 @@ pub mod ofdm_probe;
 pub use ofdm_probe::{BitOutcome, OfdmProbeFrame, OfdmRxProbe, ProbedFrame};
 
 pub mod dvb_t_frame;
-pub use dvb_t_frame::{DvbTFrameDemod, DvbTRxError, DvbTRxFrame};
+pub use dvb_t_frame::{DvbTFrameDemod, DvbTRxDiagnostics, DvbTRxError, DvbTRxFrame};
+
+pub mod dvb_t_probe;
+pub use dvb_t_probe::{DvbTProbeFrame, DvbTProbedFrame, DvbTRxProbe};
 
 pub mod dvb_t_super_frame;
 pub use dvb_t_super_frame::{DvbTRxSuperFrame, DvbTRxSuperFrameError, DvbTSuperFrameDemod};
