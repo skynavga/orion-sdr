@@ -5,6 +5,8 @@ allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 argument-hint: <new-version>  (e.g. 0.0.17; omit to use the next patch bump)
 ---
 
+# Release prep
+
 Prepare an orion-sdr release.
 
 The previous version is the one currently in `Cargo.toml`. Determine it by
@@ -27,7 +29,7 @@ Update OLD_VERSION → NEW_VERSION in every file listed below. Read each file
 before editing it.
 
 | File | What to change |
-|------|----------------|
+| --- | --- |
 | `Cargo.toml` | `version = "OLD_VERSION"` |
 | `pyproject.toml` | `version = "OLD_VERSION"` |
 | `README.md` | `Pre-alpha (vOLD_VERSION)` in the Status section |
@@ -50,7 +52,7 @@ The entry should document what actually changed since OLD_VERSION. Inspect
 `vOLD_VERSION`) to find the commits, then write a concise Added/Changed/Fixed
 list. If there are no real changes (test release), write a minimal entry such as:
 
-```
+```markdown
 ## [NEW_VERSION] - TODAY
 
 ### Changed
@@ -62,7 +64,7 @@ list. If there are no real changes (test release), write a minimal entry such as
 
 Run both test suites and verify they all pass:
 
-```
+```bash
 cargo test --release
 .venv/bin/pytest -q
 ```
@@ -73,7 +75,7 @@ If either suite fails, stop and report the failure. Do not proceed.
 
 Stage only the files changed in steps 2 and 3 (never `git add -A`):
 
-```
+```bash
 git add Cargo.toml Cargo.lock pyproject.toml README.md \
         docs/features.md docs/performance.md CLAUDE.md CHANGELOG.md
 ```
@@ -86,13 +88,13 @@ Do not include a co-author trailer.
 
 Push the current branch to origin if it has no upstream yet:
 
-```
+```bash
 git push -u origin HEAD
 ```
 
 Check whether a PR already exists for the current branch:
 
-```
+```bash
 gh pr list --head CURRENT_BRANCH --state open
 ```
 
@@ -101,7 +103,7 @@ understand all changes in the branch, then write a concise BLUF-style summary
 (one short paragraph) covering all significant changes. Follow it with a
 "Release prep for NEW_VERSION." line. Example format:
 
-```
+```text
 <One short paragraph summarizing all significant changes in the branch.>
 
 Release prep for NEW_VERSION.
@@ -109,13 +111,13 @@ Release prep for NEW_VERSION.
 
 Merge the PR:
 
-```
+```bash
 gh pr merge --merge --delete-branch
 ```
 
 Switch to `main` and pull so the local branch is up to date:
 
-```
+```bash
 git checkout main
 git pull
 ```
@@ -124,12 +126,13 @@ Confirm the current branch is now `main` before proceeding.
 
 ## Step 7 — Create signed tag
 
-```
+```bash
 git tag -s vNEW_VERSION -m "Release NEW_VERSION"
 ```
 
 Then verify it:
-```
+
+```bash
 git tag -v vNEW_VERSION
 ```
 
@@ -138,6 +141,7 @@ Confirm the GPG signature is good before reporting success.
 ## Step 8 — Report
 
 Tell the user:
+
 - What version was bumped (OLD → NEW)
 - That all tests passed
 - That the commit and signed tag are ready locally

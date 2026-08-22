@@ -758,20 +758,42 @@ fn dvb_t_equalizer_noiseless_clean_qam16() {
 // ── Null-packet stuffing: every data carrier is filled (EN 300 744 §4.4) ─────
 //
 // A short payload is padded to a full 68-symbol frame; the modulator stuffs the
-// TS stream with null packets so the coded stream reaches every data carrier
-// (§4.4: "all symbols contain data"; §4.3.1: randomization stays active with no
-// program input) — a compliant DVB-T signal never leaves data carriers zeroed.
-// The stuffing must also be transparent: the RX still recovers the real payload.
+// TS stream with null packets so the coded stream reaches the frame's data
+// carriers (§4.4: "all symbols contain data"; §4.3.1: randomization stays active
+// with no program input) — a compliant DVB-T signal never leaves data carriers
+// zeroed. The stuffing must also be transparent: the RX still recovers the real
+// payload.
+//
+// Stuffing stops at the largest packet count that FITS, so it lands short of the
+// last carrier by under one packet's coded step; the modulator repeats the coded
+// stream's head across the remainder. This test is what pins that filler — swept
+// across all fifteen modes because the size of the remainder is a function of
+// the code rate, and a rate whose remainder happened to be zero would hide a
+// missing fill.
 #[test]
 fn dvb_t_short_frame_stuffs_all_carriers() {
     use orion_sdr::multicarrier::CyclicPrefixRemove;
     use orion_sdr::waveform::dvb_t::{DVB_T_DATA_CARRIERS, DVB_T_N_FFT, ScatteredPilotExtractor};
 
-    for (const_, rate) in [
-        (ConstellationOrder::Qpsk, PunctureRate::R1_2),
-        (ConstellationOrder::Qpsk, PunctureRate::R3_4), // non-integer RS pkts / frame
-        (ConstellationOrder::Qam16, PunctureRate::R3_4),
-    ] {
+    let modes = [
+        ConstellationOrder::Qpsk,
+        ConstellationOrder::Qam16,
+        ConstellationOrder::Qam64,
+    ]
+    .into_iter()
+    .flat_map(|c| {
+        [
+            PunctureRate::R1_2,
+            PunctureRate::R2_3,
+            PunctureRate::R3_4,
+            PunctureRate::R5_6,
+            PunctureRate::R7_8,
+        ]
+        .into_iter()
+        .map(move |r| (c, r))
+    });
+
+    for (const_, rate) in modes {
         let params = DvbTFrameParams {
             link: DvbTLinkParams {
                 guard: GuardInterval::G1_8,

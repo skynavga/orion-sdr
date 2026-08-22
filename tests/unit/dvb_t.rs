@@ -2,15 +2,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use num_complex::Complex32 as C32;
-use orion_sdr::fec::{ConvCode, InnerFec, OuterFec};
+use orion_sdr::fec::{ConvCode, CrcKind, InnerFec, InterleaverKind, OuterFec, PunctureRate};
 use orion_sdr::modulate::ConstellationOrder;
+use orion_sdr::modulate::ofdm_frame::{CodecCache, block_plan};
 use orion_sdr::waveform::dvb_t::{
-    DVB_T_ACTIVE_CARRIERS, DVB_T_CONTINUAL_PILOTS_2K, DVB_T_DATA_CARRIERS, DVB_T_FS_1MHZ,
-    DVB_T_FS_2MHZ, DVB_T_FS_333KHZ, DVB_T_KMAX, DVB_T_N_FFT, DVB_T_PRBS_INIT,
-    DVB_T_SCATTERED_PHASES, DVB_T_TPS_CARRIERS_2K, DvbTEnergyDispersal, GuardInterval,
-    active_to_signed, boosted_pilot_value, dvb_t_2k_plan, dvb_t_2k_plans, dvb_t_demap_symbol,
-    dvb_t_fs_for_bandwidth, dvb_t_map_symbol, dvb_t_mcs_table, dvb_t_occupied_bw, dvb_t_soft_llr,
-    is_dvb_t_constellation, scattered_pilot_indices, tps_carrier_indices, wk_prbs,
+    DVB_T_ACTIVE_CARRIERS, DVB_T_CONTINUAL_PILOTS_2K, DVB_T_DATA_CARRIERS, DVB_T_FRAME_OUTER,
+    DVB_T_FRAME_OUTER_IL, DVB_T_FS_1MHZ, DVB_T_FS_2MHZ, DVB_T_FS_333KHZ, DVB_T_KMAX, DVB_T_N_FFT,
+    DVB_T_PRBS_INIT, DVB_T_SCATTERED_PHASES, DVB_T_TPS_CARRIERS_2K, DvbTEnergyDispersal,
+    DvbTFrameParams, DvbTLinkParams, GuardInterval, active_to_signed, boosted_pilot_value,
+    dvb_t_2k_plan, dvb_t_2k_plans, dvb_t_coded_bits, dvb_t_demap_symbol, dvb_t_frame_fill,
+    dvb_t_frame_fill_with, dvb_t_fs_for_bandwidth, dvb_t_map_symbol, dvb_t_mcs_table,
+    dvb_t_occupied_bw, dvb_t_soft_llr, is_dvb_t_constellation, scattered_pilot_indices,
+    tps_carrier_indices, wk_prbs,
 };
 
 // ── DVB-T energy dispersal (whitener) ──────────────────────────────────────
@@ -482,5 +485,136 @@ fn scattered_pilots_are_boosted_wk_valued() {
             (value.norm_sqr() - 16.0 / 9.0).abs() < 1e-4,
             "boosted power"
         );
+    }
+}
+
+// ── Frame filling (the shared TX/RX/downstream rule) ────────────────────────
+//
+// `dvb_t_frame_fill` is the single statement of how a DVB-T frame's data
+// carriers are filled. Three callers depend on it agreeing with itself — the
+// modulator maps by it, the receiver decodes and re-encodes against it, and
+// downstream consumers size payloads by it — and any two of them disagreeing is
+// a silent wrong-numbers bug, not a loud one. The combinatorial claim is pure
+// arithmetic, so it is asserted exhaustively here rather than sampled through an
+// end-to-end decode.
+
+/// Every DVB-T constellation/rate pair (the fifteen the TPS word can signal).
+fn every_mode() -> Vec<(ConstellationOrder, PunctureRate)> {
+    let mut modes = Vec::new();
+    for c in [
+        ConstellationOrder::Qpsk,
+        ConstellationOrder::Qam16,
+        ConstellationOrder::Qam64,
+    ] {
+        for r in [
+            PunctureRate::R1_2,
+            PunctureRate::R2_3,
+            PunctureRate::R3_4,
+            PunctureRate::R5_6,
+            PunctureRate::R7_8,
+        ] {
+            modes.push((c, r));
+        }
+    }
+    modes
+}
+
+fn fill_params(constellation: ConstellationOrder, code_rate: PunctureRate) -> DvbTFrameParams {
+    DvbTFrameParams {
+        link: DvbTLinkParams {
+            guard: GuardInterval::G1_8,
+            constellation,
+            code_rate,
+        },
+        frame_number: 0,
+        cell_id: 0,
+    }
+}
+
+/// The frame geometry the modulator derives for `n_pkt` real payload packets:
+/// enough symbols for their coded stream, padded to a full 68-symbol TPS block.
+fn symbols_for_packets(params: DvbTFrameParams, n_pkt: usize) -> usize {
+    let bits_per_sym = DVB_T_DATA_CARRIERS * params.constellation().bits_per_symbol();
+    dvb_t_coded_bits(params, n_pkt)
+        .div_ceil(bits_per_sym)
+        .max(68)
+}
+
+#[test]
+fn frame_fill_never_overruns_the_carriers() {
+    // The property the whole fix rests on, and the one the old `>=` rule
+    // inverted: the coded stream must END ON OR BEFORE the last data carrier, so
+    // a receiver reconstructing what was transmitted never asks its decoder for
+    // bits that were never sent. Asserted with maximality, because a rule that
+    // merely fits could satisfy this by stuffing nothing.
+    for (c, r) in every_mode() {
+        let params = fill_params(c, r);
+        for n_pkt in (1..=200).step_by(7) {
+            let n_symbols = symbols_for_packets(params, n_pkt);
+            let fill = dvb_t_frame_fill(params, n_pkt, n_symbols);
+
+            assert!(
+                fill.coded_bits <= fill.capacity_bits,
+                "{c:?} {r:?} {n_pkt} pkts: coded {} overruns capacity {}",
+                fill.coded_bits,
+                fill.capacity_bits
+            );
+            // Maximal: one more packet would not fit.
+            assert!(
+                dvb_t_coded_bits(params, fill.n_ts_packets + 1) > fill.capacity_bits,
+                "{c:?} {r:?} {n_pkt} pkts: {} is not the largest count that fits",
+                fill.n_ts_packets
+            );
+            // "Largest that fits" never drops a real payload packet — `n_symbols`
+            // is derived from the payload's own coded length, so it always fits.
+            assert!(
+                fill.n_ts_packets >= n_pkt,
+                "{c:?} {r:?} {n_pkt} pkts: filling dropped payload down to {}",
+                fill.n_ts_packets
+            );
+            // The remainder the modulator repeats is under one packet's coded
+            // step, so `extend_from_within` can always draw it from the head.
+            assert!(
+                fill.filler_bits() < fill.coded_bits,
+                "{c:?} {r:?} {n_pkt} pkts: filler {} exceeds the stream it repeats",
+                fill.filler_bits()
+            );
+        }
+    }
+}
+
+#[test]
+fn frame_fill_is_the_modulators_block_plan() {
+    // The rule and the coding chain must be the same statement, not two that
+    // agree by inspection: `coded_bits` has to be exactly what `block_plan`
+    // computes for the packet count the rule chose. If these ever diverge, the
+    // receiver's truth re-encode compares against the wrong length and reports a
+    // plausible-but-wrong BER rather than failing.
+    let cache = CodecCache::new();
+    for (c, r) in every_mode() {
+        let params = fill_params(c, r);
+        for n_pkt in (1..=200).step_by(11) {
+            let n_symbols = symbols_for_packets(params, n_pkt);
+            let fill = dvb_t_frame_fill(params, n_pkt, n_symbols);
+            let plan = block_plan(
+                fill.n_ts_packets * 188,
+                CrcKind::None,
+                DVB_T_FRAME_OUTER,
+                params.inner(),
+                DVB_T_FRAME_OUTER_IL,
+                InterleaverKind::None,
+                &cache,
+            );
+            assert_eq!(
+                plan.coded_bits, fill.coded_bits,
+                "{c:?} {r:?} {n_pkt} pkts: fill and block plan disagree"
+            );
+            // And the cached form is the same function.
+            assert_eq!(
+                dvb_t_frame_fill_with(params, n_pkt, n_symbols, &cache),
+                fill,
+                "{c:?} {r:?} {n_pkt} pkts: cached and uncached fill disagree"
+            );
+        }
     }
 }

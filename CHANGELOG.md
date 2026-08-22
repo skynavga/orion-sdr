@@ -9,6 +9,76 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.64] - 2026-08-22
+
+Fixes the DVB-T error-rate gate, which broke the very frames it was meant to
+measure. `with_error_rates(true)` and `feed_probed` decode the whole frame
+rather than the payload prefix, and rebuilt the modulator's stuffed packet
+count to do it — but the modulator stuffed until its coded stream met or
+exceeded the frame's data-carrier capacity and then transmitted only the
+capacity, so the receiver's plan always spanned bits that were never sent.
+
+### Fixed
+
+- DVB-T frame filling stops at the largest TS-packet count whose coded stream
+  still **fits** the frame's data carriers, rather than the first that meets or
+  exceeds them, and the carriers past it repeat the coded stream's head.
+  Nothing encoded is discarded, so a receiver reconstructing what was
+  transmitted is never asked for bits that did not go on air.
+
+  The overrun existed in every mode; what it cost varied, which is why this
+  went three releases without being seen. Four of the fifteen
+  constellation/rate pairs failed outright as `DvbTRxError::PayloadDecode`
+  (QPSK r3/4 and r7/8, 16-QAM r7/8, 64-QAM r3/4). Ten lost only the K=7
+  convolutional tail and reported correctly. 64-QAM r7/8 lost 474 real coded
+  bits, decoded anyway, and reported `inner_ber = 5.0e-5` with
+  `rs_corrected_bytes = 5` on a *noiseless* link — no error, just wrong
+  numbers. Any mode failed once a payload pushed the frame past 68 symbols.
+- The clamp `plan.coded_bits.min(llrs.len())` in the DVB-T receiver is now a
+  `<=` debug assertion over the plan's own length. It was silently shortening
+  the comparison whenever the plan overran the LLRs, which is what turned a
+  structural mismatch into a plausible-looking BER instead of a visible
+  failure.
+
+### Added
+
+- `dvb_t_frame_fill` / `DvbTFrameFill` and `dvb_t_coded_bits` in
+  `waveform::dvb_t` (each with a `_with` variant taking a `CodecCache`), next
+  to the other shared TX/RX frame constants. One statement of the filling rule
+  for the modulator, the demodulator, and downstream payload sizing —
+  previously three implementations that had to agree by inspection, and did
+  not.
+
+### Changed
+
+- **The on-air bits change.** Frames from 0.0.64 do not decode on 0.0.63 and
+  vice versa, on both the gated and the ungated path. The stuffed packet count
+  drops by one and the tail carriers carry the repeat.
+- The filler repeats the coded stream's head rather than zero-filling: energy
+  dispersal is applied at the TS layer ahead of the FEC, so repeating coded
+  bits stays whitened, whereas zeros would put an entire OFDM symbol on a
+  single constellation point at QPSK r1/2, where the remainder exceeds one
+  symbol's 1512 data carriers.
+- The DVB-T diagnostics overhead figures in `docs/dvb.md` and
+  `docs/performance.md` disagreed with each other; both are re-measured and
+  reconciled. At a realistic DATV fill the cost is +7.0% for the rungs and
+  +4.9% for the probe; on a 2%-full frame it is +112% and +105%, which is a
+  statement about the cheap baseline rather than an expensive measurement.
+
+### Notes
+
+- The gated decode is now exact in all fifteen modes and across payload sizes:
+  `channel_ber` and `inner_ber` read **exactly** zero on a noiseless link, not
+  merely close to it. Swept by `error_rates_decode_every_mode`,
+  `error_rates_decode_across_payload_sizes` and `error_rates_decode_at_every_guard`;
+  the arithmetic invariant is pinned exhaustively by
+  `frame_fill_never_overruns_the_carriers` and
+  `frame_fill_is_the_modulators_block_plan`.
+- The ungated prefix decode is untouched, including its documented structural
+  RS correction floor of one byte.
+- No Python bindings for the new items, matching the rest of the DVB-T frame
+  layer.
+
 ## [0.0.63] - 2026-08-19
 
 Gives the DVB-T receiver the instrumentation the generic COFDM path already

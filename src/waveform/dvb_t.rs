@@ -287,10 +287,13 @@ pub fn is_dvb_t_constellation(order: ConstellationOrder) -> bool {
 // and TPS land); channel estimation uses the preamble training symbol.
 
 use crate::fec::{
-    ConvCode, InnerFec, InterleaverKind, OuterFec, PunctureRate, ScramblerKind, ScramblerPos,
+    ConvCode, CrcKind, InnerFec, InterleaverKind, OuterFec, PunctureRate, ScramblerKind,
+    ScramblerPos,
 };
+use crate::modulate::ofdm_frame::{CodecCache, block_plan};
 use crate::modulate::{ConstellationOrder, Mcs, McsTable, OfdmConfig};
 use crate::multicarrier::{CarrierGrid, CarrierPlan};
+use crate::waveform::dvb_t_ts::TS_PACKET_LEN;
 use num_complex::Complex32 as C32;
 
 /// DVB-T 2K-mode FFT size.
@@ -949,5 +952,131 @@ impl DvbTFrameParams {
         let plan0 = dvb_t_2k_plans(self.link.guard)[0].clone();
         let fs = dvb_t_fs_for_bandwidth(1_000_000.0);
         OfdmConfig::new(plan0, fs, 0.0, 1.0, self.link.constellation).with_dvb_t_scattered(true)
+    }
+}
+
+// ── Frame filling: the one statement of the rule (TX/RX/downstream) ─────────
+//
+// A DVB-T frame carries a whole number of TS packets, and §4.4 requires every
+// data carrier to be modulated. Those two demands do not meet: the coded stream
+// grows by a fixed step per added packet (1632 bits / code rate) while the
+// frame's capacity is a multiple of the symbol size, so they coincide at NO
+// integer packet count in any mode. Something has to absorb the difference.
+//
+// The rule is: take the LARGEST packet count whose coded stream still fits, and
+// fill the carriers past it by repeating the head of that stream. The
+// transmitter then discards nothing, and a receiver reconstructing what was sent
+// gets a coded-bit count that is never longer than the bits it actually
+// received.
+//
+// This lives here, with the other shared TX/RX frame constants, because three
+// callers need the same answer and any two of them disagreeing is a silent
+// wrong-numbers bug rather than a loud one: `modulate::dvb_t_frame` (which maps
+// it), `demodulate::dvb_t_frame` (which decodes and re-encodes against it), and
+// downstream payload sizing in consumers such as `orion-sdr-view`.
+
+/// Coded bits the DVB-T FEC chain produces from `n_pkt` whole TS packets —
+/// RS(204,188) + Forney(12,17) + K=7 punctured convolutional, per
+/// [`DvbTFrameParams`]'s code rate.
+///
+/// Builds its own codec cache; [`dvb_t_coded_bits_with`] takes one from a caller
+/// that already holds it.
+pub fn dvb_t_coded_bits(params: DvbTFrameParams, n_pkt: usize) -> usize {
+    dvb_t_coded_bits_with(params, n_pkt, &CodecCache::new())
+}
+
+/// [`dvb_t_coded_bits`], reusing `cache`. The block plan needs only the codes'
+/// dimensions, but the TX/RX paths hold a warm cache and there is no reason to
+/// rebuild.
+pub fn dvb_t_coded_bits_with(params: DvbTFrameParams, n_pkt: usize, cache: &CodecCache) -> usize {
+    block_plan(
+        n_pkt * TS_PACKET_LEN,
+        CrcKind::None,
+        DVB_T_FRAME_OUTER,
+        params.inner(),
+        DVB_T_FRAME_OUTER_IL,
+        InterleaverKind::None,
+        cache,
+    )
+    .coded_bits
+}
+
+/// How one DVB-T frame's data carriers are filled — the single statement of the
+/// rule the modulator maps by, the receiver decodes by, and a downstream caller
+/// sizes payloads by. Produced by [`dvb_t_frame_fill`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DvbTFrameFill {
+    /// TS packets the frame encodes: the payload's own packets plus null-packet
+    /// stuffing (§4.4 / §4.3.1).
+    pub n_ts_packets: usize,
+    /// Coded bits the FEC chain produces from those packets — the decodable
+    /// stream, and the exact length a truth re-encode reproduces. Never exceeds
+    /// [`capacity_bits`](Self::capacity_bits) for a frame whose geometry is
+    /// self-consistent.
+    pub coded_bits: usize,
+    /// Data-carrier bit capacity of the frame: `n_symbols · 1512 · bits per
+    /// constellation symbol`.
+    pub capacity_bits: usize,
+}
+
+impl DvbTFrameFill {
+    /// Carrier bits past the coded stream, which the modulator fills by
+    /// repeating the coded stream's head.
+    ///
+    /// **Never decoded and never compared**: the receiver's block plan ends at
+    /// [`coded_bits`](Self::coded_bits), so these bits are outside every
+    /// measurement as well as outside the decode.
+    ///
+    /// Saturating, and the saturation is not reachable from a matched
+    /// TX/RX pair — it means a caller supplied an `n_symbols` too small for its
+    /// own payload, which the receiver reports as a failed decode.
+    pub fn filler_bits(self) -> usize {
+        self.capacity_bits.saturating_sub(self.coded_bits)
+    }
+}
+
+/// The largest whole number of TS packets — at least `min_packets` — whose coded
+/// stream still fits an `n_symbols`-symbol frame's data carriers.
+///
+/// `min_packets` is the payload's own packet count. The result is never below
+/// it: `n_symbols` is derived from the payload's coded length, so
+/// `capacity_bits >= dvb_t_coded_bits(params, min_packets)` and the payload's
+/// packets always fit. "Largest that fits" cannot drop real payload.
+///
+/// Builds its own codec cache; [`dvb_t_frame_fill_with`] takes one from a caller
+/// that already holds it.
+pub fn dvb_t_frame_fill(
+    params: DvbTFrameParams,
+    min_packets: usize,
+    n_symbols: usize,
+) -> DvbTFrameFill {
+    dvb_t_frame_fill_with(params, min_packets, n_symbols, &CodecCache::new())
+}
+
+/// [`dvb_t_frame_fill`], reusing `cache` — the form the TX and RX paths call.
+pub fn dvb_t_frame_fill_with(
+    params: DvbTFrameParams,
+    min_packets: usize,
+    n_symbols: usize,
+    cache: &CodecCache,
+) -> DvbTFrameFill {
+    let capacity_bits = n_symbols * DVB_T_DATA_CARRIERS * params.constellation().bits_per_symbol();
+    let mut n_ts_packets = min_packets.max(1);
+    let mut coded_bits = dvb_t_coded_bits_with(params, n_ts_packets, cache);
+    // Grow while the NEXT count still fits, so the search stops at the largest
+    // that does. `dvb_t_coded_bits` is monotonic in the packet count, so this
+    // terminates at the first overshoot.
+    loop {
+        let next = dvb_t_coded_bits_with(params, n_ts_packets + 1, cache);
+        if next > capacity_bits {
+            break;
+        }
+        n_ts_packets += 1;
+        coded_bits = next;
+    }
+    DvbTFrameFill {
+        n_ts_packets,
+        coded_bits,
+        capacity_bits,
     }
 }
