@@ -107,14 +107,34 @@ soft-LLR path gives the DVB-T frame real soft-decision coding gain.
 requires **every** symbol to carry data — a compliant signal never leaves data
 carriers zeroed (§4.3.1: randomization stays active even with no program input).
 A short payload is therefore stuffed with **MPEG-2 null packets** (PID `0x1FFF`,
-`0xFF` payload — `ts_null_packet`/`ts_stuff_null_packets`) up to the frame's
-data-carrier capacity before energy dispersal, so the coded stream reaches every
-carrier; the RX trims the recovered payload back to its original length, so the
+`0xFF` payload — `ts_null_packet`/`ts_stuff_null_packets`) before energy
+dispersal; the RX trims the recovered payload back to its original length, so the
 stuffing is transparent. The standard's stronger "exact integer number of RS
 packets, **no** stuffing" property (§4.7, Table 16 — e.g. 252 RS packets per 2K
 QPSK-r1/2 super-frame) holds only over the full 4-frame **super-frame** (a single
 frame is fractional for some rates), so exact-fit belongs to the super-frame path,
 not the single-frame assembler here.
+
+Stuffing cannot land on the last carrier exactly. The coded stream grows by a
+fixed step per added packet (1632 bits / code rate) while the frame's capacity is
+a multiple of the symbol size, so the two coincide at **no** integer packet count
+in any mode — at 68-symbol QPSK r3/4, 83 packets code to 204 552 bits and 84 to
+206 728, against a capacity of 205 632. `dvb_t_frame_fill` (in `waveform::dvb_t`,
+with the other shared TX/RX frame constants) states the rule once for the
+modulator, the demodulator and downstream payload sizing: take the **largest**
+packet count whose coded stream still fits, and fill the carriers past it by
+repeating the coded stream's head.
+
+Both halves matter. Fitting rather than overshooting means nothing is encoded and
+then dropped, so a receiver reconstructing what was transmitted — see [Receive
+diagnostics and the probe](#receive-diagnostics-and-the-probe) — never asks its
+decoder for bits that never went on air. Filling by **repeat** rather than with
+zeros keeps the tail whitened: energy dispersal is applied at the TS layer ahead
+of the FEC, so repeating coded bits stays dispersed, whereas a zero fill would put
+a whole OFDM symbol on one constellation point (at QPSK r1/2 the remainder runs
+past a symbol's 1512 data carriers). The repeat is never decoded — every block
+plan on the receive side ends at the coded stream's length, which is where the
+repeat begins.
 
 ## TPS signalling
 
@@ -295,7 +315,9 @@ Three layers assemble the on-air stream, each over the one below:
 
 - **Single frame** — `modulate::DvbTFrameMod` / `demodulate::DvbTFrameDemod`
   (above). One 68-symbol frame carrying a TS payload; a short payload is
-  null-packet-stuffed so every carrier is filled. `DvbTFrameMod::modulate` returns
+  null-packet-stuffed to the largest count that fits and the remaining carriers
+  repeat the coded stream's head, so every carrier is filled and nothing encoded
+  is discarded (**Frame filling**, above). `DvbTFrameMod::modulate` returns
   the IQ plus `n_symbols` / `samples_per_symbol`; `DvbTFrameDemod::decode`
   GI-acquires it at an unknown offset and recovers the payload + TPS word (and,
   with the integer-CFO flag set, removes a whole-subcarrier offset first).
@@ -361,9 +383,9 @@ a single rung: `Some(0)` is "the estimator ran and the link is on frequency",
   omitted rather than carried as permanent zeroes.
 
 **A measurement decodes the whole frame; a plain decode does not.** `DvbTFrameMod`
-stuffs null TS packets until the coded stream fills every data carrier, so a
-receiver told `payload_len = 184` decodes a *prefix* — 39 180 of 205 632 coded
-bits for a 68-symbol QPSK frame. That is fine for recovering the payload, but a
+stuffs null TS packets up to the frame's data carriers, so a receiver told
+`payload_len = 184` decodes a *prefix* — 39 180 of 205 632 coded bits for a
+68-symbol QPSK frame. That is fine for recovering the payload, but a
 BER or a correction map has to reproduce what the transmitter actually sent, and
 with a Forney(12,17) outer interleaver no prefix of a re-encode does: each output
 byte draws from twelve branches at different depths, so the first coded bits
@@ -373,6 +395,16 @@ the prefix puts zeros where the transmitter had data, and measures a CBER around
 the full frame — roughly 5× the FEC work, which is exactly why it sits behind the
 same gate.
 
+The whole-frame plan it builds comes from `dvb_t_frame_fill`, the same rule the
+modulator stuffed by, so it describes exactly the bits that were transmitted:
+never more (the coded stream fits within the carriers by construction) and never
+fewer (the carriers past it are a repeat, outside the plan). The receiver's
+re-encode is therefore bit-exact and both BERs read **exactly** zero on a
+noiseless link, in every mode and at every payload size — swept by
+`error_rates_decode_every_mode` and `error_rates_decode_across_payload_sizes`. An
+approximate zero would not be a rounding artifact but a misaligned truth
+reference.
+
 One consequence is worth knowing: a prefix decode carries a **structural RS
 correction floor**. The Forney deinterleaver's tail draws on codewords the prefix
 does not cover, and Reed–Solomon quietly repairs the shortfall — one byte of the
@@ -380,24 +412,27 @@ eight RS(204,188) can correct, spent before the channel has done anything. A
 whole-frame decode has no shortfall and reports zero. Pinned by
 `a_prefix_decode_carries_a_structural_rs_correction_floor`.
 
-**Measured cost** (`throughput::dvbt`, G1/32 QPSK R1/2). Diagnostics off is
-13.0–13.2 Msps against 13.14 on the pre-diagnostics baseline — parity, the EVM
-branch being hoisted to once per OFDM symbol rather than once per data carrier.
+**Measured cost** (`throughput::dvbt`, G1/32 QPSK R1/2). Diagnostics off runs at
+15.85 Msps on a sparse frame: the unmeasured demap loop is byte-for-byte the one
+that shipped before any of this existed, the EVM branch being hoisted to once per
+OFDM symbol rather than once per data carrier.
 
 The gated path always decodes the whole frame, so **its cost does not depend on
-`payload_len` — it is ~4.85 Msps either way — and the overhead percentage is
+`payload_len` — it is ~7.1–7.5 Msps either way — and the overhead percentage is
 really a statement about the baseline**:
 
 | Payload | Fill | `with_error_rates` | `feed_probed` |
 | ---: | ---: | ---: | ---: |
-| 184 B | 2% | +171% | +158% |
-| 9 724 B | ~100% | **+5.5%** | **+4.4%** |
+| 184 B | 2% | +112% | +105% |
+| 9 724 B | ~100% | **+7.0%** | **+4.9%** |
 
 At a realistic DATV fill that is the same neighbourhood as the generic COFDM
 path (+3.3% / +4.3%), which never shows the sparse case because it sizes the
 frame to the payload rather than to a fixed TPS block. A caller sending one TS
 packet per 68-symbol frame is paying for 98% stuffing in the plain decode too —
 it is simply invisible there, because the plain decode skips it.
+[performance.md](performance.md) carries the same measurement with the absolute
+throughputs alongside.
 
 The modulator runs at ~88 Msps. `dvb_t_map_symbol` is allocation-free — it folds
 the axis de-interleave into the label pack rather than materializing two `Vec`s

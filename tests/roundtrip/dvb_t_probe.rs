@@ -415,31 +415,41 @@ fn probe_symbol_count_matches_the_scattered_grid() {
 fn probing_does_not_change_what_decodes() {
     // The probe is an observation of a decode that happens anyway. Payload and
     // every diagnostic rung must be identical with and without it.
-    let p = params();
-    let payload = sample_payload(184);
-    let (iq, n_symbols) = framed_buffer(p, &payload);
+    //
+    // Run at r1/2 and at r3/4: the two rates sat on opposite sides of the
+    // frame-filling overrun, so a regression that reaches only one of them would
+    // otherwise pass here.
+    for rate in [PunctureRate::R1_2, PunctureRate::R3_4] {
+        let p = mode_params(GuardInterval::G1_8, ConstellationOrder::Qpsk, rate);
+        let payload = sample_payload(184);
+        let (iq, n_symbols) = framed_buffer(p, &payload);
 
-    let mut plain_rx =
-        DvbTFrameStreamDemod::new(p, n_symbols, payload.len()).with_error_rates(true);
-    let mut plain = plain_rx.feed(&iq);
-    plain.extend(plain_rx.flush());
-    let plain: Vec<_> = plain.into_iter().filter_map(|r| r.ok()).collect();
+        let mut plain_rx =
+            DvbTFrameStreamDemod::new(p, n_symbols, payload.len()).with_error_rates(true);
+        let mut plain = plain_rx.feed(&iq);
+        plain.extend(plain_rx.flush());
+        let plain: Vec<_> = plain.into_iter().filter_map(|r| r.ok()).collect();
 
-    let mut probed_rx =
-        DvbTFrameStreamDemod::new(p, n_symbols, payload.len()).with_error_rates(true);
-    let mut probe = DvbTRxProbe::new();
-    let mut probed = probed_rx.feed_probed(&iq, &mut probe);
-    probed.extend(probed_rx.flush_probed(&mut probe));
-    let probed: Vec<_> = probed.into_iter().filter_map(|r| r.ok()).collect();
+        let mut probed_rx =
+            DvbTFrameStreamDemod::new(p, n_symbols, payload.len()).with_error_rates(true);
+        let mut probe = DvbTRxProbe::new();
+        let mut probed = probed_rx.feed_probed(&iq, &mut probe);
+        probed.extend(probed_rx.flush_probed(&mut probe));
+        let probed: Vec<_> = probed.into_iter().filter_map(|r| r.ok()).collect();
 
-    assert_eq!(plain.len(), probed.len());
-    for (a, b) in plain.iter().zip(probed.iter()) {
-        assert_eq!(a.payload, b.payload, "payload unchanged by probing");
-        assert_eq!(a.tps, b.tps, "TPS unchanged by probing");
-        assert_eq!(
-            a.diagnostics, b.diagnostics,
-            "every diagnostic rung unchanged by probing"
-        );
+        assert_eq!(plain.len(), 1, "{rate:?}: one frame decoded unprobed");
+        assert_eq!(plain.len(), probed.len(), "{rate:?}");
+        for (a, b) in plain.iter().zip(probed.iter()) {
+            assert_eq!(
+                a.payload, b.payload,
+                "{rate:?}: payload unchanged by probing"
+            );
+            assert_eq!(a.tps, b.tps, "{rate:?}: TPS unchanged by probing");
+            assert_eq!(
+                a.diagnostics, b.diagnostics,
+                "{rate:?}: every diagnostic rung unchanged by probing"
+            );
+        }
     }
 }
 
@@ -666,5 +676,189 @@ fn probe_partitions_several_frames_into_their_own_spans() {
         probe.symbols().len(),
         expected_start,
         "the per-frame spans tile the flat buffer exactly"
+    );
+}
+
+// ── The gate must not break the decode, in any mode or at any size ──────────
+//
+// `with_error_rates(true)` makes the receiver decode the WHOLE frame rather than
+// the payload prefix, because a truth re-encode of a prefix does not reproduce
+// what was transmitted under a Forney(12,17) interleaver. That whole-frame plan
+// has to describe bits that were actually sent. It used to describe more: the
+// modulator stuffed until its coded stream MET OR EXCEEDED the frame's capacity
+// and then transmitted only the capacity, so the receiver asked its decoder for
+// the overrun too — 1096 bits at QPSK r3/4 — and the frame failed.
+//
+// The overrun existed in every mode. What it cost varied, which is why this is
+// swept rather than spot-checked:
+//
+//   • where the overrun was exactly the K=7 tail (10 of 15 modes at 184 B), the
+//     frame lost only termination and every rung still read zero;
+//   • where it was larger and Reed-Solomon could not absorb it (QPSK r3/4 and
+//     r7/8, 16-QAM r7/8, 64-QAM r3/4), the frame failed outright;
+//   • and at 64-QAM r7/8 it was larger — 474 bits — and RS absorbed it, so the
+//     frame DECODED while reporting inner_ber = 5.0e-5 and rs_corrected_bytes =
+//     5 on a noiseless link. No error, just wrong numbers.
+//
+// That third case is why these tests assert exact zeros rather than success, and
+// why 64-QAM r7/8 must stay in the sweep: it is invisible to the arithmetic
+// checks in `tests/unit/dvb_t.rs`, which can show its overrun but not that the
+// frame survives one. It is the case that separates a real fix from a clamp.
+
+/// Every DVB-T constellation/rate pair the TPS word can signal.
+fn every_mode() -> Vec<(ConstellationOrder, PunctureRate)> {
+    let mut modes = Vec::new();
+    for c in [
+        ConstellationOrder::Qpsk,
+        ConstellationOrder::Qam16,
+        ConstellationOrder::Qam64,
+    ] {
+        for r in [
+            PunctureRate::R1_2,
+            PunctureRate::R2_3,
+            PunctureRate::R3_4,
+            PunctureRate::R5_6,
+            PunctureRate::R7_8,
+        ] {
+            modes.push((c, r));
+        }
+    }
+    modes
+}
+
+fn mode_params(
+    guard: GuardInterval,
+    constellation: ConstellationOrder,
+    code_rate: PunctureRate,
+) -> DvbTFrameParams {
+    DvbTFrameParams {
+        link: DvbTLinkParams {
+            guard,
+            constellation,
+            code_rate,
+        },
+        frame_number: 0,
+        cell_id: 0,
+    }
+}
+
+/// Decodes one noiseless frame with the gate on and asserts every measured rung
+/// reads an exact zero. `what` names the configuration in the failure message.
+fn assert_gated_decode_is_exact(p: DvbTFrameParams, payload_len: usize, what: &str) {
+    let payload = sample_payload(payload_len);
+    let (iq, n_symbols) = framed_buffer(p, &payload);
+    let rx = DvbTFrameDemod::new(p).with_error_rates(true);
+    let frame = rx
+        .decode(&iq, n_symbols, payload.len())
+        .unwrap_or_else(|e| panic!("{what}: gated decode failed on a noiseless link: {e}"));
+
+    assert_eq!(frame.payload, payload, "{what}: payload");
+    // Exactly zero, not merely small. A near-zero is what a truth reference
+    // built over untransmitted bits looks like.
+    assert_eq!(
+        frame.diagnostics.channel_ber,
+        Some(0.0),
+        "{what}: CBER must be exactly zero on a noiseless link"
+    );
+    assert_eq!(
+        frame.diagnostics.inner_ber,
+        Some(0.0),
+        "{what}: IBER must be exactly zero on a noiseless link"
+    );
+    assert_eq!(
+        frame.diagnostics.rs_corrected_bytes,
+        Some(0),
+        "{what}: the whole-frame decode must spend no RS correction"
+    );
+    assert_eq!(
+        frame.diagnostics.outer_fec_ok,
+        Some(true),
+        "{what}: outer FEC"
+    );
+}
+
+#[test]
+fn error_rates_decode_every_mode() {
+    for (c, r) in every_mode() {
+        let p = mode_params(GuardInterval::G1_8, c, r);
+        assert_gated_decode_is_exact(p, 184, &format!("{c:?} {r:?} 184 B"));
+    }
+}
+
+#[test]
+fn error_rates_decode_across_payload_sizes() {
+    // The mode sweep above runs at 68 symbols, where the frame's capacity is a
+    // multiple of the coded step for most rates and the overrun happened to land
+    // on the tail. A larger payload moves the frame off that coincidence, so the
+    // modes that survived by arithmetic luck are exercised here — QPSK r1/2 used
+    // to fail at all three of these sizes.
+    for (c, r) in every_mode() {
+        let p = mode_params(GuardInterval::G1_8, c, r);
+        for n_pkt in [60usize, 100, 140] {
+            let len = n_pkt * 187;
+            assert_gated_decode_is_exact(p, len, &format!("{c:?} {r:?} {n_pkt} pkts"));
+        }
+    }
+}
+
+#[test]
+fn error_rates_decode_at_every_guard() {
+    // The fill rule is guard-independent by construction — capacity is
+    // `n_symbols · 1512 · bits/symbol` and the guard only changes `cp_len`, i.e.
+    // the sample count per symbol. Pinned rather than re-derived.
+    for guard in [
+        GuardInterval::G1_32,
+        GuardInterval::G1_16,
+        GuardInterval::G1_8,
+        GuardInterval::G1_4,
+    ] {
+        let p = mode_params(guard, ConstellationOrder::Qpsk, PunctureRate::R3_4);
+        assert_gated_decode_is_exact(p, 184, &format!("{guard:?} QPSK r3/4"));
+    }
+}
+
+#[test]
+fn probing_yields_a_constellation_at_a_broken_mode() {
+    // `feed_probed` sets the same whole-frame flag as `with_error_rates`, so a
+    // mode that failed the gated decode produced no constellation either — the
+    // frame took the `push_undecoded` path and a viewer's pane stayed empty.
+    // QPSK r3/4 is one of the four that failed outright.
+    let p = mode_params(
+        GuardInterval::G1_32,
+        ConstellationOrder::Qpsk,
+        PunctureRate::R3_4,
+    );
+    let payload = sample_payload(184);
+    let (iq, n_symbols) = framed_buffer(p, &payload);
+
+    let mut rx = DvbTFrameStreamDemod::new(p, n_symbols, payload.len());
+    let mut probe = DvbTRxProbe::new();
+    // `feed_probed` alone: a following `flush_probed` would clear the probe and
+    // refill it with what that call produced, which is nothing.
+    let frames = rx.feed_probed(&iq, &mut probe);
+
+    assert_eq!(frames.len(), 1, "one frame");
+    let got = frames[0].as_ref().expect("probed decode at QPSK r3/4");
+    assert_eq!(got.payload, payload);
+
+    let f = probe.iter().next().expect("one probed frame");
+    assert!(
+        f.meta.decoded,
+        "a decoded frame must carry a correction map, not push_undecoded"
+    );
+    assert_eq!(
+        f.symbols.len(),
+        DVB_T_DATA_CARRIERS * n_symbols,
+        "the whole constellation is recorded"
+    );
+    assert!(!f.correction.is_empty(), "correction map is populated");
+    assert!(
+        f.correction.iter().all(|&o| o == BitOutcome::Clean),
+        "every coded bit is Clean on a noiseless link; found {} non-clean of {}",
+        f.correction
+            .iter()
+            .filter(|&&o| o != BitOutcome::Clean)
+            .count(),
+        f.correction.len()
     );
 }

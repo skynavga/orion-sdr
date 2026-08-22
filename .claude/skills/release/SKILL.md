@@ -5,6 +5,8 @@ allowed-tools: Bash, Read, Write
 argument-hint: <version>  (e.g. 0.0.17)
 ---
 
+# Release
+
 Publish the orion-sdr release for version $ARGUMENTS.
 
 VERSION = $ARGUMENTS  (without the leading "v")
@@ -17,26 +19,47 @@ the version bump commit exists locally and the signed tag TAG exists locally.
 
 - Confirm the local tag TAG exists: `git tag -l TAG`
 - Confirm the tag signature is valid: `git tag -v TAG`
-- Confirm the commit the tag points to is ahead of origin/main:
-  `git log origin/main..TAG --oneline`
+- Confirm the tag is **not behind** origin/main — i.e. it contains everything
+  already published there: `git log TAG..origin/main --oneline` must print
+  **nothing**. If it prints commits, the tag was cut before they landed; stop.
 
 If any check fails, stop and tell the user what is missing.
+
+**The tag being *equal* to origin/main is the normal case, not a problem.**
+`/release-prep` merges the release branch through a GitHub PR, so by the time
+this skill runs, origin/main already contains the tagged commit and the tag can
+never be *ahead*. Check the direction above (`TAG..origin/main`), which is the
+one that catches a stale tag; the reverse direction (`origin/main..TAG`) is
+informational only — empty means the PR flow, non-empty means the tag was cut on
+an unmerged branch, and both are fine.
+
+To see the whole picture at once:
+
+```bash
+git rev-parse TAG^{commit} origin/main
+```
+
+Two identical SHAs is the expected result of the PR flow.
 
 ## Step 2 — Push commit and tag
 
 Push in this order (commit first so the tag's target exists on the remote):
 
-```
+```bash
 git push
 git push origin TAG
 ```
+
+After the PR flow the first push reports `Everything up-to-date` — the commit
+went to origin with the merge. That is expected; the tag push is the one that
+does the work here.
 
 This push triggers the GitHub Actions `publish.yml` workflow, which builds
 wheels for all platforms and publishes to PyPI automatically.
 
 ## Step 3 — Publish to crates.io
 
-```
+```bash
 cargo publish --allow-dirty
 ```
 
@@ -53,7 +76,7 @@ Not every tag gets a GitHub release, so the notes must cover **everything since
 the last release that exists** — which may span several tags — not just the last
 tag. Determine that boundary first:
 
-```
+```bash
 gh release list --limit 1
 gh release view --json tagName -q .tagName
 ```
@@ -75,7 +98,7 @@ first commit as the boundary.
 
 Read the previous two releases before drafting — they are the style reference:
 
-```
+```bash
 gh release view PREV_TAG
 ```
 
@@ -100,7 +123,7 @@ Body, in this order (omit a section only when it would be empty):
 - **`## Also`** — secondary fixes, test-harness changes, doc updates.
 - The closing line, verbatim:
 
-  ```
+  ```text
   See [CHANGELOG.md](https://github.com/skynavga/orion-sdr/blob/main/CHANGELOG.md)
   for the per-version detail.
   ```
@@ -117,13 +140,13 @@ commit messages and PR descriptions.
 Write the body to a scratch file (not into the repo) and create the release
 against the already-pushed tag:
 
-```
+```bash
 gh release create TAG --title "vVERSION — <phrase>" --notes-file /tmp/orion-sdr-release-VERSION.md --latest
 ```
 
 Then verify and clean up:
 
-```
+```bash
 gh release view TAG
 rm /tmp/orion-sdr-release-VERSION.md
 ```
@@ -134,12 +157,14 @@ the existing release and ask whether to edit it (`gh release edit TAG`).
 ## Step 5 — Report
 
 Tell the user:
+
 - Commit and tag TAG have been pushed to GitHub
 - The GitHub Actions workflow is now building wheels for all platforms and
   will publish them to PyPI automatically
 - crates.io publish result (success or already-uploaded)
 - Which tag range the GitHub release notes cover (PREV_TAG..TAG)
-- Link to the Actions run: https://github.com/skynavga/orion-sdr/actions
-- Link to the GitHub release: https://github.com/skynavga/orion-sdr/releases/tag/TAG
-- Link to the crates.io release: https://crates.io/crates/orion-sdr/VERSION
-- Link to the PyPI release: https://pypi.org/project/orion-sdr/VERSION/
+- Link to the Actions run: <https://github.com/skynavga/orion-sdr/actions>
+- Link to the GitHub release:
+  <https://github.com/skynavga/orion-sdr/releases/tag/TAG>
+- Link to the crates.io release: <https://crates.io/crates/orion-sdr/VERSION>
+- Link to the PyPI release: <https://pypi.org/project/orion-sdr/VERSION/>

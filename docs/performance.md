@@ -618,10 +618,12 @@ and the axis-label pack into a single pass rather than materializing two `Vec`s
 per constellation point. At 1512 data carriers per symbol and ~103 000 per frame,
 a pair of heap allocations per point would dominate the mapping loop outright.
 The conformant modulator does more work than the generic 2K chain per frame
-because it **fills the frame**: a short
-payload is stuffed with null TS packets (§4.4 — every data carrier must carry
-data), so it runs the full payload FEC over a whole frame's worth of RS packets
-rather than one packet plus zeros.
+because it **fills the frame**: a short payload is stuffed with null TS packets
+(§4.4 — every data carrier must carry data), so it runs the full payload FEC over
+a whole frame's worth of RS packets rather than one packet plus zeros. Stuffing
+stops at the largest packet count whose coded stream fits and the remaining
+carriers repeat that stream's head, so the fill costs one memcpy of well under a
+symbol's worth of bits on top of the FEC.
 
 The RX adds per-symbol scattered-pilot equalization, DVB-T-exact soft LLRs,
 TPS DBPSK recovery, and the guard-interval correlation search on top of the FFT
@@ -692,7 +694,7 @@ What `DvbTRxDiagnostics` and `DvbTRxProbe` cost. Measured by
 runs the plain configuration twice — once before and once after the instrumented
 one — and reports the drift between them, because on a ramping CPU the first
 configuration measured can look slower than ones doing strictly more work. Drift
-was ≤1.5% in both, so the numbers below are the real thing.
+was ≤1.6% in both, so the numbers below are the real thing.
 
 **The overhead is a function of how full the frame is, not of the diagnostics.**
 A DVB-T frame is a fixed 68 OFDM symbols — the TPS block — and the modulator
@@ -702,16 +704,16 @@ the two configurations converge as the payload fills the frame:
 
 | Payload | Fill | plain | `with_error_rates` | `feed` | `feed_probed` |
 | ---: | ---: | ---: | ---: | ---: | ---: |
-| 184 B | 2% | 15.8 Msps | 7.27 Msps (**+118%**) | 14.6 Msps | 7.12 Msps (**+105%**) |
-| 9 724 B | ~100% | 7.69 Msps | 7.35 Msps (**+5.5%**) | 7.45 Msps | 7.07 Msps (**+5.3%**) |
+| 184 B | 2% | 15.85 Msps | 7.52 Msps (**+112%**) | 14.62 Msps | 7.14 Msps (**+105%**) |
+| 9 724 B | ~100% | 7.85 Msps | 7.33 Msps (**+7.0%**) | 7.50 Msps | 7.14 Msps (**+4.9%**) |
 
-Read the *gated* column first: it is ~4.85 Msps in both rows. The instrumented
-path always decodes the whole frame, so its cost does not depend on
-`payload_len` at all. What varies is the baseline — 13.0 Msps when 98% of the
-frame is stuffing the plain decode skips, 5.11 when there is nothing to skip. The
-"+171%" is a cheap baseline, not an expensive measurement.
+Read the *gated* columns first: they are ~7.1–7.5 Msps in both rows. The
+instrumented path always decodes the whole frame, so its cost does not depend on
+`payload_len` at all. What varies is the baseline — 15.85 Msps when 98% of the
+frame is stuffing the plain decode skips, 7.85 when there is nothing to skip. The
+"+112%" is a cheap baseline, not an expensive measurement.
 
-At a realistic DATV fill the cost is **+5.5% for the rungs and +4.4% for the
+At a realistic DATV fill the cost is **+7.0% for the rungs and +4.9% for the
 probe**, which is the same neighbourhood as the generic COFDM path's +3.3% and
 +4.3% (`throughput_frame_stream_probe_ldpc_bch`). COFDM never shows the sparse
 case because it sizes the frame to the payload — its prefix is already the whole
@@ -724,8 +726,8 @@ depend on TS bytes from codewords the prefix never recovers. Re-encoding the
 prefix yields a CBER near 0.25 on a noiseless link. See
 [DVB-T / NB-DVB-T design](dvb.md) for the full argument.
 
-**The default path is unchanged.** 13.0–13.2 Msps against 13.14 on the
-pre-diagnostics baseline is parity. Six of the nine rungs — `cfo_hz`,
+**The default path pays nothing for either instrument.** Six of the nine rungs —
+`cfo_hz`,
 `sync_score`, `timing_offset_samples`, `integer_cfo_bins`, `outer_fec_ok`,
 `rs_corrected_bytes` — are read straight off values the decode already computed
 and discarded, and the EVM branch is hoisted to once per OFDM symbol rather than

@@ -502,6 +502,8 @@ The conformant EN 300 744 2K chain. See [dvb.md](dvb.md) for the waveform design
 | `DvbTProbedFrame` | One frame's resolved view: `meta`, `symbols`, `correction`. Borrows the probe, so it cannot go stale |
 | `DvbTProbeFrame` | The metadata: `tps` (no sequence number — DVB-T has no header), `constellation`, `decoded` |
 | `TpsWord` | The recovered TPS signalling |
+| `dvb_t_frame_fill` / `DvbTFrameFill` | Frame carrier filling: packets, coded bits, capacity, `filler_bits()`. One rule, three callers |
+| `dvb_t_coded_bits` | Coded bits the DVB-T FEC chain produces from `n` TS packets (`_with` takes a `CodecCache`) |
 | `DVB_T_N_FFT` / `DVB_T_KMAX` / `DVB_T_ACTIVE_CARRIERS` | 2048 / 1704 / 1705 |
 | `DVB_T_SCATTERED_PILOT_SPACING` | 12 |
 | `DVB_T_MAX_RX_WINDOW_BACKOFF` | `n_fft / (2·spacing)` = **85** — the aliasing ceiling (not the usable limit) |

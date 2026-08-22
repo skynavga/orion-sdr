@@ -30,7 +30,8 @@ use crate::multicarrier::SymbolFft;
 use crate::sync::{dvb_t_gi_sync, dvb_t_integer_cfo};
 use crate::waveform::dvb_t::{
     DVB_T_DATA_CARRIERS, DVB_T_FRAME_OUTER, DVB_T_FRAME_OUTER_IL, DVB_T_N_FFT, DvbTFrameParams,
-    ScatteredPilotExtractor, dvb_t_map_symbol, dvb_t_soft_llr, tps_carrier_bins,
+    ScatteredPilotExtractor, dvb_t_frame_fill_with, dvb_t_map_symbol, dvb_t_soft_llr,
+    tps_carrier_bins,
 };
 use crate::waveform::dvb_t_tps::{TPS_SYMBOLS_PER_FRAME, TpsDecoder, TpsWord};
 use crate::waveform::dvb_t_ts::{TS_PACKET_LEN, ts_depacketize, ts_energy_disperse};
@@ -46,41 +47,6 @@ const INTEGER_CFO_ACCUM_SYMBOLS: usize = 8;
 /// slide pilots out of band; a few tens of subcarriers is a generous front-end
 /// range.
 const INTEGER_CFO_MAX_BINS: i32 = 32;
-
-/// How many TS packets the modulator encoded into a frame of this geometry —
-/// the receiver's half of `DvbTFrameMod`'s null-packet stuffing.
-///
-/// The modulator grows the packet count until the coded stream fills every data
-/// carrier, so a receiver that wants the transmitted bit-stream rather than just
-/// the payload has to arrive at the same number. Mirrors that loop exactly; the
-/// two must agree or a re-encode compares against the wrong thing.
-///
-/// Only called when a measured rung is requested — the plain decode has no need
-/// for it, and the loop runs `block_plan` once per candidate.
-fn stuffed_packet_count(
-    params: DvbTFrameParams,
-    min_packets: usize,
-    capacity_bits: usize,
-    cache: &CodecCache,
-) -> usize {
-    let mut n = min_packets.max(1);
-    loop {
-        let coded = block_plan(
-            n * TS_PACKET_LEN,
-            CrcKind::None,
-            DVB_T_FRAME_OUTER,
-            params.inner(),
-            DVB_T_FRAME_OUTER_IL,
-            InterleaverKind::None,
-            cache,
-        )
-        .coded_bits;
-        if coded >= capacity_bits {
-            return n;
-        }
-        n += 1;
-    }
-}
 
 /// What the optional integer-CFO pre-correction produced.
 ///
@@ -593,10 +559,13 @@ impl DvbTFrameDemod {
         // 3. Payload FEC decode (inverse of the modulator's encode_chain).
         //
         // The payload occupies a PREFIX of the frame. `DvbTFrameMod` stuffs null
-        // TS packets until the coded stream fills every data carrier, so the bits
-        // on air are the encode of a stream far longer than `payload_len` implies
-        // — for a 68-symbol QPSK frame, 205632 coded bits against the 39180 one
-        // 188-byte packet produces. A plain decode only needs the prefix.
+        // TS packets until the coded stream reaches the frame's data carriers, so
+        // the bits on air are the encode of a stream far longer than `payload_len`
+        // implies — for a 68-symbol QPSK frame, 205632 coded bits against the
+        // 39180 one 188-byte packet produces. A plain decode only needs the
+        // prefix. (The stuffed stream ends on or BEFORE the last data carrier;
+        // the few carriers past it repeat its head and are outside every plan
+        // here — see `dvb_t_frame_fill`.)
         let payload_packets = payload_len.div_ceil(TS_PACKET_LEN - 1).max(1);
         let payload_ts_bytes = payload_packets * TS_PACKET_LEN;
 
@@ -616,9 +585,14 @@ impl DvbTFrameDemod {
         // is exact. It costs roughly 5x the FEC work, which is precisely why it
         // sits behind the same gate as the rungs that need it — the default path
         // still decodes the prefix and is unchanged.
+        //
+        // `dvb_t_frame_fill` is the modulator's own rule, not a second copy of
+        // it: the count it returns is the count that was encoded, and its coded
+        // stream ends on or before the last data carrier, so the plan built from
+        // it is never longer than the LLRs below.
         let want_truth = self.measure_errors || probe.is_some();
         let n_ts_packets = if want_truth {
-            stuffed_packet_count(params, payload_packets, n_symbols * bits_per_sym, &cache)
+            dvb_t_frame_fill_with(params, payload_packets, n_symbols, &cache).n_ts_packets
         } else {
             payload_packets
         };
@@ -702,7 +676,32 @@ impl DvbTFrameDemod {
                 &cache,
             )
         });
-        let coded_bits = plan.coded_bits.min(llrs.len());
+        // The plan's own coded length, unclamped. The shared frame-fill rule
+        // stops the transmitter's coded stream on or before the last data
+        // carrier, so `plan.coded_bits <= llrs.len()` holds structurally and
+        // there is nothing here to clamp against.
+        //
+        // `<=`, not `==`: the two are DELIBERATELY unequal on every frame in
+        // every mode, by exactly the filler the modulator repeats across the
+        // remaining carriers. The clamp this replaced (`.min(llrs.len())`) was
+        // load-bearing in the wrong direction — it silently shortened the
+        // comparison when the plan overran the LLRs, which is how a frame with
+        // 474 untransmitted bits came to report a plausible `inner_ber` of
+        // 5.0e-5 on a noiseless link instead of failing visibly.
+        //
+        // Unclamped, a violation would slice `llrs` out of range below rather
+        // than mis-measure. That is the intent — but it is also not reachable
+        // from caller input. Overstating `payload_len` moves `payload_packets`
+        // by whole 187-byte packets, so the smallest inconsistency already
+        // overruns by a packet's coded step (~2176 bits at r3/4), which puts
+        // enough erasures in the Forney tail to fail the outer code — and the
+        // failure returns above, before this point. There is no band where the
+        // plan overruns the LLRs and the frame still decodes.
+        debug_assert!(
+            !want_truth || plan.coded_bits <= llrs.len(),
+            "frame fill must keep the coded stream within the data carriers"
+        );
+        let coded_bits = plan.coded_bits;
         if let Some(s) = stages.as_ref().filter(|_| self.measure_errors) {
             // CBER: the demapped LLRs hard-decided, against the coded bits as
             // transmitted. Compared in place — materializing the hard decisions

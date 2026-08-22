@@ -1070,4 +1070,6 @@ encode chain and pay for it once, but the `channel_ber`/`inner_ber` fields stay
 because reproducing what the transmitter sent means decoding the null-packet
 stuffing too — see [dvb.md](dvb.md) for why a prefix re-encode cannot work under
 the Forney interleaver, and [performance.md](performance.md) for what it costs at
-each frame fill.
+each frame fill. The whole-frame plan is built from `dvb_t_frame_fill`, the rule
+the modulator stuffed by, so it never spans bits that were not transmitted: on a
+noiseless link both BERs read exactly zero in every mode.
