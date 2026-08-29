@@ -34,7 +34,6 @@ before editing it.
 | `pyproject.toml` | `version = "OLD_VERSION"` |
 | `README.md` | `Pre-alpha (vOLD_VERSION)` in the Status section |
 | `docs/performance.md` | `## vOLD_VERSION Results` heading |
-| `CLAUDE.md` | `vOLD_VERSION), edition 2024` in the project description |
 | `memory/MEMORY.md` at `~/.claude/projects/.../memory/MEMORY.md` | version in the Project Summary line |
 
 To find the memory file path, use Glob to search for `MEMORY.md` under
@@ -108,6 +107,8 @@ understand all changes in the branch, then write a concise BLUF-style summary
 
 Release prep for NEW_VERSION.
 ```
+
+Do not include a co-author trailer.
 
 Merge the PR:
 
