@@ -12,7 +12,7 @@ and a conformant DVB-T.
 
 ## Status
 
-Pre-alpha (v0.0.66). See [CHANGELOG.md](CHANGELOG.md) for release history.
+Pre-alpha (v0.0.67). See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Next Milestones
 
