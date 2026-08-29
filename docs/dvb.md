@@ -413,18 +413,18 @@ whole-frame decode has no shortfall and reports zero. Pinned by
 `a_prefix_decode_carries_a_structural_rs_correction_floor`.
 
 **Measured cost** (`throughput::dvbt`, G1/32 QPSK R1/2). Diagnostics off runs at
-15.85 Msps on a sparse frame: the unmeasured demap loop is byte-for-byte the one
+17.11 Msps on a sparse frame: the unmeasured demap loop is byte-for-byte the one
 that shipped before any of this existed, the EVM branch being hoisted to once per
 OFDM symbol rather than once per data carrier.
 
 The gated path always decodes the whole frame, so **its cost does not depend on
-`payload_len` — it is ~7.1–7.5 Msps either way — and the overhead percentage is
+`payload_len` — it is ~7.5–7.8 Msps either way — and the overhead percentage is
 really a statement about the baseline**:
 
 | Payload | Fill | `with_error_rates` | `feed_probed` |
 | ---: | ---: | ---: | ---: |
-| 184 B | 2% | +112% | +105% |
-| 9 724 B | ~100% | **+7.0%** | **+4.9%** |
+| 184 B | 2% | +121% | +110% |
+| 9 724 B | ~100% | **+4.0%** | **+3.8%** |
 
 At a realistic DATV fill that is the same neighbourhood as the generic COFDM
 path (+3.3% / +4.3%), which never shows the sparse case because it sizes the

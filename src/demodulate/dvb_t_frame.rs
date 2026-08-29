@@ -508,9 +508,11 @@ impl DvbTFrameDemod {
                 tps_dec.reset();
             }
             // Equalize from this symbol's phase pilots, then extract the data.
-            let pilots = extractor.current_pilot_bins().to_vec();
-            let data_bins = extractor.data_bins().to_vec();
-            eq.set_pilot_bins(&pilots, &data_bins);
+            eq.set_pilot_bins(
+                extractor.phase(),
+                extractor.current_pilot_bins(),
+                extractor.data_bins(),
+            );
             eq.process(freq, &mut equalized);
             extractor.extract_symbol(&equalized, &mut data_syms);
             // The probe's constellation: appended as each symbol is extracted,

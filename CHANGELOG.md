@@ -9,6 +9,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.67] - 2026-08-29
+
+### Added
+
+- `CONTEXT.md`, the crate's first domain glossary entry, distinguishing
+  DVB-T's TPS-signalled MCS from waveform configuration (guard interval /
+  transmission mode).
+- `docs/adr/0001-dvb-t-pilot-bracket-cache-in-equalizer.md`, recording why the
+  DVB-T pilot-bracket cache lives inside `OfdmEqualizer` rather than as a
+  DVB-T-local bypass.
+
+### Changed
+
+- `OfdmEqualizer::set_pilot_bins` now takes an explicit `phase` and caches
+  each phase's data-carrier bracket table (built once via a sort plus linear
+  merge), replacing the per-symbol binary search over pilot bins
+  (`interpolate_at`, now removed). DVB-T conformant-frame demodulate
+  throughput improves from ~15.8 to ~17.1 Msps, roundtrip from ~13.6 to
+  ~14.4 Msps (`docs/performance.md`).
+- `package.categories` in `Cargo.toml`: dropped `embedded`/`no-std::no-alloc`
+  (the crate uses `std`/heap allocation freely) for `algorithms`/
+  `mathematics`/`encoding`.
+
 ## [0.0.66] - 2026-08-29
 
 ### Changed

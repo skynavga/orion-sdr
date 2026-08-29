@@ -357,15 +357,113 @@ pub struct OfdmEqualizer {
     /// there measured 144 Msps against 158 for computing inline. It reads
     /// `estimate` and applies the same rule in the loop body instead.
     weight: Vec<C32>,
-    /// Pilot bins with known TX values, kept **sorted by bin** so the per-symbol
-    /// pilot interpolation can binary-search for a data bin's bracketing pilots
-    /// instead of scanning the whole set.
+    /// The layout built from the config's own grid at construction time —
+    /// what [`interpolate_from_pilots`](Self::interpolate_from_pilots) reads
+    /// when `active_phase` is `None`, i.e. no caller has ever called
+    /// [`set_pilot_bins`](Self::set_pilot_bins). The only layout a
+    /// non-rotating (generic) caller ever needs.
+    default_layout: PilotLayout,
+    /// Cached pilot/data layouts for [`EqualizerMethod::PerSymbolPilotInterp`],
+    /// one per distinct `phase` a caller has passed to
+    /// [`set_pilot_bins`](Self::set_pilot_bins). A caller whose pilot/data bin
+    /// *positions* repeat (DVB-T's four-phase scattered-pilot rotation) installs
+    /// a phase once and gets an O(1)-per-carrier lookup on every subsequent
+    /// repeat, instead of rediscovering the bracket structure by search on every
+    /// symbol. Small and scanned linearly: nothing in this crate uses more than
+    /// 4 distinct phases, and `OfdmEqualizer` itself does not need to know that
+    /// number.
+    layouts: Vec<(usize, PilotLayout)>,
+    /// Which layout `process` reads under
+    /// [`EqualizerMethod::PerSymbolPilotInterp`]: `None` means `default_layout`
+    /// (no [`set_pilot_bins`](Self::set_pilot_bins) call yet), `Some(phase)`
+    /// means the matching entry in `layouts` — the phase most recently
+    /// installed.
+    active_phase: Option<usize>,
+}
+
+/// A cached bracket structure for one pilot/data-bin layout: the layout's pilot
+/// bins (sorted, with known TX values) and, for every data bin, which two
+/// pilots bracket it and the lerp weight between them — precomputed once, in a
+/// single linear sweep over the sorted pilot/data bins, rather than
+/// rediscovered by search on every symbol. Has no notion of *which* phase (or
+/// whether there even is one) it belongs to — that's the caller's bookkeeping
+/// (`OfdmEqualizer::layouts`/`default_layout`), kept separate so this type
+/// can't itself be asked for a nonexistent phase.
+struct PilotLayout {
+    /// This layout's pilot bins, sorted ascending, with their known TX values.
     pilot_bins: Vec<(usize, C32)>,
-    data_bins: Vec<usize>,
-    /// Reused scratch for the per-symbol pilot ratios (`received/known`, in the
-    /// sorted `pilot_bins` order), so `interpolate_from_pilots` allocates nothing
-    /// per `process()` call.
-    pilot_ratios: Vec<(usize, C32)>,
+    /// `(data_bin, bracket)` for every data bin this phase covers, in the order
+    /// they were built (ascending by bin) — not necessarily the caller's
+    /// `data_bins` order, since `interpolate_from_pilots` only ever indexes
+    /// `estimate` by bin, never walks this in order.
+    brackets: Vec<(usize, Bracket)>,
+}
+
+/// The two pilots bracketing one data bin, and the lerp weight between them.
+/// `left_bin == right_bin` (weight irrelevant) encodes both edge-hold cases — a
+/// data bin outside the pilot span, or a single-pilot layout — as well as a bin
+/// that lands exactly on a pilot: `estimate[left] + (estimate[right] -
+/// estimate[left]) * t` collapses to `estimate[left]` whenever the two bins
+/// coincide, regardless of `t`.
+#[derive(Clone, Copy)]
+struct Bracket {
+    left_bin: usize,
+    right_bin: usize,
+    t: f32,
+}
+
+impl PilotLayout {
+    /// Builds one phase's layout: sorts `pilots` and (separately) `data_bins`
+    /// by bin — `O((pilots + data)·log(pilots + data))`, since neither
+    /// arrives pre-sorted — then walks both alongside each other in a single
+    /// two-pointer merge pass, `O(pilots + data)`, to bracket every data bin.
+    /// The sort dominates the one-time build cost; what the merge avoids is a
+    /// **search** (binary or otherwise) *per data bin*, which is what ran on
+    /// every symbol before this cache existed.
+    fn build(pilots: &[(usize, C32)], data_bins: &[usize]) -> Self {
+        let mut pilot_bins = pilots.to_vec();
+        pilot_bins.sort_by_key(|&(bin, _)| bin);
+
+        let mut sorted_data = data_bins.to_vec();
+        sorted_data.sort_unstable();
+
+        let mut brackets = Vec::with_capacity(sorted_data.len());
+        if !pilot_bins.is_empty() {
+            // `pi` only ever advances across the whole `sorted_data` walk below,
+            // so the `while`'s total work over the loop is O(pilot_bins.len()),
+            // not O(pilot_bins.len()) per data bin.
+            let mut pi = 0usize;
+            for db in sorted_data {
+                while pi + 1 < pilot_bins.len() && pilot_bins[pi + 1].0 <= db {
+                    pi += 1;
+                }
+                let lb = pilot_bins[pi].0;
+                let bracket = if lb >= db || pi + 1 == pilot_bins.len() {
+                    // Exact hit, or `db` lies outside the pilot span on one
+                    // side: hold the nearest pilot (`lb`).
+                    Bracket {
+                        left_bin: lb,
+                        right_bin: lb,
+                        t: 0.0,
+                    }
+                } else {
+                    let ub = pilot_bins[pi + 1].0;
+                    let t = (db - lb) as f32 / (ub - lb) as f32;
+                    Bracket {
+                        left_bin: lb,
+                        right_bin: ub,
+                        t,
+                    }
+                };
+                brackets.push((db, bracket));
+            }
+        }
+
+        Self {
+            pilot_bins,
+            brackets,
+        }
+    }
 }
 
 /// Threshold on `|estimate|²` below which a bin is treated as **erased** rather
@@ -389,9 +487,6 @@ impl OfdmEqualizer {
     pub fn new(cfg: &OfdmConfig, method: EqualizerMethod) -> Self {
         let grid = CarrierGrid::from_plan(&cfg.carrier_plan);
         let n_fft = cfg.carrier_plan.n_fft();
-        let mut pilot_bins = grid.pilot_bins().to_vec();
-        pilot_bins.sort_by_key(|&(bin, _)| bin);
-        let n_pilots = pilot_bins.len();
         Self {
             method,
             n_fft,
@@ -399,9 +494,15 @@ impl OfdmEqualizer {
             // unchanged until an estimator says otherwise.
             estimate: vec![C32::new(1.0, 0.0); n_fft],
             weight: vec![C32::new(1.0, 0.0); n_fft],
-            pilot_bins,
-            data_bins: grid.data_bins().to_vec(),
-            pilot_ratios: Vec::with_capacity(n_pilots),
+            // The config's own grid pilots — the only layout a non-rotating
+            // (generic) caller ever needs, since it never calls
+            // `set_pilot_bins`. A rotating caller (DVB-T) installs its own
+            // phase-0 layout before its first `process()` call, which — with
+            // `active_phase` still `None` at that point — is a genuine cache
+            // miss, so it builds fresh rather than reusing this one.
+            default_layout: PilotLayout::build(grid.pilot_bins(), grid.data_bins()),
+            layouts: Vec::new(),
+            active_phase: None,
         }
     }
 
@@ -409,26 +510,33 @@ impl OfdmEqualizer {
         self.method
     }
 
-    /// Replaces the pilot bins (and the data bins interpolated between them) for
-    /// the next `process()` call, without changing `process()` itself. Used by
-    /// DVB-T's scattered-pilot receiver, whose pilot/data layout rotates every
-    /// symbol (`l mod 4`): the caller installs symbol `l`'s pilot set here, then
-    /// runs `process()` under [`EqualizerMethod::PerSymbolPilotInterp`], which
-    /// re-interpolates the channel from exactly those pilots. `pilots` are
-    /// `(rustfft bin, known TX value)` pairs; `data_bins` are the bins to
-    /// interpolate an estimate for (a symbol's data-carrier bins). Bins covered
-    /// by neither keep their previous estimate — harmless, since the surrounding
-    /// grid extractor reads only the data bins.
+    /// Installs the pilot bins (and the data bins interpolated between them) for
+    /// the next `process()` call under [`EqualizerMethod::PerSymbolPilotInterp`],
+    /// keyed by a caller-supplied `phase`. `pilots` are `(rustfft bin, known TX
+    /// value)` pairs; `data_bins` are the bins to interpolate an estimate for.
+    /// Bins covered by neither keep their previous estimate — harmless, since the
+    /// surrounding grid extractor reads only the data bins.
+    ///
+    /// The bracket structure (which two pilots bound each data bin, and the lerp
+    /// weight between them) is built once per distinct `phase` and cached: a
+    /// second call with a `phase` already seen reuses it, ignoring `pilots`/
+    /// `data_bins` entirely, since a repeated phase implies the same bin
+    /// *positions* — only the pilots' *values*, read fresh from `received_freq`
+    /// in [`interpolate_from_pilots`](Self::interpolate_from_pilots), can change
+    /// between calls. DVB-T's scattered-pilot receiver installs symbol `l`'s
+    /// `phase = l mod 4` here before every `process()` call: the same four
+    /// layouts get built once per frame decode, then reused for that frame's
+    /// remaining symbols.
     ///
     /// A mirror of [`estimate_from_training_symbol`](Self::estimate_from_training_symbol):
     /// a separate pre-`process` call that sets up the estimate, not a change to
     /// the per-symbol `Block` contract.
-    pub fn set_pilot_bins(&mut self, pilots: &[(usize, C32)], data_bins: &[usize]) {
-        self.pilot_bins.clear();
-        self.pilot_bins.extend_from_slice(pilots);
-        self.pilot_bins.sort_by_key(|&(bin, _)| bin);
-        self.data_bins.clear();
-        self.data_bins.extend_from_slice(data_bins);
+    pub fn set_pilot_bins(&mut self, phase: usize, pilots: &[(usize, C32)], data_bins: &[usize]) {
+        if !self.layouts.iter().any(|&(p, _)| p == phase) {
+            self.layouts
+                .push((phase, PilotLayout::build(pilots, data_bins)));
+        }
+        self.active_phase = Some(phase);
     }
 
     /// Computes and holds the channel estimate from a received training
@@ -455,33 +563,37 @@ impl OfdmEqualizer {
         self.weight[bin] = equalizer_weight(h);
     }
 
-    /// Re-estimates every carrier's channel by linearly interpolating (in
-    /// the complex frequency domain) between the pilot bins' known-vs-
-    /// received ratios. Requires at least one pilot; with zero pilots the
-    /// held estimate (`1.0 + 0j` if never set) is left unchanged.
-    ///
-    /// `pilot_bins` is kept sorted by bin (at construction and in
-    /// `set_pilot_bins`), so the per-data-bin bracketing pilots are found by
-    /// binary search rather than a full scan, and the ratio buffer is reused
-    /// across calls — no per-symbol allocation.
+    /// Re-estimates every data carrier's channel from the active layout's
+    /// cached bracket structure — `default_layout` if
+    /// [`set_pilot_bins`](Self::set_pilot_bins) was never called, otherwise
+    /// its cached entry for `active_phase` (always present:
+    /// `set_pilot_bins` inserts before activating a phase, so that lookup
+    /// failing is unreachable and only guarded defensively): each pilot's
+    /// ratio (`received/known`) is written directly into `estimate` at its
+    /// own bin, then every data bin's estimate is a single lerp between its
+    /// two cached bracketing pilots — an O(1) lookup per carrier, since the
+    /// bracket relationship was already resolved when the layout was built.
+    /// A no-op when the active layout has no pilots (the held estimate —
+    /// `1.0 + 0j` if never set — is left unchanged).
     fn interpolate_from_pilots(&mut self, received_freq: &[C32]) {
-        if self.pilot_bins.is_empty() {
+        let layout = match self.active_phase {
+            Some(phase) => match self.layouts.iter().find(|&&(p, _)| p == phase) {
+                Some((_, layout)) => layout,
+                None => return,
+            },
+            None => &self.default_layout,
+        };
+        if layout.pilot_bins.is_empty() {
             return;
         }
 
-        // Pilot ratios in the (already sorted) pilot-bin order — reused scratch.
-        self.pilot_ratios.clear();
-        self.pilot_ratios.extend(
-            self.pilot_bins
-                .iter()
-                .map(|&(bin, known)| (bin, received_freq[bin] / known)),
-        );
-
-        for &bin in &self.data_bins {
-            self.estimate[bin] = interpolate_at(&self.pilot_ratios, bin);
+        for &(bin, known) in &layout.pilot_bins {
+            self.estimate[bin] = received_freq[bin] / known;
         }
-        for &(bin, ratio) in &self.pilot_ratios {
-            self.estimate[bin] = ratio;
+        for &(data_bin, br) in &layout.brackets {
+            let l = self.estimate[br.left_bin];
+            let r = self.estimate[br.right_bin];
+            self.estimate[data_bin] = l + (r - l) * br.t;
         }
     }
 }
@@ -499,41 +611,6 @@ fn equalizer_weight(h: C32) -> C32 {
     } else {
         C32::default()
     }
-}
-
-/// Estimates the channel ratio at `bin` from the **bin-sorted** `pilots`:
-/// linear interpolation between the two pilots bracketing `bin`, or a hold of
-/// the nearest pilot when `bin` lies outside the pilot span on one side (no
-/// circular wrap across bin 0 — the band edges hold their nearest pilot).
-/// `pilots` must be non-empty and sorted ascending by bin.
-///
-/// The bracketing pilots are located by binary search (`partition_point`), so
-/// this is O(log P) per data bin — keeping the equalizer's per-symbol interpolation
-/// at O(data·log pilots), which matters for the DVB-T RX (1512 data × ~193 pilots
-/// per symbol).
-fn interpolate_at(pilots: &[(usize, C32)], bin: usize) -> C32 {
-    if pilots.len() == 1 {
-        return pilots[0].1;
-    }
-
-    // `hi` = index of the first pilot with bin >= `bin` (the "upper" bracket).
-    let hi = pilots.partition_point(|&(pbin, _)| pbin < bin);
-    if hi == 0 {
-        // Every pilot is above `bin`: hold the nearest (lowest) pilot.
-        return pilots[0].1;
-    }
-    if hi == pilots.len() {
-        // Every pilot is below `bin`: hold the nearest (highest) pilot.
-        return pilots[pilots.len() - 1].1;
-    }
-    let (ub, ur) = pilots[hi];
-    if ub == bin {
-        // Bin sits exactly on a pilot.
-        return ur;
-    }
-    let (lb, lr) = pilots[hi - 1];
-    let t = (bin - lb) as f32 / (ub - lb) as f32;
-    lr + (ur - lr) * t
 }
 
 impl Block for OfdmEqualizer {

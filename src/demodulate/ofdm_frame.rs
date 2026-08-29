@@ -322,9 +322,11 @@ fn soft_demap_scattered(
         let freq = symbol_fft.demod_symbol(&iq[in_off..])?;
         // Install this symbol's phase-`l` pilots (bins + known TX values) and the
         // phase's data bins to interpolate across, then equalize from them.
-        let pilots = extractor.current_pilot_bins().to_vec();
-        let data_bins: Vec<usize> = extractor.data_bins().to_vec();
-        eq.set_pilot_bins(&pilots, &data_bins);
+        eq.set_pilot_bins(
+            extractor.phase(),
+            extractor.current_pilot_bins(),
+            extractor.data_bins(),
+        );
         if eq.process(freq, &mut equalized).out_written != n_fft {
             return None;
         }

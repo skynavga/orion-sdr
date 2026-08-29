@@ -9,7 +9,7 @@ Measurements taken on Apple M2 Pro, release build (`opt-level=3`, `lto=fat`,
 `codegen-units=1`), no SIMD.  Results are ordered by throughput (descending)
 within each table.
 
-## v0.0.66 Results
+## v0.0.67 Results
 
 ### Analog modes (65536 samples × 30 passes)
 
@@ -610,8 +610,8 @@ GI-acquires and decodes one frame per pass.
 | Path | Msps |
 | --- | ---: |
 | modulate | ~88 |
-| demodulate (incl. GI acquisition) | ~15.8 |
-| roundtrip (mod → GI-acquire → demod) | ~13.6 |
+| demodulate (incl. GI acquisition) | ~17.1 |
+| roundtrip (mod → GI-acquire → demod) | ~14.4 |
 
 `dvb_t_map_symbol` is allocation-free: it folds the even/odd axis de-interleave
 and the axis-label pack into a single pass rather than materializing two `Vec`s
@@ -627,12 +627,15 @@ symbol's worth of bits on top of the FEC.
 
 The RX adds per-symbol scattered-pilot equalization, DVB-T-exact soft LLRs,
 TPS DBPSK recovery, and the guard-interval correlation search on top of the FFT
-chain; the per-symbol pilot interpolation is its dominant cost, locating each data
-carrier's bracketing pilots by binary search over the sorted pilot set
-(O(data·log pilots) per symbol, for 1512 data carriers × ~176 reference pilots)
-and reusing a ratio scratch buffer across symbols, so the estimate is a fraction
-of the FFT rather than an O(data·pilots) scan. The roundtrip (~13.6 Msps) is now
-set almost entirely by the decode direction, the modulator having stopped being a
+chain. Per-symbol pilot interpolation locates each data carrier's bracketing
+pilots from a bracket table precomputed once per scattered-pilot phase (sort
+the pilot/data bins, then a single linear merge pass brackets every data
+carrier against them — sorting dominates the one-time build, at 1512 data
+carriers × ~176 reference pilots) and cached for that phase's remaining
+repeats within the frame decode (17 of a 68-symbol frame's symbols share each of
+the four phases), so interpolating a symbol's estimate is an O(1) lookup per
+data carrier rather than a search. The roundtrip (~14.4 Msps) is now set almost
+entirely by the decode direction, the modulator having stopped being a
 meaningful share of it.
 
 ### DVB-T super-frame, end to end (700-byte payload, 4 frames, 20 passes)
@@ -643,9 +646,9 @@ cell id split across them.
 
 | Path | Msps |
 | --- | ---: |
-| modulate | ~86 |
-| demodulate | ~15.6 |
-| roundtrip | ~13.3 |
+| modulate | ~89 |
+| demodulate | ~17.2 |
+| roundtrip | ~14.5 |
 
 A super-frame is the single-frame conformant path run four times plus the
 multi-frame sequencing and cross-frame checks (frame-number sequence, cell-id
@@ -660,9 +663,9 @@ frame at the front of the buffer, decodes it, and drains its samples.
 
 | Path | Msps |
 | --- | ---: |
-| streaming demodulate (feed → decode → drain) | ~14.8 |
+| streaming demodulate (feed → decode → drain) | ~16.0 |
 
-Slightly below the batch conformant demodulate (~15.8): the per-frame decode work
+Slightly below the batch conformant demodulate (~17.2): the per-frame decode work
 is identical, and the small gap is the streaming buffer management — the repeated
 front-of-buffer GI search and the per-frame `drain` of consumed samples.
 
@@ -677,8 +680,8 @@ estimate returns k = 0 and the rotate is skipped — the normal locked-link case
 
 | Path | Msps |
 | --- | ---: |
-| decode, correction off | ~15.8 |
-| decode, correction on (always estimating) | ~15.0 |
+| decode, correction off | ~17.0 |
+| decode, correction on (always estimating) | ~16.2 |
 
 That is **a few percent** (measured ~5% across six runs — the added work, an FFT
 of a few symbols plus a 45-bin continual-pilot search per frame, is small enough
@@ -704,16 +707,16 @@ the two configurations converge as the payload fills the frame:
 
 | Payload | Fill | plain | `with_error_rates` | `feed` | `feed_probed` |
 | ---: | ---: | ---: | ---: | ---: | ---: |
-| 184 B | 2% | 15.85 Msps | 7.52 Msps (**+112%**) | 14.62 Msps | 7.14 Msps (**+105%**) |
-| 9 724 B | ~100% | 7.85 Msps | 7.33 Msps (**+7.0%**) | 7.50 Msps | 7.14 Msps (**+4.9%**) |
+| 184 B | 2% | 17.11 Msps | 7.78 Msps (**+121%**) | 15.74 Msps | 7.49 Msps (**+110%**) |
+| 9 724 B | ~100% | 8.12 Msps | 7.82 Msps (**+4.0%**) | 7.80 Msps | 7.51 Msps (**+3.8%**) |
 
-Read the *gated* columns first: they are ~7.1–7.5 Msps in both rows. The
+Read the *gated* columns first: they are ~7.5–7.8 Msps in both rows. The
 instrumented path always decodes the whole frame, so its cost does not depend on
-`payload_len` at all. What varies is the baseline — 15.85 Msps when 98% of the
-frame is stuffing the plain decode skips, 7.85 when there is nothing to skip. The
-"+112%" is a cheap baseline, not an expensive measurement.
+`payload_len` at all. What varies is the baseline — 17.11 Msps when 98% of the
+frame is stuffing the plain decode skips, 8.12 when there is nothing to skip. The
+"+121%" is a cheap baseline, not an expensive measurement.
 
-At a realistic DATV fill the cost is **+7.0% for the rungs and +4.9% for the
+At a realistic DATV fill the cost is **+4.0% for the rungs and +3.8% for the
 probe**, which is the same neighbourhood as the generic COFDM path's +3.3% and
 +4.3% (`throughput_frame_stream_probe_ldpc_bch`). COFDM never shows the sparse
 case because it sizes the frame to the payload — its prefix is already the whole

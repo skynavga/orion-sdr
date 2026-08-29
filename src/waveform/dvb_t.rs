@@ -688,6 +688,14 @@ impl ScatteredPilotExtractor {
         self.cycle.reset();
     }
 
+    /// The current symbol's scattered-pilot phase (`l mod 4`) — the cache key
+    /// [`OfdmEqualizer::set_pilot_bins`](crate::demodulate::OfdmEqualizer::set_pilot_bins)
+    /// expects, so its bracket layout is built once per phase rather than once
+    /// per symbol.
+    pub fn phase(&self) -> usize {
+        self.cycle.phase
+    }
+
     /// The current phase's **channel-reference** pilot bins (rustfft bin index +
     /// known boosted TX value), for installing on the equalizer before this
     /// symbol. These are the continual + scattered pilots **only** — the 17 TPS
