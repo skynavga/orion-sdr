@@ -3,21 +3,41 @@
   SPDX-License-Identifier: MIT OR Apache-2.0
 -->
 
+<!-- markdownlint-disable MD013 -->
+
 # CLAUDE.md — orion-sdr
 
 ## Project
 
-`orion-sdr` is a composable SDR/DSP library in Rust (crate name `orion-sdr`,
-lib name `orion_sdr`, v0.0.64), edition 2024, targeting HF-through-EHF signal
+`orion-sdr` is a composable SDR/DSP library in Rust ed. 2024, targeting HF-through-EHF signal
 processing with Python bindings via PyO3.
 
-## Reference Docs
+## Project Docs
 
+- [API reference](docs/api.md) — Python API class summary
 - [Build and test commands](docs/commands.md) — cargo aliases, maturin
-- [Source layout](docs/source.md) — module tree
-- [Design patterns](docs/design.md) — Block trait, inner-loop style, IIR structure
-- [OFDM / COFDM design](docs/ofdm.md) — OFDM PHY conventions and the coded frame (MAC) layer
-- [DVB-T / NB-DVB-T design](docs/dvb.md) — DVB-T 2K structure, pilots, TPS, GI acquisition, TS payload
 - [Coding conventions](docs/conventions.md) — language, safety, feature flags, sync rules
+- [Demodulator usage](docs/demodulate.md) — usage patterns for all demodulators
+- [Design patterns](docs/design.md) — Block trait, inner-loop style, IIR structure
+- [DVB-T / NB-DVB-T design](docs/dvb.md) — DVB-T 2K structure, pilots, TPS, GI acquisition, TS payload
+- [Features](docs/features.md) — capability list: blocks, chains, modulators/demodulators, codecs
+- [Modulator usage](docs/modulate.md) — usage patterns for all modulators
+- [OFDM / COFDM design](docs/ofdm.md) — OFDM PHY conventions and the coded frame (MAC) layer
 - [Performance benchmarks](docs/performance.md) — throughput results, SNR curves, and how to run them
-- [Acronym glossary](docs/acronyms.md) — expansions for acronyms used across the source and docs
+- [Python bindings](docs/python.md) — PyO3 native extension: installation, classes, usage
+- [Source layout](docs/source.md) — module tree
+- [Terminology](docs/terminology.md) — acronyms and glossary
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live as markdown files under `.claude/.scratch/<feature-slug>/`. See `.claude/docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default label vocabulary. See `.claude/docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context. See `.claude/docs/agents/domain.md`.

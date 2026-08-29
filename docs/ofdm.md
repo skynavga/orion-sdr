@@ -9,7 +9,7 @@ This document covers the multicarrier (OFDM) physical layer and the coded,
 framed link (COFDM) built on top of it. Design conventions decided here also
 apply to the planned SC-FDMA/OTFS waveforms that will share the
 `multicarrier/` module. See [design.md](design.md) for crate-wide patterns and
-[acronyms.md](acronyms.md) for the acronym glossary.
+[terminology.md](terminology.md) for the acronym and terminology glossary.
 
 ## Multicarrier / OFDM Pipeline
 

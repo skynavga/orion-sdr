@@ -3,11 +3,13 @@
   SPDX-License-Identifier: MIT OR Apache-2.0
 -->
 
-# Acronym Glossary
+# Terminology
 
-Expansions for the acronyms used across the `orion-sdr` source and docs. See
-[design.md](design.md) for crate-wide design patterns and [ofdm.md](ofdm.md) for
-the OFDM/COFDM conventions.
+Acronym expansions and other domain terms used across the `orion-sdr` source and
+docs. See [design.md](design.md) for crate-wide design patterns and
+[ofdm.md](ofdm.md) for the OFDM/COFDM conventions.
+
+## Acronyms
 
 | Acronym | Expansion | Notes |
 | ------- | --------- | ----- |
@@ -61,7 +63,6 @@ the OFDM/COFDM conventions.
 | IIR | Infinite Impulse Response | `Biquad`, `LpCascade` in `dsp/` |
 | IQ | In-phase / Quadrature | Complex baseband representation; `Complex32` throughout |
 | ISI | Inter-Symbol Interference | Multipath delay spread exceeding `cp_len` spills energy between OFDM symbols |
-| Kaiser | Kaiser window | Window parameterized by stop-band attenuation; `dsp::kaiser_lowpass_taps` designs the TX mask's FIR |
 | LDPC | Low-Density Parity-Check | LDPC(174,91) in FT8/FT4 (`codec/ldpc.rs`); parameterized family (`fec/ldpc_codes.rs`) for COFDM |
 | LEO | Low Earth Orbit | High-Doppler satellite case motivating OFDM's opt-in `PerSymbolPilotInterp` equalizer |
 | LFSR | Linear-Feedback Shift Register | Basis of the `PnScrambler` whitener (`fec/scrambler.rs`) |
@@ -70,7 +71,6 @@ the OFDM/COFDM conventions.
 | LP | Low-Pass | `FirLowpass`, `LpCascade` filter types |
 | LPF | Low-Pass Filter | Here: the TX baseband **spectral mask** `TxLowpass` applies across an assembled OFDM stream to cut out-of-band emission. See [ofdm.md](ofdm.md) |
 | MAC | Medium Access Control | The COFDM frame layer (`FramePacket`, `OfdmFrameMod`/`OfdmFrameStreamDemod`) |
-| Mask | Spectral emission mask | Band-plan limit on out-of-band power; no mask *template* is modelled — `TxLowpass` meets one |
 | MCS | Modulation and Coding Scheme | `McsTable` maps a per-frame index to (constellation, inner/outer FEC) |
 | ML | Maximum Likelihood | The van de Beek guard-interval timing/CFO estimator (`dvb_t_gi_sync`); not *max-log* (LLR approximation) |
 | MLSE | Maximum-Likelihood Sequence Estimation | `viterbi_decode_coherent` in `codec/psk31.rs` |
@@ -93,7 +93,6 @@ the OFDM/COFDM conventions.
 | QSO | (Q-code) two-way contact | Amateur-radio term for a contact; FT8/FT4 messages encode a standard QSO exchange |
 | RF | Radio Frequency | Upconverted (non-baseband) signal |
 | RMS | Root Mean Square | Used by AGC and test SNR helpers |
-| Roll-off | (symbol-window roll-off) | Raised-cosine taper length per symbol edge (samples), set on `CarrierPlan::with_window_roll_off`; the `β` fraction forms give `round(β·cp_len)` or `round(β·n_fft)`. See [ofdm.md](ofdm.md) |
 | RS | Reed–Solomon | Byte-symbol block code (`fec/reed_solomon.rs`); DVB-T RS(204,188) t=8; COFDM outer FEC option |
 | RX | Receive / Receiver | — |
 | S&C | Schmidl & Cox | Repeated-segment preamble algorithm used by `ofdm_sync` for timing/CFO |
@@ -106,10 +105,18 @@ the OFDM/COFDM conventions.
 | TPS | Transmission Parameter Signalling | DVB-T/DVB-H signalling on 17 carriers, DBPSK over a 68-symbol frame; `HeaderFormat::DvbTps` |
 | TS | Transport Stream | The MPEG-2 packet stream DVB-T carries; see MPEG-TS |
 | Tu | Useful symbol duration | An OFDM symbol's `n_fft`-sample non-guard part; DVB tables give guards and roll-offs as fractions of it |
-| Tukey | Tukey (tapered-cosine) window | The raised-cosine symbol-edge taper `SymbolWindow` applies for TX out-of-band suppression; RX-transparent via the FFT-window back-off. See [ofdm.md](ofdm.md) |
 | TX | Transmit / Transmitter | — |
 | UHF | Ultra High Frequency | 300 MHz–3 GHz; secondary target band |
 | VHF | Very High Frequency | 30–300 MHz; lower end of the OFDM target-band range |
 | VSA | Vector Signal Analyzer | Taps its constellation post-equalizer / pre-demapper, as `OfdmRxProbe` does; not a vector *network* one |
 | WBFM | Wideband FM | Broadcast FM with a large deviation-to-audio-bandwidth ratio |
 | ZF | Zero-Forcing | `OfdmEqualizer`'s per-bin channel-inverse equalization; amplifies noise at spectral nulls |
+
+## Glossary
+
+| Term | Meaning | Notes |
+| -------- | ------------------------------- | ----- |
+| Kaiser | Kaiser window | Window parameterized by stop-band attenuation; `dsp::kaiser_lowpass_taps` designs the TX mask's FIR |
+| Mask | Spectral emission mask | Band-plan limit on out-of-band power; no mask *template* is modelled — `TxLowpass` meets one |
+| Roll-off | Symbol-window roll-off | Raised-cosine taper length per symbol edge (samples), set on `CarrierPlan::with_window_roll_off`; the `β` fraction forms give `round(β·cp_len)` or `round(β·n_fft)`. See [ofdm.md](ofdm.md) |
+| Tukey | Tukey (tapered-cosine) window | The raised-cosine symbol-edge taper `SymbolWindow` applies for TX out-of-band suppression; RX-transparent via the FFT-window back-off. See [ofdm.md](ofdm.md) |
