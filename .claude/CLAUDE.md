@@ -26,3 +26,17 @@
 - [Python bindings](docs/python.md) — PyO3 native extension: installation, classes, usage
 - [Source layout](docs/source.md) — module tree
 - [Terminology](docs/terminology.md) — acronyms and glossary
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live as markdown files under `.scratch/<feature-slug>/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
