@@ -7,7 +7,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/skynavga/orion-sdr"
 readme = "README.md"
 keywords = ["sdr", "dsp", "radio", "satellite"]
-categories = ["science", "embedded", "no-std::no-alloc"]
+categories = ["science", "algorithms", "mathematics", "encoding"]
 include = [
     "src/**/*",
     "python/**/*",
