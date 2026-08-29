@@ -59,16 +59,29 @@ list. If there are no real changes (test release), write a minimal entry such as
 - (describe changes here based on git log)
 ```
 
-## Step 4 — Run tests
+## Step 4 — Pre-commit checks
 
-Run both test suites and verify they all pass:
+### Step 4a — Run formatter and linter
+
+Run both formatter and linter and and verify they pass without errors:
+
+```bash
+cargo fmt -- --check
+cargo clippy --release -- -D warnings
+```
+
+If formatter or linter fails, stop and report the failure. Do not proceed.
+
+### Step 4b — Run test suites
+
+Run rust and python test suites and verify they pass all tests:
 
 ```bash
 cargo test --release
 .venv/bin/pytest -q
 ```
 
-If either suite fails, stop and report the failure. Do not proceed.
+If a test fails, stop and report the failure. Do not proceed.
 
 ## Step 5 — Commit
 
