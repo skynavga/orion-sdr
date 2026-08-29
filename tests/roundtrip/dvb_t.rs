@@ -650,9 +650,10 @@ fn dvb_t_tps_frame_survives_awgn() {
 // use the 17 TPS carriers as channel references. The modulator transmits data-
 // power DBPSK (±1.0) on the TPS bins, but the grid records them as boosted `w_k`
 // pilots (±4/3); feeding them to the estimator would yield `h = ±1.0/±4/3 = ∓0.75`
-// (wrong magnitude AND sign), which `interpolate_at` then smears onto the ~3 data
-// carriers straddling each TPS carrier — a deterministic, SNR-invariant pre-FEC
-// error floor. A payload-only decode assertion at zero noise can pass on a thin
+// (wrong magnitude AND sign), which the equalizer's bracket interpolation then
+// smears onto the ~3 data carriers straddling each TPS carrier — a
+// deterministic, SNR-invariant pre-FEC error floor. A payload-only decode
+// assertion at zero noise can pass on a thin
 // single-codeword RS margin without exercising this, so the test checks the
 // equalizer directly: noiselessly, every EQUALIZED data carrier must equal the
 // transmitted one (pre-FEC coded-bit error exactly zero) — for both a robust and a
@@ -712,9 +713,7 @@ fn assert_noiseless_equalizer_is_clean(
         // RX: same noiseless samples through CP-remove → FFT → equalize → extract.
         rx_cpr.process(&frame.iq[off..], &mut rx_time);
         rx_fft.process(&rx_time, &mut rx_freq);
-        let pilots = ext.current_pilot_bins().to_vec();
-        let data_bins = ext.data_bins().to_vec();
-        eq.set_pilot_bins(&pilots, &data_bins);
+        eq.set_pilot_bins(ext.phase(), ext.current_pilot_bins(), ext.data_bins());
         eq.process(&rx_freq, &mut equalized);
         ext.extract_symbol(&equalized, &mut rx_data);
         for (a, b) in rx_data.iter().zip(tx_data.iter()) {

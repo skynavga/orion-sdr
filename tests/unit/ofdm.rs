@@ -10,6 +10,10 @@ use orion_sdr::modulate::{ConstellationOrder, OfdmConfig, OfdmMod};
 use orion_sdr::multicarrier::{CarrierPlan, FftBlock, SymbolWindow, TxLowpass};
 use orion_sdr::sync::{OfdmPreamble, generate_ofdm_preamble};
 use orion_sdr::util::wb_spectrum_snr_db;
+use orion_sdr::waveform::dvb_t::{
+    DVB_T_N_FFT, DVB_T_SCATTERED_PHASES, GuardInterval, NbBandwidth, ScatteredPilotExtractor,
+    dvb_t_scattered_config,
+};
 use rustfft::FftPlanner;
 
 fn qpsk_plan(n_fft: usize, cp_len: usize) -> CarrierPlan {
@@ -760,6 +764,83 @@ fn ofdm_mod_zero_pads_final_partial_symbol() {
         iq, iq_ref,
         "zero-padding of the partial symbol is inconsistent"
     );
+}
+
+#[test]
+fn ofdm_equalizer_pilot_interp_cached_bracket_matches_reference_search() {
+    // Independent reference: the bracket-and-lerp rule the cached fast path
+    // replaced (bin-sorted pilots, binary-search bracket, nearest-pilot hold
+    // outside the span) — reimplemented here so the cache has something
+    // authoritative to check against.
+    fn reference_interpolate(pilots: &[(usize, C32)], bin: usize) -> C32 {
+        if pilots.len() == 1 {
+            return pilots[0].1;
+        }
+        let hi = pilots.partition_point(|&(pbin, _)| pbin < bin);
+        if hi == 0 {
+            return pilots[0].1;
+        }
+        if hi == pilots.len() {
+            return pilots[pilots.len() - 1].1;
+        }
+        let (ub, ur) = pilots[hi];
+        if ub == bin {
+            return ur;
+        }
+        let (lb, lr) = pilots[hi - 1];
+        let t = (bin - lb) as f32 / (ub - lb) as f32;
+        lr + (ur - lr) * t
+    }
+
+    // Exercises the real DVB-T scattered-pilot geometry across all four
+    // phases, repeated over several cycles so both the cold build (first
+    // time a phase is seen) and the cached path (every repeat after) run. A
+    // fresh pseudo-random "received" spectrum every symbol distinguishes a
+    // stale cached estimate from a correctly-refreshed one.
+    let guard = GuardInterval::G1_32;
+    let cfg = dvb_t_scattered_config(guard, NbBandwidth::Bw1MHz.occupied_hz());
+    let mut extractor = ScatteredPilotExtractor::new(guard);
+    let mut eq = OfdmEqualizer::new(&cfg, EqualizerMethod::PerSymbolPilotInterp);
+    let mut data_syms = vec![C32::default(); extractor.num_data_carriers()];
+
+    for iter in 0..(DVB_T_SCATTERED_PHASES * 3) {
+        let phase = extractor.phase();
+        let pilots: Vec<(usize, C32)> = extractor.current_pilot_bins().to_vec();
+        let data_bins: Vec<usize> = extractor.data_bins().to_vec();
+
+        // A deterministic but symbol-varying "received" spectrum, kept well
+        // clear of the equalizer's erasure floor.
+        let received: Vec<C32> = (0..DVB_T_N_FFT)
+            .map(|bin| {
+                let phi = ((bin * 7 + iter * 13) % 97) as f32 * 0.037;
+                C32::from_polar(1.3 + 0.4 * phi.sin(), 0.021 * (bin + iter) as f32)
+            })
+            .collect();
+
+        let mut sorted_pilots = pilots.clone();
+        sorted_pilots.sort_by_key(|&(bin, _)| bin);
+        let pilot_ratios: Vec<(usize, C32)> = sorted_pilots
+            .iter()
+            .map(|&(bin, known)| (bin, received[bin] / known))
+            .collect();
+
+        eq.set_pilot_bins(phase, &pilots, &data_bins);
+        let mut equalized = vec![C32::default(); DVB_T_N_FFT];
+        eq.process(&received, &mut equalized);
+
+        for &bin in &data_bins {
+            let expected_ratio = reference_interpolate(&pilot_ratios, bin);
+            // `equalized[bin] = received[bin] * conj(est)/|est|^2 = received[bin]/est`
+            // for any non-erased estimate, so back-solving recovers exactly
+            // the ratio the cached fast path used.
+            let recovered_ratio = received[bin] / equalized[bin];
+            assert!(
+                (recovered_ratio - expected_ratio).norm() < 1e-3,
+                "phase {phase} iter {iter} bin {bin}: cached path {recovered_ratio:?} vs reference {expected_ratio:?}"
+            );
+        }
+        extractor.extract_symbol(&equalized, &mut data_syms);
+    }
 }
 
 #[test]
