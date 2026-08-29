@@ -9,8 +9,7 @@
 
 ## Project
 
-`orion-sdr` is a composable SDR/DSP library in Rust ed. 2024, targeting HF-through-EHF signal
-processing with Python bindings via PyO3.
+`orion-sdr` is a composable SDR/DSP library in Rust ed. 2024, targeting HF-through-EHF signal processing with Python bindings via PyO3.
 
 ## Project Docs
 
@@ -32,12 +31,12 @@ processing with Python bindings via PyO3.
 
 ### Issue tracker
 
-Issues and specs live as markdown files under `.claude/.scratch/<feature-slug>/`. See `.claude/docs/agents/issue-tracker.md`.
+Issues and specs live as markdown files under `.scratch/<feature-slug>/`. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
-Default label vocabulary. See `.claude/docs/agents/triage-labels.md`.
+Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
-Single-context. See `.claude/docs/agents/domain.md`.
+Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.

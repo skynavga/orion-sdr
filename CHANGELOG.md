@@ -9,6 +9,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.66] - 2026-08-29
+
+### Changed
+
+- Reverted the vendored Matt Pocock skill pack in favor of a symlinked
+  `.claude/skills/` install from `.agents/skills/`.
+- Relocated the pack's per-repo config from `.claude/docs/agents/` to
+  `docs/agents/`, and re-ran setup with default settings (GitHub-adjacent
+  local-markdown issue tracker under `.scratch/`, default triage labels,
+  single-context domain docs) for this repo.
+
 ## [0.0.65] - 2026-08-28
 
 ### Changed
