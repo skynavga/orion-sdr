@@ -9,6 +9,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.65] - 2026-08-28
+
+### Changed
+
+- Renamed `docs/acronyms.md` to `docs/terminology.md` and split it into an
+  "Acronyms" table and a new "Glossary" table for non-acronym domain terms
+  (Kaiser, Mask, Roll-off, Tukey); updated all cross-references in
+  `README.md`, `docs/design.md`, `docs/dvb.md`, `docs/ofdm.md`, and
+  `.claude/CLAUDE.md`.
+- Relocated `CLAUDE.md` to `.claude/CLAUDE.md` and dropped it from the
+  release-prep version-bump table.
+- Vendored Matt Pocock's engineering/productivity skill pack under
+  `.agents/skills/`, symlinked from `.claude/skills/`, and scaffolded its
+  per-repo config (issue tracker, triage labels, domain docs) under
+  `.claude/docs/agents/`.
+
 ## [0.0.64] - 2026-08-22
 
 Fixes the DVB-T error-rate gate, which broke the very frames it was meant to

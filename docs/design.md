@@ -109,6 +109,6 @@ See [performance.md](performance.md) for benchmark results and how to run them.
 
 ---
 
-## Acronyms
+## Terminology
 
-The acronym glossary lives in [acronyms.md](acronyms.md).
+The acronym and glossary reference lives in [terminology.md](terminology.md).

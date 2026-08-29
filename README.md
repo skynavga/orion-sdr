@@ -12,7 +12,7 @@ and a conformant DVB-T.
 
 ## Status
 
-Pre-alpha (v0.0.64). See [CHANGELOG.md](CHANGELOG.md) for release history.
+Pre-alpha (v0.0.65). See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Next Milestones
 
@@ -33,4 +33,4 @@ Pre-alpha (v0.0.64). See [CHANGELOG.md](CHANGELOG.md) for release history.
 - [Modulator usage](docs/modulate.md) — Rust examples for CW/AM/SSB/FM/PM, BPSK/QPSK/QAM, FT8/FT4, OFDM/COFDM, and DVB-T modulators
 - [Python bindings](docs/python.md) — installation, type stubs, Python examples and round-trip demo
 - [API reference](docs/api.md) — class summary, array types, graph schedulers, DSP primitives
-- [Acronym glossary](docs/acronyms.md) — expansions for acronyms used across the source and docs
+- [Terminology](docs/terminology.md) — acronym expansions and glossary terms used across the source and docs

@@ -12,7 +12,7 @@ the conventions specific to it. DVB-T is **not** a generic COFDM link — it is 
 concrete standard (ETSI EN 300 744 V1.6.2) with fixed numerology, its own
 signalling, and preamble-less acquisition. See [ofdm.md](ofdm.md) for the
 generic OFDM/COFDM pipeline this builds on, [design.md](design.md) for
-crate-wide patterns, and [acronyms.md](acronyms.md) for the glossary.
+crate-wide patterns, and [terminology.md](terminology.md) for the glossary.
 
 ## Structure and where it lives
 
