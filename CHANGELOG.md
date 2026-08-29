@@ -9,6 +9,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.68] - 2026-08-29
+
+### Changed
+
+- Gitignored `.claude/settings.local.json` (personal, per-project permission
+  overrides), which the v0.0.67 work left tracked.
+
 ## [0.0.67] - 2026-08-29
 
 ### Added
