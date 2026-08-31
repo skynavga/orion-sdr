@@ -9,6 +9,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.69] - 2026-08-30
+
+### Changed
+
+- Relocated `CONTEXT.md`, `docs/adr/`, and `docs/agents/` (the per-repo
+  domain-doc and engineering-skill config) and `.scratch/` (the local
+  issue tracker) from the repo root into `.claude/`.
+- Replaced the `.claude/skills/` → `.agents/skills/` symlink install with
+  direct copies: the vendored `mattpocock/skills` pack now lives at
+  `.claude/skills/<name>`, and `.agents/` is gone.
+- Updated every skill file and per-repo config doc that hardcoded the old
+  root-level paths so they resolve at the new location.
+
+### Removed
+
+- `skills-lock.json`: editing the vendored skill files to fix their path
+  assumptions means its pinned hashes no longer match upstream, so it can
+  no longer serve as a drift check.
+
 ## [0.0.68] - 2026-08-29
 
 ### Changed
