@@ -45,6 +45,14 @@ fn reference_fft(symbol: &[C32], n_fft: usize, cp_len: usize) -> Vec<C32> {
     buf.into_iter().map(|c| C32::new(c.re, c.im)).collect()
 }
 
+/// A deterministic bit pattern (Knuth's multiplicative-hash constant) that
+/// exercises many OFDM subcarriers in the spectral-shaping tests below.
+fn synthetic_bits(n: u32) -> Vec<u8> {
+    (0..n)
+        .map(|i| (i.wrapping_mul(2654435761) >> 24) as u8)
+        .collect()
+}
+
 #[test]
 fn ofdm_mod_symbol_length() {
     let n_fft = 16;
@@ -962,10 +970,7 @@ fn edge_guard_reduces_out_of_band_power() {
     let fs = 240_000.0f32;
     let edge_guard = 12usize; // ~5% of n_fft per edge
 
-    // A deterministic bit pattern that exercises many subcarriers.
-    let bits: Vec<u8> = (0..4096u32)
-        .map(|i| ((i * 2654435761) >> 24) as u8)
-        .collect();
+    let bits = synthetic_bits(4096);
 
     // Baseline: full-fill span (guard 0). Guarded: same but edge_guard nulls.
     let full = CarrierPlan::new(n_fft, cp_len).with_contiguous_data(0, false);
@@ -1094,9 +1099,7 @@ fn symbol_windowing_reduces_skirt_power() {
     let plan = CarrierPlan::new(n_fft, cp_len).with_data_carriers(data);
     let cfg = OfdmConfig::new(plan, fs, 0.0, 1.0, ConstellationOrder::Qpsk);
 
-    let bits: Vec<u8> = (0..8192u32)
-        .map(|i| ((i.wrapping_mul(2654435761)) >> 24) as u8)
-        .collect();
+    let bits = synthetic_bits(8192);
     let plain = OfdmMod::new(&cfg).modulate(&bits);
 
     // Window a copy in place, per symbol.
@@ -1208,9 +1211,7 @@ fn tx_lowpass_drops_out_of_band_below_the_windowing_floor() {
     assert!(lowpass.fits_guard(cp_len, 0, cp_len / 2));
     assert!(lowpass.transition_fits(n_fft, occupied as usize));
 
-    let bits: Vec<u8> = (0..32768u32)
-        .map(|i| ((i.wrapping_mul(2654435761)) >> 24) as u8)
-        .collect();
+    let bits = synthetic_bits(32768);
     let sps = cfg.samples_per_ofdm_symbol();
     let baseline = OfdmMod::new(&cfg).modulate(&bits);
 
@@ -1280,9 +1281,7 @@ fn all_three_spectral_levers_stack() {
     let cfg_full = OfdmConfig::new(plan_of(0), fs, 0.0, 1.0, ConstellationOrder::Qpsk);
     let cfg_guard = OfdmConfig::new(plan_of(edge_guard), fs, 0.0, 1.0, ConstellationOrder::Qpsk);
 
-    let bits: Vec<u8> = (0..32768u32)
-        .map(|i| ((i.wrapping_mul(2654435761)) >> 24) as u8)
-        .collect();
+    let bits = synthetic_bits(32768);
     let sps = cfg_full.samples_per_ofdm_symbol();
 
     let baseline = OfdmMod::new(&cfg_full).modulate(&bits);
@@ -1392,9 +1391,7 @@ fn edge_guard_and_windowing_combine() {
         ConstellationOrder::Qpsk,
     );
 
-    let bits: Vec<u8> = (0..16384u32)
-        .map(|i| ((i.wrapping_mul(2654435761)) >> 24) as u8)
-        .collect();
+    let bits = synthetic_bits(16384);
     let sps = cfg_plain.samples_per_ofdm_symbol();
 
     // Four variants: baseline, guard-only, window-only, both.
