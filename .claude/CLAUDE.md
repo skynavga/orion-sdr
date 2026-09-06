@@ -15,7 +15,7 @@
 
 - [API reference](docs/api.md) — Python API class summary
 - [Build and test commands](docs/commands.md) — cargo aliases, maturin
-- [Coding conventions](docs/conventions.md) — language, safety, feature flags, sync rules
+- [Conventions](docs/conventions.md) — code and documentation (language, safety, feature flags, sync rules, et al)
 - [Demodulator usage](docs/demodulate.md) — usage patterns for all demodulators
 - [Design patterns](docs/design.md) — Block trait, inner-loop style, IIR structure
 - [DVB-T / NB-DVB-T design](docs/dvb.md) — DVB-T 2K structure, pilots, TPS, GI acquisition, TS payload
@@ -27,16 +27,16 @@
 - [Source layout](docs/source.md) — module tree
 - [Terminology](docs/terminology.md) — acronyms and glossary
 
+## Git
+
+Except for the staging and commit described in the `/release-prep` skill, all stagings and commits are performed by the User: stage, run `/commit-message`, review, then commit. Don't stage or commit on the User's behalf unless explicitly asked.
+
+Never include Claude trailers (`Co-Authored-By` or similar) anywhere: commit messages, PR/release descriptions, GitHub issue/PR bodies and comments, etc.
+
 ## Agent skills
 
-### Issue tracker
+Issues live as GitHub issues in this repo, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
-Issues and specs live as markdown files under `.claude/.scratch/<feature-slug>/`. See `.claude/docs/agents/issue-tracker.md`.
+Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
 
-### Triage labels
-
-Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `.claude/docs/agents/triage-labels.md`.
-
-### Domain docs
-
-Single-context: `.claude/CONTEXT.md` + `.claude/docs/adr/`. See `.claude/docs/agents/domain.md`.
+Single-context: `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.

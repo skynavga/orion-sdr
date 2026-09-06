@@ -9,6 +9,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.70] - 2026-09-06
+
+### Changed
+
+- Reverted the v0.0.69 skill-pack layout: the vendored Matt Pocock skill pack
+  now lives under `.agents/skills/`, with `.claude/skills/<name>` as symlinks
+  into it, and `skills-lock.json` restored as an upstream-drift check.
+- Moved `CONTEXT.md`, `docs/adr/`, and `docs/agents/` (domain docs, issue
+  tracker, triage-label conventions) from `.claude/` back to the repo root,
+  and updated `.claude/CLAUDE.md`'s pointers to match.
+- Extended `docs/conventions.md` with a `Documentation` section (markdown
+  must be `markdownlint-cli2`-clean; MD013 may be bracket-disabled for wide
+  tables) alongside the existing `Coding` conventions.
+
 ## [0.0.69] - 2026-08-30
 
 ### Changed
