@@ -3,7 +3,9 @@
   SPDX-License-Identifier: MIT OR Apache-2.0
 -->
 
-# Coding Conventions
+# Project Conventions
+
+## Coding
 
 - Rust edition 2024; `opt-level=3`, `lto=fat`, `codegen-units=1` in release
 - `f32` throughout (no `f64`)
@@ -18,3 +20,9 @@
   (default per-test minimums are intentionally conservative)
 - When throughput numbers change, update `docs/performance.md` and the
   project's memory notes
+
+## Documentation
+
+- Markdown (`*.md`) files should be lint free (fix all found issues whether or no introduced in current session)
+- Use `markdownlint-cli2` found on `$PATH` with project's `.markdownlint.json` configuration
+- Use bracketed disablement of MD013 for MD tables with long line lengths
