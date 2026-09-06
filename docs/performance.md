@@ -9,17 +9,17 @@ Measurements taken on Apple M2 Pro, release build (`opt-level=3`, `lto=fat`,
 `codegen-units=1`), no SIMD.  Results are ordered by throughput (descending)
 within each table.
 
-## v0.0.70 Results
+## v0.0.71 Results
 
 ### Analog modes (65536 samples × 30 passes)
 
 | Mode         | Msps |
 |--------------|-----:|
-| CW           |  137 |
-| AM-PowerSqrt |  107 |
-| PM           |  125 |
 | SSB-USB      |  138 |
-| FM           |  103 |
+| CW           |  137 |
+| PM           |  124 |
+| FM           |  115 |
+| AM-PowerSqrt |  107 |
 | AM-AbsApprox |   79 |
 
 ### Digital modes (full pipeline: mapper → mod → demod → decider, 65536 sym × 30 passes)

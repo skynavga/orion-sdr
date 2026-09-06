@@ -26,6 +26,7 @@ src/
     agc.rs            — AgcRms, AgcRmsIq
     dc.rs             — DcBlocker (1st-order HP: y = x - x1 + r·y1)
     decim.rs          — FirDecimator
+    discriminator.rs  — quadrature_discriminate (shared FM/PM discriminator core)
     fir.rs            — FirLowpass, FirLowpassIq (complex, Kaiser-designed),
                         HalfCosineMf, kaiser_lowpass_taps/num_taps/transition_norm
     iir.rs            — Biquad, LpCascade, LpDcCascade

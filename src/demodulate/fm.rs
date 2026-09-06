@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::core::{Block, WorkReport};
-use crate::dsp::{LpCascade, Rotator};
-use crate::util::atan2_approx;
+use crate::dsp::{LpCascade, Rotator, quadrature_discriminate};
 use num_complex::Complex32 as C32;
 
 // FM Quadrature Demod
@@ -47,25 +46,13 @@ impl Block for FmQuadratureDemod {
         if let Some(r) = &mut self.xf {
             for i in 0..n {
                 let z = input[i] * r.next().conj();
-                let prod = C32::new(
-                    z.re * self.prev.re + z.im * self.prev.im,
-                    z.im * self.prev.re - z.re * self.prev.im,
-                );
-                output[i] = self
-                    .post_lp
-                    .process(atan2_approx(prod.im, prod.re) * self.k);
+                output[i] = quadrature_discriminate(z, self.prev, self.k, &mut self.post_lp);
                 self.prev = z;
             }
         } else {
             for i in 0..n {
                 let z = input[i];
-                let prod = C32::new(
-                    z.re * self.prev.re + z.im * self.prev.im,
-                    z.im * self.prev.re - z.re * self.prev.im,
-                );
-                output[i] = self
-                    .post_lp
-                    .process(atan2_approx(prod.im, prod.re) * self.k);
+                output[i] = quadrature_discriminate(z, self.prev, self.k, &mut self.post_lp);
                 self.prev = z;
             }
         }

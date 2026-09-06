@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::core::{Block, WorkReport};
-use crate::dsp::LpCascade;
-use crate::util::atan2_approx;
+use crate::dsp::{LpCascade, quadrature_discriminate};
 use num_complex::Complex32 as C32;
 
 /// PM demodulator via quadrature (phase difference) + post LPF
@@ -45,7 +44,7 @@ impl Block for PmQuadratureDemod {
             };
         }
 
-        // 1) Quadrature discriminator: angle( z[n] * conj(z[n-1]) )
+        // Quadrature discriminator: angle( z[n] * conj(z[n-1]) )
         // This yields Δphase; for PM this is proportional to d/dt of message.
         // If your PM modulator is symmetric (no extra integration), this
         // matches the “quadrature PM” path used in your tests.
@@ -53,8 +52,7 @@ impl Block for PmQuadratureDemod {
 
         for i in 0..n {
             let z = input[i];
-            let w = z * prev.conj();
-            output[i] = self.post_lp.process(self.k * atan2_approx(w.im, w.re));
+            output[i] = quadrature_discriminate(z, prev, self.k, &mut self.post_lp);
             prev = z;
         }
         self.prev = prev;

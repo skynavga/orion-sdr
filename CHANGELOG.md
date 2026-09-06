@@ -9,6 +9,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.71] - 2026-09-06
+
+### Changed
+
+- Deleted the dead, unreachable `PmDirectPhaseMod` duplicate from
+  `src/modulate/fm.rs` (the real, exported definition lives in
+  `src/modulate/pm.rs`); `FmPhaseAccumMod` is the file's only modulator now.
+- Extracted the shared FM/PM quadrature-discriminator core (product of
+  conjugates → `atan2_approx` → scale by `k` → post-filter) into a new
+  crate-internal `quadrature_discriminate` helper in
+  `src/dsp/discriminator.rs`, called by both `FmQuadratureDemod::process`
+  and `PmQuadratureDemod::process`.
+- Refreshed FM/PM throughput figures in `docs/performance.md` (FM 103→115
+  Msps, PM 125→124 Msps) and reordered the analog-modes table by descending
+  throughput.
+- `release-prep`'s PR-creation step now scans branch commit messages for
+  issue references and adds `Closes #NN` lines automatically, falling back
+  to asking instead of guessing.
+
 ## [0.0.70] - 2026-09-06
 
 ### Changed
