@@ -15,11 +15,11 @@ within each table.
 
 | Mode         | Msps |
 |--------------|-----:|
-| CW           |  137 |
-| AM-PowerSqrt |  107 |
-| PM           |  125 |
 | SSB-USB      |  138 |
-| FM           |  103 |
+| CW           |  137 |
+| PM           |  124 |
+| FM           |  115 |
+| AM-PowerSqrt |  107 |
 | AM-AbsApprox |   79 |
 
 ### Digital modes (full pipeline: mapper → mod → demod → decider, 65536 sym × 30 passes)

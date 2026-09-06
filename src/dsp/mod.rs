@@ -13,6 +13,9 @@ pub use dc::DcBlocker;
 pub mod decim;
 pub use decim::FirDecimator;
 
+pub(crate) mod discriminator;
+pub(crate) use discriminator::quadrature_discriminate;
+
 pub mod fir;
 pub use fir::{
     FirLowpass, FirLowpassIq, HalfCosineMf, kaiser_lowpass_taps, kaiser_num_taps,
