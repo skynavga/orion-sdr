@@ -9,6 +9,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.72] - 2026-09-06
+
+### Fixed
+
+- Fixed a debug-mode `attempt to multiply with overflow` panic in
+  `tests/unit/ofdm.rs`'s `edge_guard_reduces_out_of_band_power` by switching
+  its deterministic bit-pattern generator to `wrapping_mul`, matching the
+  idiom already used at the file's other call sites.
+
+### Changed
+
+- Extracted the repeated deterministic-bit-pattern-generator idiom used by
+  five OFDM spectral-shaping tests into a single `synthetic_bits(n)` helper
+  in `tests/unit/ofdm.rs`.
+
 ## [0.0.71] - 2026-09-06
 
 ### Changed
