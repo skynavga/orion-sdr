@@ -112,14 +112,30 @@ gh pr list --head CURRENT_BRANCH --state open
 
 If no open PR exists, create one. Inspect `git log main..HEAD --oneline` to
 understand all changes in the branch, then write a concise BLUF-style summary
-(one short paragraph) covering all significant changes. Follow it with a
-"Release prep for NEW_VERSION." line. Example format:
+(one short paragraph) covering all significant changes.
+
+**Link closed issues.** Search the full commit messages on the branch
+(`git log main..HEAD`, not just `--oneline`) for GitHub issue references —
+`#NN`, with or without a leading `Closes`/`Fixes`/`Resolves`/`Refs` keyword —
+and collect the distinct issue numbers found. This is how work done via
+`/implement #NN` gets tied back to its issue. If none are found, ask the user
+whether this branch closes any issue(s) before proceeding; don't guess a
+number. For every issue number confirmed (found in commits or supplied by the
+user), add a `Closes #NN` line to the PR body — GitHub's closing-keyword
+syntax — so the issue closes automatically when the PR merges. If the branch
+closes no issue, omit this section entirely.
+
+Follow with a "Release prep for NEW_VERSION." line. Example format:
 
 ```text
 <One short paragraph summarizing all significant changes in the branch.>
 
+Closes #NN
+
 Release prep for NEW_VERSION.
 ```
+
+(Add one `Closes #NN` line per linked issue; omit the block if there are none.)
 
 Do not include a co-author trailer.
 
