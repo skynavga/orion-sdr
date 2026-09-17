@@ -1,9 +1,13 @@
 {
   "alwaysThinkingEnabled": true,
   "enabledFeatureFlags": [],
-  "env": {
+  "enabledPlugins": {
+    "mattpocock-skills@claude-plugins-official": true
+  },
+ "env": {
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
   },
+  "model": "claude-sonnet-5",
   "hooks": {
     "PreToolUse": [
       {
@@ -16,6 +20,5 @@
         ]
       }
     ]
-  },
-  "model": "claude-sonnet-5"
+  }
 }
