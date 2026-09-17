@@ -88,8 +88,7 @@ If a test fails, stop and report the failure. Do not proceed.
 Stage only the files changed in steps 2 and 3 (never `git add -A`):
 
 ```bash
-git add Cargo.toml Cargo.lock pyproject.toml README.md \
-        docs/features.md docs/performance.md CLAUDE.md CHANGELOG.md
+git add CHANGELOG.md Cargo.toml Cargo.lock docs/performance.md pyproject.toml README.md
 ```
 
 Commit with message: `Bump version to NEW_VERSION`
