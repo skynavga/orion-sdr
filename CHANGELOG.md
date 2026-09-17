@@ -9,6 +9,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.74] - 2026-09-17
+
+### Changed
+
+- Moved the Matt Pocock skills plugin install from per-project to project
+  scope in `.claude/settings.json` and dropped the stale `skills-lock.json`.
+- Moved `.claude/CLAUDE.md` to the repo root and updated `release-prep`'s
+  skill doc.
+
 ## [0.0.73] - 2026-09-17
 
 ### Changed
