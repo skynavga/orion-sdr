@@ -1,10 +1,9 @@
 {
-  "model": "claude-sonnet-5",
+  "alwaysThinkingEnabled": true,
+  "enabledFeatureFlags": [],
   "env": {
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
   },
-  "alwaysThinkingEnabled": true,
-  "enabledFeatureFlags": [],
   "hooks": {
     "PreToolUse": [
       {
@@ -17,5 +16,6 @@
         ]
       }
     ]
-  }
+  },
+  "model": "claude-sonnet-5"
 }
