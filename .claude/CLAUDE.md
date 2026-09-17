@@ -11,11 +11,14 @@
 
 `orion-sdr` is a composable SDR/DSP library in Rust ed. 2024, targeting HF-through-EHF signal processing with Python bindings via PyO3.
 
-## Project Docs
+## Essential Reading
+
+- [Conventions](docs/conventions.md) — code, testing, documentation, git
+
+## Project Docs (Read as Needed)
 
 - [API reference](docs/api.md) — Python API class summary
 - [Build and test commands](docs/commands.md) — cargo aliases, maturin
-- [Conventions](docs/conventions.md) — code and documentation (language, safety, feature flags, sync rules, et al)
 - [Demodulator usage](docs/demodulate.md) — usage patterns for all demodulators
 - [Design patterns](docs/design.md) — Block trait, inner-loop style, IIR structure
 - [DVB-T / NB-DVB-T design](docs/dvb.md) — DVB-T 2K structure, pilots, TPS, GI acquisition, TS payload
@@ -26,12 +29,6 @@
 - [Python bindings](docs/python.md) — PyO3 native extension: installation, classes, usage
 - [Source layout](docs/source.md) — module tree
 - [Terminology](docs/terminology.md) — acronyms and glossary
-
-## Git
-
-Except for the staging and commit described in the `/release-prep` skill, all stagings and commits are performed by the User: stage, run `/commit-message`, review, then commit. Don't stage or commit on the User's behalf unless explicitly asked.
-
-Never include Claude trailers (`Co-Authored-By` or similar) anywhere: commit messages, PR/release descriptions, GitHub issue/PR bodies and comments, etc.
 
 ## Agent skills
 

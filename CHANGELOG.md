@@ -9,6 +9,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.73] - 2026-09-17
+
+### Changed
+
+- Removed the vendored Matt Pocock skill pack (`.agents/skills/`) and its
+  per-project symlinks under `.claude/skills/`.
+- Reorganized `.claude/CLAUDE.md`'s doc index into "Essential Reading"
+  (`docs/conventions.md`) and "Project Docs (Read as Needed)" sections, and
+  dropped the `## Git` staging/commit and Claude-trailer conventions section.
+
 ## [0.0.72] - 2026-09-06
 
 ### Fixed
